@@ -40,6 +40,23 @@ class Settings(BaseSettings):
     # Chia-block-aligned Seasons.
     season_genesis_date: date = date(2026, 5, 27)
 
+    # Phase 6.6 session auth.
+    # HS256 signing key for issued session tokens. Empty default
+    # triggers a per-process ephemeral secret (restart rotates all
+    # sessions). Operators with multi-process deployment should set
+    # ORCHARD_ORACLE_SESSION_SECRET to a long random string.
+    session_secret: str = ""
+    # Session TTL — default 1 hour. Operators can drop to (e.g.)
+    # 900 for stricter posture via ORCHARD_ORACLE_SESSION_TTL_SECONDS.
+    session_ttl_seconds: int = 3600
+    # Challenge nonce TTL — the window between /auth/challenge and
+    # /auth/verify. 120s is generous for a real wallet sign prompt.
+    challenge_ttl_seconds: int = 120
+    # Test-mode bypass for the BLS signature step. The pubkey -> address
+    # binding check still runs (so a wrong-pk submission fails). Use
+    # ONLY in tests/CI. Defaults False so production fails closed.
+    auth_test_mode: bool = False
+
     model_config = SettingsConfigDict(
         env_prefix="ORCHARD_ORACLE_",
         env_file=str(_ENV_PATH),

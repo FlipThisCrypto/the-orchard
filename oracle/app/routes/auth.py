@@ -1,0 +1,144 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Wallet-auth routes (Phase 6.6).
+
+The challenge-response handshake mirrors the WalletConnect / CHIP-22
+flow used by Sage and Goby:
+
+    1. Browser hits  POST /auth/challenge          -> { nonce, expires }
+    2. Wallet signs `Chia Signed Message:\\n<nonce>` -> { publicKey, signature }
+    3. Browser hits  POST /auth/verify             -> { session_token, expires_at }
+    4. Subsequent requests carry  Authorization: Bearer <session_token>
+
+The verify step validates both that the BLS signature is valid AND
+that the public key derives to the claimed xch1 address — without
+the second check, an attacker could submit their own signed nonce
+under someone else's address and pass.
+
+Sessions are HS256 JWTs (see sessions.py); revocation in v1 is "wait
+for it to expire" + "restart the oracle to invalidate everything."
+A token blocklist is a Phase 11 hardening.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import BaseModel, Field
+
+from .. import sessions, wallet_auth
+from ..config import settings
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+# ---------- request / response shapes -------------------------------
+
+class ChallengeResponse(BaseModel):
+    nonce: str = Field(..., description="random hex string to be signed")
+    expires_at: int = Field(..., description="unix timestamp")
+    message: str = Field(..., description=(
+        "the exact string the wallet should sign. Includes the "
+        "'Chia Signed Message:\\n' prefix that Sage/Goby auto-add, "
+        "so the operator can verify what they're signing."
+    ))
+
+
+class VerifyRequest(BaseModel):
+    address: str = Field(..., description="xch1... wallet address")
+    public_key: str = Field(..., description="48-byte synthetic G1 pubkey, hex")
+    signature: str = Field(..., description="96-byte AugScheme G2 signature, hex")
+    nonce: str = Field(..., description="the nonce returned by /auth/challenge")
+
+
+class VerifyResponse(BaseModel):
+    session_token: str
+    address: str
+    expires_at: int
+
+
+class WhoAmI(BaseModel):
+    address: str
+    expires_at: int
+
+
+# ---------- session dependency for downstream routes ----------------
+
+def require_session(
+    authorization: str | None = Header(None),
+) -> sessions.Session:
+    """FastAPI dependency: extracts the session from the
+    Authorization header and validates it. Use in any route that
+    needs to know the calling operator's verified wallet."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing or malformed Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(None, 1)[1].strip()
+    try:
+        return sessions.validate(token)
+    except sessions.SessionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+# ---------- routes ---------------------------------------------------
+
+@router.post("/challenge", response_model=ChallengeResponse)
+def challenge() -> ChallengeResponse:
+    """Issue a one-time nonce for the wallet to sign."""
+    nonce, expires_at = sessions.issue_challenge()
+    return ChallengeResponse(
+        nonce=nonce,
+        expires_at=expires_at,
+        message=wallet_auth.SIGNED_MESSAGE_PREFIX + nonce,
+    )
+
+
+@router.post("/verify", response_model=VerifyResponse)
+def verify(req: VerifyRequest) -> VerifyResponse:
+    """Verify a signed challenge and issue a session token."""
+    # 1) consume the nonce (atomic with the existence check). Replay
+    #    of the same nonce is impossible because the second consume()
+    #    returns False even within the TTL window.
+    if not sessions.consume_challenge(req.nonce):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="challenge nonce unknown or expired — request a fresh one",
+        )
+
+    # 2) verify the BLS signature AND that the pubkey binds to the
+    #    claimed address. test_mode lets the test suite exercise the
+    #    flow without a real wallet; production requires
+    #    settings().auth_test_mode = False (the default).
+    result = wallet_auth.verify_chia_signed_message(
+        address=req.address,
+        public_key_hex=req.public_key,
+        signature_hex=req.signature,
+        message=req.nonce,
+        test_mode=settings().auth_test_mode,
+    )
+    if not result.ok:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"signature verification failed: {result.reason}",
+        )
+
+    token, sess = sessions.issue(req.address)
+    return VerifyResponse(
+        session_token=token,
+        address=sess.address,
+        expires_at=sess.expires_at,
+    )
+
+
+@router.get("/whoami", response_model=WhoAmI)
+def whoami(sess: sessions.Session = Depends(require_session)) -> WhoAmI:
+    """Echo back the current session's verified address + TTL. Useful
+    for the dashboard to confirm it's still authenticated before
+    rendering operator-only UI."""
+    return WhoAmI(address=sess.address, expires_at=sess.expires_at)

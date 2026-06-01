@@ -455,3 +455,168 @@ def test_list_attestations_newest_first(client: TestClient):
     assert r.status_code == 200
     rows = r.json()
     assert [row["season_number"] for row in rows] == [5, 4, 3, 2]
+
+
+# ---------------- Phase 6.6: wallet auth ----------------
+
+# A real BLS pubkey is 48 bytes. For tests we generate one whose
+# corresponding bech32m address we compute ourselves — no Sage/Goby
+# needed. The verify endpoint runs in auth_test_mode which skips the
+# BLS verify step but still enforces the pk -> address binding check.
+
+@pytest.fixture()
+def auth_client(monkeypatch):
+    """Same as `client` but with auth_test_mode=True so the BLS
+    signature verify is skipped (we still verify the pk -> address
+    binding). Lets us exercise the challenge/verify/whoami flow
+    without a real wallet."""
+    monkeypatch.setenv("ORCHARD_ORACLE_AUTH_TEST_MODE", "true")
+    monkeypatch.setenv("ORCHARD_ORACLE_DB_URL", "sqlite:///:memory:")
+
+    from oracle.app.config import reset_settings_for_tests
+    from oracle.app.db import Base, get_db, reset_for_tests
+    from oracle.app import sessions
+    from oracle.app.main import app
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    reset_settings_for_tests()
+    reset_for_tests()
+    sessions.reset_for_tests()
+
+    test_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    TestSession = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(test_engine)
+
+    def override_get_db():
+        db = TestSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+    sessions.reset_for_tests()
+
+
+def _test_keypair():
+    """Construct a (pk_hex, address) pair using our own derivation.
+    The pk is just 48 deterministic bytes; the address is whatever
+    our puzzle_hash_for_synthetic_pk + bech32m derives. This is
+    enough for the pk -> address binding check in test_mode."""
+    from oracle.app.wallet_auth import xch_address_for_synthetic_pk
+    pk = b"\xab" * 48
+    return pk.hex(), xch_address_for_synthetic_pk(pk)
+
+
+def test_challenge_issues_a_nonce(auth_client: TestClient):
+    r = auth_client.post("/auth/challenge")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["nonce"]) >= 32
+    assert "Chia Signed Message" in body["message"]
+    assert body["expires_at"] > 0
+
+
+def test_verify_happy_path_issues_session(auth_client: TestClient):
+    pk_hex, addr = _test_keypair()
+
+    # Get a nonce.
+    rc = auth_client.post("/auth/challenge")
+    assert rc.status_code == 200
+    nonce = rc.json()["nonce"]
+
+    # Submit a "signed" challenge. auth_test_mode skips BLS verify
+    # but still checks the pk -> address binding.
+    rv = auth_client.post("/auth/verify", json={
+        "address":    addr,
+        "public_key": pk_hex,
+        "signature":  "00" * 96,    # bytes ignored in test_mode
+        "nonce":      nonce,
+    })
+    assert rv.status_code == 200, rv.text
+    body = rv.json()
+    assert body["address"] == addr
+    assert len(body["session_token"]) > 50
+    token = body["session_token"]
+
+    # whoami round-trip with the token.
+    rw = auth_client.get(
+        "/auth/whoami",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert rw.status_code == 200
+    assert rw.json()["address"] == addr
+
+
+def test_verify_rejects_pk_address_mismatch(auth_client: TestClient):
+    """Wrong pk for the claimed address must fail even in test_mode.
+    This is the critical security check — without it, an attacker
+    could submit their own signed challenge under someone else's
+    address."""
+    _, addr = _test_keypair()
+    rc = auth_client.post("/auth/challenge")
+    nonce = rc.json()["nonce"]
+
+    bogus_pk = ("cd" * 48)   # different bytes, different derived address
+    r = auth_client.post("/auth/verify", json={
+        "address":    addr,
+        "public_key": bogus_pk,
+        "signature":  "00" * 96,
+        "nonce":      nonce,
+    })
+    assert r.status_code == 401
+    assert "pk-binding check failed" in r.json()["detail"]
+
+
+def test_verify_rejects_unknown_nonce(auth_client: TestClient):
+    pk_hex, addr = _test_keypair()
+    r = auth_client.post("/auth/verify", json={
+        "address":    addr,
+        "public_key": pk_hex,
+        "signature":  "00" * 96,
+        "nonce":      "deadbeef" * 8,
+    })
+    assert r.status_code == 401
+    assert "unknown or expired" in r.json()["detail"]
+
+
+def test_verify_rejects_replay(auth_client: TestClient):
+    """Same nonce can be consumed only once."""
+    pk_hex, addr = _test_keypair()
+    rc = auth_client.post("/auth/challenge")
+    nonce = rc.json()["nonce"]
+
+    r1 = auth_client.post("/auth/verify", json={
+        "address": addr, "public_key": pk_hex,
+        "signature": "00" * 96, "nonce": nonce,
+    })
+    assert r1.status_code == 200
+
+    r2 = auth_client.post("/auth/verify", json={
+        "address": addr, "public_key": pk_hex,
+        "signature": "00" * 96, "nonce": nonce,
+    })
+    assert r2.status_code == 401
+
+
+def test_whoami_without_token_returns_401(auth_client: TestClient):
+    r = auth_client.get("/auth/whoami")
+    assert r.status_code == 401
+
+
+def test_whoami_with_garbage_token_returns_401(auth_client: TestClient):
+    r = auth_client.get(
+        "/auth/whoami",
+        headers={"Authorization": "Bearer not.a.jwt"},
+    )
+    assert r.status_code == 401

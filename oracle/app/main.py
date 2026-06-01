@@ -16,7 +16,7 @@ from fastapi import FastAPI
 
 from . import db
 from .config import settings
-from .routes import attestations, health, nodes, readings, register, uptime
+from .routes import attestations, auth, health, nodes, readings, register, uptime
 
 
 @asynccontextmanager
@@ -37,6 +37,7 @@ app = FastAPI(
 )
 
 app.include_router(health.router)
+app.include_router(auth.router)
 app.include_router(register.router)
 app.include_router(readings.router)
 app.include_router(nodes.router)
