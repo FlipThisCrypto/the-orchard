@@ -101,10 +101,9 @@ const OrchardView = (() => {
   }
 
   let identified = null;   // { node_id, signing_key_hex, status }
-  // After step 2 (Verify Pass), one of:
-  //   { verified: true,  wallet, pass_nft_id, pass_name }
-  //   { verified: false, wallet: null }   <-- skipped
-  // Required to reach step 3.
+  // After step 2 (Verify Pass): { wallet, pass_nft_id, pass_name }.
+  // Required to reach step 3. The Skip path was removed — operating
+  // a Tree on the network now requires a verified Pass at all times.
   let passDecision = null;
 
   async function onIdentify() {
@@ -147,13 +146,14 @@ const OrchardView = (() => {
       return;
     }
     if (!r.body.has_pass) {
-      // No Pass at this wallet. Show buy link; don't advance.
+      // No Pass at this wallet. Show buy link; do NOT advance — Pass
+      // ownership is now mandatory for Tree provisioning.
       out.innerHTML =
         `<div class="err">No Orchard Pass found at ${esc(wallet)}.</div>` +
         `<div class="muted" style="margin-top:6px">` +
-        `Buy a Pass on ` +
-        `<a href="${esc(r.body.buy_url)}" target="_blank" rel="noopener">MintGarden</a> ` +
-        `and try again, or click <em>Skip</em> to register without a Pass binding.</div>`;
+        `Pass ownership is required to operate a Tree on the network. ` +
+        `Acquire one on <a href="${esc(r.body.buy_url)}" target="_blank" rel="noopener">MintGarden</a> ` +
+        `and re-run Verify Pass here.</div>`;
       passDecision = null;
       return;
     }
@@ -167,7 +167,6 @@ const OrchardView = (() => {
       `<a href="${esc(r.body.mintgarden_url)}" target="_blank" rel="noopener">View on MintGarden →</a>` +
       `</div></div>`;
     passDecision = {
-      verified:    true,
       wallet:      wallet,
       pass_nft_id: r.body.pass_nft_id,
       pass_name:   r.body.pass_name,
@@ -175,19 +174,11 @@ const OrchardView = (() => {
     $('#step-config').hidden = false;
   }
 
-  function onSkipPass() {
-    passDecision = { verified: false, wallet: null };
-    const out = $('#verify-pass-result');
-    out.innerHTML = `<div class="muted">Skipped — Tree will register without a Pass binding. ` +
-      `You can re-run provisioning later with a wallet address to attach one.</div>`;
-    $('#step-config').hidden = false;
-  }
-
   async function onProvision() {
     const port = identified?.port;
     if (!identified) return;
     if (!passDecision) {
-      alert('Verify your Orchard Pass first (or click Skip).');
+      alert('Verify your Orchard Pass first.');
       return;
     }
     const ssid = $('#ssid').value.trim();
@@ -247,7 +238,6 @@ const OrchardView = (() => {
     $('#refresh-ports').addEventListener('click', refreshPorts);
     $('#identify-btn').addEventListener('click', onIdentify);
     $('#verify-pass-btn').addEventListener('click', onVerifyPass);
-    $('#skip-pass-btn').addEventListener('click', onSkipPass);
     $('#provision-btn').addEventListener('click', onProvision);
     refreshPorts();
   }

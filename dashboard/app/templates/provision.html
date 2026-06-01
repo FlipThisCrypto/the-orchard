@@ -18,16 +18,19 @@
 
 <section class="card" id="step-pass" hidden>
   <h2>2. Verify your Orchard Pass</h2>
-  <p>An <strong>Orchard Pass</strong> NFT is the on-chain credential that proves you operate a Tree on this network. Paste the Chia wallet address that holds your Pass; the oracle verifies on chain (via the public MintGarden indexer) and binds the Pass to your Tree.</p>
+  <p>An <strong>Orchard Pass</strong> NFT is the on-chain credential required to operate a Tree on this network. Paste the Chia wallet address that holds your Pass; the oracle verifies on chain (via the MintGarden indexer) and binds the Pass to your Tree before registration is accepted.</p>
+  <p class="muted">No Pass? <a href="https://mintgarden.io/collections/col1a56lp9zufakywlq4k5nntu3nd7k6jy2pe6ee23046ydlahmungqslvmj29" target="_blank" rel="noopener">Acquire one on MintGarden</a>, then return here.</p>
 
   <label>Wallet address <span class="muted">(xch1…)</span>
     <input id="wallet" type="text" placeholder="xch1m3rvtj86wzzfjyk5mc7wzpr7h4zkaknm4wte7kg6afleu4f2tfxsr7nk3n">
   </label>
   <div class="row">
     <button id="verify-pass-btn" class="primary">Verify Pass</button>
-    <button id="skip-pass-btn" type="button">Skip (register without Pass binding)</button>
   </div>
   <div id="verify-pass-result" class="result"></div>
+  <p class="muted" style="margin-top:8px; font-size:13px">
+    <em>Phase 6.6 (coming next): Connect Wallet via WalletConnect — sign a challenge with your wallet so the bound address is cryptographically yours, not just claimed.</em>
+  </p>
 </section>
 
 <section class="card" id="step-config" hidden>

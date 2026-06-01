@@ -430,10 +430,11 @@ In the dashboard browser tab:
    - `signing_key` — first 16 hex characters of the device's HMAC signing secret.
    - `fw` — the firmware version (`0.3.0` or newer).
    - `wifi`, `oracle url` — both should currently be unset.
-4. **Verify your Orchard Pass** (new step as of Phase 6.5):
-   - An **Orchard Pass** is the on-chain NFT credential proving you operate a Tree on this network. Paste the `xch1…` wallet address that holds your Pass.
+4. **Verify your Orchard Pass** (Phase 6.5+):
+   - An **Orchard Pass** is the on-chain NFT credential **required** to operate a Tree on this network. Paste the `xch1…` wallet address that holds your Pass.
    - Click **Verify Pass**. The dashboard queries the MintGarden indexer; if the wallet holds a Pass you'll see a green confirmation showing the bound NFT (e.g. *Orchard Pass #0001*) and a link to view it on MintGarden.
-   - If you don't own a Pass yet: click the **MintGarden** link to acquire one and try again, or click **Skip** to register without a binding. (Skipped registrations work but won't earn `$JUICE` once the network's payout phase ramps up.)
+   - If you don't own a Pass yet: click the **MintGarden** link to acquire one, then return and re-run Verify Pass. Pass ownership is mandatory — there is no skip path.
+   - **Phase 6.6 (coming next):** the wallet-address paste is being replaced with **Connect Wallet** via WalletConnect (Sage + Goby first), so the bound address is cryptographically yours — not just a claim. Until then, treat the current paste flow as a placeholder for trusted operators only.
 5. Fill in the configuration step:
    - **Label** — a friendly name (optional). E.g. `backyard-1`.
    - **WiFi SSID** — your home WiFi name.
