@@ -23,8 +23,10 @@
       {% if not settings.public_mode %}
         <a href="{{ url_for('provision.provision_page') }}">Plant a Tree</a>
       {% endif %}
+      <span id="connect-slot" style="margin-left:14px"></span>
     </nav>
   </header>
+  <div id="connect-uri" style="max-width:1100px;margin:0 auto;padding:0 20px"></div>
   <main>{% block body %}{% endblock %}</main>
   <footer>
     Open-source environmental DePIN on Chia ·
@@ -32,6 +34,8 @@
     <a href="https://mintgarden.io/collections/col1a56lp9zufakywlq4k5nntu3nd7k6jy2pe6ee23046ydlahmungqslvmj29" target="_blank">Genesis Passes</a>
     <span class="tagline">You plant. The network grows.</span>
   </footer>
+  <script src="{{ url_for('static', filename='connect.js') }}"></script>
+  <script>Orchard.initConnect();</script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

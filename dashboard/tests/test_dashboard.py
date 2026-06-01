@@ -370,3 +370,77 @@ def test_verify_pass_blocked_in_public_mode(public_client):
     r = public_client.post("/api/oracle/verify_pass",
                            json={"wallet_address": "xch1anything"})
     assert r.status_code == 404
+
+
+# ---------------- Phase 6.6 connect ----------------
+
+def test_api_auth_config_default_returns_unconfigured(client):
+    r = client.get("/api/auth/config")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["wc_configured"] is False
+    assert body["wc_project_id"] == ""
+    assert body["metadata"]["name"] == "Orchard View"
+
+
+def test_api_auth_config_picks_up_env_project_id(monkeypatch):
+    """When ORCHARD_VIEW_WC_PROJECT_ID is set, the config endpoint
+    surfaces it so the browser can init SignClient."""
+    monkeypatch.setenv("ORCHARD_VIEW_WC_PROJECT_ID", "abc123def456")
+    from dashboard.app import config as dash_config
+    dash_config.reset_settings_for_tests()
+    from dashboard.app.main import create_app
+    app = create_app()
+    with app.test_client() as c:
+        r = c.get("/api/auth/config")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["wc_configured"] is True
+        assert body["wc_project_id"] == "abc123def456"
+    dash_config.reset_settings_for_tests()
+
+
+def test_api_auth_challenge_forwards_to_oracle(client, monkeypatch):
+    """POST /api/auth/challenge round-trips through the oracle proxy."""
+    import requests
+    class FakeResp:
+        status_code = 200
+        def json(self): return {"nonce": "deadbeef", "expires_at": 1, "message": "x"}
+    def fake_post(url, timeout, **kw):
+        assert url.endswith("/auth/challenge"), url
+        return FakeResp()
+    monkeypatch.setattr(requests, "post", fake_post)
+    r = client.post("/api/auth/challenge")
+    assert r.status_code == 200
+    assert r.get_json()["nonce"] == "deadbeef"
+
+
+def test_api_auth_verify_forwards_body(client, monkeypatch):
+    """POST /api/auth/verify proxies the signed-challenge payload."""
+    import requests
+    captured = {}
+    class FakeResp:
+        status_code = 200
+        def json(self): return {"session_token": "T", "address": "xch1...", "expires_at": 1}
+    def fake_post(url, json=None, timeout=None, **kw):
+        captured["url"] = url
+        captured["body"] = json
+        return FakeResp()
+    monkeypatch.setattr(requests, "post", fake_post)
+    r = client.post(
+        "/api/auth/verify",
+        json={"address": "xch1abc", "public_key": "ab"*48,
+              "signature": "00"*96, "nonce": "deadbeef"},
+    )
+    assert r.status_code == 200
+    assert captured["url"].endswith("/auth/verify")
+    assert captured["body"]["nonce"] == "deadbeef"
+
+
+def test_base_template_includes_connect_slot(client):
+    """The Connect Wallet area must be wired into base.html so every
+    page picks it up via the script tag."""
+    r = client.get("/")
+    html = r.get_data(as_text=True)
+    assert 'id="connect-slot"' in html
+    assert "connect.js" in html

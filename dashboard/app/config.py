@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # Set ORCHARD_VIEW_PUBLIC_MODE=1 (or =true) to enable.
     public_mode: bool = False
 
+    # Phase 6.6 WalletConnect (browser side).
+    # ORCHARD_VIEW_WC_PROJECT_ID is your free Project ID from
+    # https://cloud.walletconnect.com — required for the Connect
+    # Wallet button to actually talk to Sage / Goby. Without it the
+    # button renders a friendly "WalletConnect not configured" state
+    # so the dashboard still works.
+    wc_project_id: str = ""
+
     model_config = SettingsConfigDict(
         env_prefix="ORCHARD_VIEW_",
         env_file=str(_ENV_PATH),

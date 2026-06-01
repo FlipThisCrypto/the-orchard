@@ -38,6 +38,65 @@ def _private(fn):
     return wrapper
 
 
+# ---------------------------------------------------------------- auth ----
+#
+# Phase 6.6. The dashboard's browser proxies the WalletConnect signed
+# challenge to the oracle. The browser never talks to the oracle URL
+# directly — keeps the same-origin posture and means we don't need
+# CORS on the oracle. The Authorization: Bearer <session_token> is
+# carried by all downstream /api/oracle/* requests after auth.
+
+@bp.post("/auth/challenge")
+def auth_challenge():
+    """Forward to oracle /auth/challenge to get a single-use nonce."""
+    import requests
+    try:
+        r = requests.post(
+            f"{settings().oracle_url.rstrip('/')}/auth/challenge",
+            timeout=5,
+        )
+    except requests.RequestException as e:
+        return _err(f"oracle unreachable: {e}", code=502)
+    return jsonify(r.json()), r.status_code
+
+
+@bp.post("/auth/verify")
+def auth_verify():
+    """Forward signed-challenge payload to oracle /auth/verify."""
+    import requests
+    body = request.get_json(silent=True) or {}
+    try:
+        r = requests.post(
+            f"{settings().oracle_url.rstrip('/')}/auth/verify",
+            json=body, timeout=5,
+        )
+    except requests.RequestException as e:
+        return _err(f"oracle unreachable: {e}", code=502)
+    return jsonify(r.json()), r.status_code
+
+
+@bp.get("/auth/config")
+def auth_config():
+    """What the browser needs to bootstrap WalletConnect.
+
+    Operators set ORCHARD_VIEW_WC_PROJECT_ID in dashboard/.env. We
+    expose just the project_id and a tiny metadata blob; everything
+    else (chain id, method names) is hardcoded into the JS because
+    CHIP-22 is the Chia spec.
+    """
+    return _ok({
+        "wc_project_id": settings().wc_project_id or "",
+        "wc_configured": bool(settings().wc_project_id),
+        "metadata": {
+            "name":        "Orchard View",
+            "description": "Operator dashboard for The Orchard (Chia DePIN)",
+            "url":         request.host_url.rstrip("/"),
+            "icons":       [request.host_url.rstrip("/") +
+                            "/static/img/icon.png"],
+        },
+    })
+
+
 # ---------------------------------------------------------------- oracle ----
 
 @bp.get("/oracle/status")
