@@ -374,13 +374,23 @@ def test_verify_pass_blocked_in_public_mode(public_client):
 
 # ---------------- Phase 6.6 connect ----------------
 
-def test_api_auth_config_default_returns_unconfigured(client):
-    r = client.get("/api/auth/config")
-    assert r.status_code == 200
-    body = r.get_json()
-    assert body["wc_configured"] is False
-    assert body["wc_project_id"] == ""
-    assert body["metadata"]["name"] == "Orchard View"
+def test_api_auth_config_default_returns_unconfigured(monkeypatch):
+    """Force an empty wc_project_id even if the operator's local
+    dashboard/.env has a real one set. Exercises the empty-default
+    branch deterministically."""
+    monkeypatch.setenv("ORCHARD_VIEW_WC_PROJECT_ID", "")
+    from dashboard.app import config as dash_config
+    dash_config.reset_settings_for_tests()
+    from dashboard.app.main import create_app
+    app = create_app()
+    with app.test_client() as c:
+        r = c.get("/api/auth/config")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["wc_configured"] is False
+        assert body["wc_project_id"] == ""
+        assert body["metadata"]["name"] == "Orchard View"
+    dash_config.reset_settings_for_tests()
 
 
 def test_api_auth_config_picks_up_env_project_id(monkeypatch):

@@ -166,15 +166,36 @@ const Orchard = (() => {
     // Wait for the wallet user to approve in their app.
     const session = await approval();
     wcSession = session;
+    console.log("[orchard.connect] session approved. namespaces:",
+                session.namespaces);
 
-    // The wallet might return one or more accounts. Take the first
-    // chia:mainnet account.
+    // CAIP-10 format is "<chain>:<reference>:<account>". For Chia:
+    // "chia:mainnet:xch1...". Split and take the LAST segment so we
+    // tolerate wallets that include extra prefix segments.
+    //
+    // Some wallets return the address as a hex puzzle hash, a CAIP-2
+    // account id without the bech32 prefix, or with extra :-separated
+    // metadata. If we can't find a clean xch1 address here, surface
+    // exactly what the wallet returned so we can fix the parser.
     const accounts = session.namespaces.chia?.accounts || [];
     if (accounts.length === 0) {
       throw new Error("Wallet did not return any Chia accounts");
     }
-    // Format is "chia:mainnet:xch1...".
-    const address = accounts[0].split(":").slice(-1)[0];
+    let address = accounts[0].split(":").slice(-1)[0];
+    console.log("[orchard.connect] candidate account from session:",
+                accounts[0], "-> address:", address);
+
+    // Defensive: if the wallet returned something that doesn't look
+    // like an xch1 bech32 (e.g., a 32-byte hex puzzle hash, or an
+    // empty string, or missing the xch1 prefix), fail loud with the
+    // raw value so we can see what shape to support.
+    if (!/^xch1[0-9a-z]{50,80}$/.test(address)) {
+      throw new Error(
+        `Wallet returned an unexpected account format: ${JSON.stringify(accounts)}. ` +
+        `Expected "chia:mainnet:xch1...". Open the browser console and ` +
+        `share what's printed under "[orchard.connect] session approved."`
+      );
+    }
 
     // Get a challenge from the oracle.
     const ch = await jpost("/api/auth/challenge", {});
@@ -183,17 +204,35 @@ const Orchard = (() => {
     const message = ch.body.message;
 
     // Ask the wallet to sign the message.
-    const signResult = await client.request({
-      topic:   session.topic,
-      chainId: "chia:mainnet",
-      request: {
-        method: "chia_signMessageByAddress",
-        params: { address, message },
-      },
-    });
+    console.log("[orchard.connect] requesting signature for address:",
+                address);
+    let signResult;
+    try {
+      signResult = await client.request({
+        topic:   session.topic,
+        chainId: "chia:mainnet",
+        request: {
+          method: "chia_signMessageByAddress",
+          params: { address, message },
+        },
+      });
+    } catch (e) {
+      // Most useful failure mode to surface — wallet may have rejected
+      // because it doesn't recognize the address format we sent.
+      console.error("[orchard.connect] wallet rejected sign request:", e);
+      throw new Error(
+        `Wallet refused to sign: ${e?.message || e}. ` +
+        `Check the browser console for the candidate account format.`);
+    }
+    console.log("[orchard.connect] sign result:", signResult);
     // CHIP-22 returns { publicKey, signature } (hex strings).
     const publicKey = signResult.publicKey || signResult.public_key;
     const signature = signResult.signature;
+    if (!publicKey || !signature) {
+      throw new Error(
+        `Wallet returned an unexpected sign response shape: ` +
+        `${JSON.stringify(signResult)}. Expected {publicKey, signature}.`);
+    }
 
     // Verify with the oracle.
     const ver = await jpost("/api/auth/verify", {
