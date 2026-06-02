@@ -169,13 +169,26 @@ const Orchard = (() => {
   async function connect() {
     const { signClient: client, wcModal: modal } = await ensureClients();
 
-    // Request a Chia mainnet session with the signMessageByAddress
-    // permission only — least privilege, no spend capability.
+    // Request a Chia mainnet session with two methods:
+    //   chia_getCurrentAddress     — fetch the operator's current xch1
+    //                                receive address from the wallet
+    //                                (per CHIP-22, the account in the
+    //                                CAIP-10 identifier is the wallet's
+    //                                master-key fingerprint, not a
+    //                                specific address; the wallet
+    //                                derives many addresses from one
+    //                                master key)
+    //   chia_signMessageByAddress  — sign the challenge with that
+    //                                specific address
+    // No spend capability requested — least privilege.
     const { uri, approval } = await client.connect({
       requiredNamespaces: {
         chia: {
           chains:  ["chia:mainnet"],
-          methods: ["chia_signMessageByAddress"],
+          methods: [
+            "chia_getCurrentAddress",
+            "chia_signMessageByAddress",
+          ],
           events:  [],
         },
       },
@@ -204,33 +217,61 @@ const Orchard = (() => {
     console.log("[orchard.connect] session approved. namespaces:",
                 session.namespaces);
 
-    // CAIP-10 format is "<chain>:<reference>:<account>". For Chia:
-    // "chia:mainnet:xch1...". Split and take the LAST segment so we
-    // tolerate wallets that include extra prefix segments.
-    //
-    // Some wallets return the address as a hex puzzle hash, a CAIP-2
-    // account id without the bech32 prefix, or with extra :-separated
-    // metadata. If we can't find a clean xch1 address here, surface
-    // exactly what the wallet returned so we can fix the parser.
+    // CAIP-10 format per CHIP-22 is "chia:mainnet:<fingerprint>".
+    // The fingerprint identifies the wallet (master key); a wallet
+    // has many xch1 addresses derived from one master. We need a
+    // specific xch1 to bind to the Tree — get the operator's current
+    // receive address via chia_getCurrentAddress.
     const accounts = session.namespaces.chia?.accounts || [];
     if (accounts.length === 0) {
       throw new Error("Wallet did not return any Chia accounts");
     }
-    let address = accounts[0].split(":").slice(-1)[0];
-    console.log("[orchard.connect] candidate account from session:",
-                accounts[0], "-> address:", address);
-
-    // Defensive: if the wallet returned something that doesn't look
-    // like an xch1 bech32 (e.g., a 32-byte hex puzzle hash, or an
-    // empty string, or missing the xch1 prefix), fail loud with the
-    // raw value so we can see what shape to support.
-    if (!/^xch1[0-9a-z]{50,80}$/.test(address)) {
+    const fingerprintStr = accounts[0].split(":").slice(-1)[0];
+    const fingerprint = parseInt(fingerprintStr, 10);
+    if (!Number.isFinite(fingerprint)) {
       throw new Error(
         `Wallet returned an unexpected account format: ${JSON.stringify(accounts)}. ` +
-        `Expected "chia:mainnet:xch1...". Open the browser console and ` +
-        `share what's printed under "[orchard.connect] session approved."`
+        `Expected "chia:mainnet:<fingerprint>".`
       );
     }
+    console.log("[orchard.connect] wallet fingerprint:", fingerprint);
+
+    // Ask the wallet for the current XCH receive address. Sage/Goby
+    // both implement this; the operator may see a prompt the first
+    // time depending on their wallet's permission settings. walletId
+    // 1 is the standard XCH wallet for every Chia keychain.
+    console.log("[orchard.connect] requesting current address from wallet…");
+    let addressResult;
+    try {
+      addressResult = await client.request({
+        topic:   session.topic,
+        chainId: "chia:mainnet",
+        request: {
+          method: "chia_getCurrentAddress",
+          params: { fingerprint, walletId: 1 },
+        },
+      });
+    } catch (e) {
+      console.error("[orchard.connect] getCurrentAddress rejected:", e);
+      throw new Error(
+        `Wallet refused to share its address: ${e?.message || e}. ` +
+        `Check the wallet for a permission prompt you may have ` +
+        `dismissed, then retry.`);
+    }
+    console.log("[orchard.connect] getCurrentAddress result:", addressResult);
+
+    // Sage and Goby both return the address as a plain string; older
+    // implementations wrapped it in { address: "xch1..." }. Tolerate both.
+    let address = (typeof addressResult === "string")
+      ? addressResult
+      : (addressResult?.address || addressResult?.data?.address);
+    if (typeof address !== "string" ||
+        !/^xch1[0-9a-z]{50,80}$/.test(address)) {
+      throw new Error(
+        `Wallet returned an unexpected address shape: ${JSON.stringify(addressResult)}. ` +
+        `Expected an xch1... string.`);
+    }
+    console.log("[orchard.connect] address for signing:", address);
 
     // Get a challenge from the oracle.
     const ch = await jpost("/api/auth/challenge", {});
