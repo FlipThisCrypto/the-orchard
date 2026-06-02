@@ -4,6 +4,86 @@
 
 ---
 
+## 2026-06-02 — Marathon multi-board bring-up + handover
+
+A long session: Phase 9.0 completion, two S3 boards, two firmware
+regressions, a non-blocking WiFi refactor that introduced a power-
+cycle loop. Detailed handover doc is at `docs/HANDOVER_2026-06-02.md`.
+
+### What got shipped (in order)
+
+- **Phase 6.6 close** (`201321d`) — public-mode network stats card,
+  OPERATOR_QUICKSTART §10 rewrite, 4 unskipped scope tests, cross-tab
+  session via localStorage + `storage` event.
+- **Phase 9.0** (`18d6bb0`, `6c7ba5c`) — `HW_INFO` serial command on
+  the firmware, board + chip + sensor chips on the wizard's Step 1.
+  Per-board `ORCHARD_BOARD_HINT` define so each variant is
+  self-identifying.
+- **GPS thread fix** (`d532bd0` → `432ac62` → `7552004`) — eventually
+  reverted the 0.3.0 auto-baud probe back to the 0.1.0 single-begin
+  path because the probe's 6-cycle end/begin churn left UART1 in a
+  degraded state on the WROOM-32U. Auto-baud is now opt-in via
+  `-D ORCHARD_GPS_AUTOBAUD=1` for HiLetgo-style clones.
+- **S3 bring-up** (`c3a1b70`, `fd67c73`, `48f6d86`) — added the
+  `freenove_esp32s3_uart` env for boards with external CH343 UART
+  bridges (vs. native USB CDC), overrode MQ-135 to GPIO 7 (ADC1_CH6
+  on S3), and overrode I²C SCL + DS18B20 to S3-valid pins (GPIO 22
+  and 25 aren't broken out on the S3 module).
+- **Serial console responsiveness** (`8b4e0fe` → `90fb0e5` →
+  `5c7ddc3` → `f56b2d9`) — every serial command must ack within
+  ~50ms; blocking commands like WIFI_SET were starving the dashboard
+  wizard's 3s timeout. Converted to an async state machine. Then
+  found that aggressive `WiFi.status()` polling plus the DS18B20
+  read at boot was contention-causing a power-cycle loop on the S3.
+
+### Lessons logged (for future me)
+
+1. **The 0.3.0 GPS auto-baud probe was the regression, not the
+   framework.** I burned 30 minutes pinning espressif32 to 6.7.0
+   before discovering my own probe was the cause. The fix was in
+   the 0.3.0 commit message itself — operator caught it: *"Look at
+   the repo or the notes or whatever to find the fix."*
+2. **Blocking serial command handlers are a footgun.** Anything that
+   takes longer than ~50ms in dispatch_() — WiFi connect, DS18B20
+   conversion, network POSTs — must ack OK immediately and do the
+   slow work via a main-loop state machine. The dashboard's serial
+   timeout is 3s by default and operators don't know that.
+3. **Non-blocking ≠ free.** Switching from blocking `delay(250)`
+   spins to `delay(10)` main-loop ticks means everything runs 25×
+   more often. WiFi.status() polled 100×/sec can starve the WiFi
+   internal task. Throttling status polls to 250ms (matching the
+   old spin cadence) is the fix.
+4. **DS18B20 reads block for ~750ms (12-bit conversion).** That
+   blocking window overlapping a WiFi connect handshake at boot is
+   what triggered the S3 power-cycle loop in 0.4.5. Fixed in 0.4.6
+   by gating the sample tick on `wifi_connected()`.
+
+### Two S3 boards, two stories
+
+- **COM11** — flashed 0.4.3 originally, no serial output because
+  `ARDUINO_USB_CDC_ON_BOOT=1` was routing Arduino's `Serial` to
+  native USB instead of the CH343 bridge on UART0. Fixed the env
+  but never reflashed COM11 — moved to COM12. Still on broken fw.
+- **COM12** — went through 0.4.3 → 0.4.4 → 0.4.5 → 0.4.6 over
+  several reflashes. Provisioned successfully through the wizard
+  (the FlipThisOrchard label + node_id D8F89B9E…). After 0.4.5 the
+  chip started power-cycling at ~12s after each boot — not enough
+  time to connect WiFi. 0.4.6 contains the fix but the upload was
+  blocked by an operator's open monitor at session end; **fix is
+  unverified on hardware as of handover.**
+
+### Handover state
+
+- Repo: `origin/main` at `f56b2d9`.
+- Tests: 82 pass / 0 skipped.
+- Live Trees: 1 healthy (WROOM 5B9BB022…, fw 0.4.0 — should be
+  reflashed to 0.4.6 for GPS), 1 in limbo (FlipThisOrchard
+  D8F89B9E… on 0.4.6, power-cycling pending verification of the
+  fix), 1 stale (98EA8567… on 0.4.0).
+- See `docs/HANDOVER_2026-06-02.md` for the full snapshot.
+
+---
+
 ## 2026-06-01 — GPS regression after 0.4.x rebuild (and lesson)
 
 ### What happened
