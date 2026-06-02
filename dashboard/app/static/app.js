@@ -156,12 +156,45 @@ const OrchardView = (() => {
     // Tree over USB) — esc() guards against a malicious Tree firmware
     // that puts HTML/JS into its identity fields.
     const sk = r.body.signing_key_hex || '';
-    out.innerHTML =
-      makeField('node_id',     r.body.node_id, {mono: true}) +
-      makeField('signing_key', sk ? `${sk.slice(0, 16)}…` : '—', {mono: true}) +
-      makeField('fw',          r.body.status?.fw) +
-      makeField('wifi',        r.body.status?.wifi) +
-      makeField('oracle url',  r.body.status?.oracle || '(unset)');
+    const hw = r.body.hw_info;   // Phase 9.0: nullable for fw <0.4.0
+
+    // Build the identify card. Board + sensor list come from HW_INFO
+    // when the firmware is 9.0-aware; we keep the legacy fields
+    // (node_id/signing_key/fw/wifi/oracle url) regardless so the card
+    // is informative even on older firmware that returns hw_info=null.
+    const parts = [];
+    parts.push(makeField('node_id',     r.body.node_id, {mono: true}));
+    parts.push(makeField('signing_key', sk ? `${sk.slice(0, 16)}…` : '—', {mono: true}));
+    parts.push(makeField('fw',          r.body.status?.fw));
+    if (hw && hw.board) {
+      parts.push(makeField('board', hw.board));
+    }
+    if (hw && hw.chip) {
+      parts.push(makeField('chip', hw.chip));
+    }
+    parts.push(makeField('wifi',        r.body.status?.wifi));
+    parts.push(makeField('oracle url',  r.body.status?.oracle || '(unset)'));
+
+    // Sensor chips. For each registered sensor on the Tree we render
+    // a small badge: ✓ green = detected on bus, ⊘ grey = compiled-in
+    // but not present (probe failed). Operator can immediately see
+    // wiring issues like "I have a BME280 but the firmware says ⊘
+    // bme280" — means the wires are wrong or the address is unusual.
+    if (hw && Array.isArray(hw.sensors) && hw.sensors.length) {
+      const chips = hw.sensors.map(s => {
+        const cls  = s.active ? 'ok' : 'muted';
+        const mark = s.active ? '✓' : '⊘';
+        const addr = (s.bus === 'i2c' && typeof s.addr === 'number')
+          ? ` <span class="muted">0x${s.addr.toString(16).padStart(2,'0')}</span>` : '';
+        return `<span class="sensor-chip ${cls}">${mark} ${esc(s.name)}${addr}</span>`;
+      }).join(' ');
+      parts.push(
+        `<div class="field"><div class="k">sensors</div>` +
+        `<div class="v">${chips}</div></div>`
+      );
+    }
+
+    out.innerHTML = parts.join('');
     // Advance to the Pass verification step. Step 3 stays hidden until
     // step 2 resolves one way or the other.
     $('#step-pass').hidden = false;

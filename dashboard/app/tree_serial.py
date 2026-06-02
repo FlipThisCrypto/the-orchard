@@ -124,6 +124,41 @@ def get_status(port: str) -> dict:
         raise TreeError(f"STATUS payload not JSON: {payload!r} ({e})") from e
 
 
+def get_hw_info(port: str) -> dict | None:
+    """Phase 9.0 — board + sensor fingerprint, or None for legacy fw.
+
+    Older firmware (<0.4.0) responds with ``ERR unknown`` to HW_INFO;
+    we map that to None rather than raising, so the wizard can fall
+    back to the pre-9.0 identify card without erroring out. Any OTHER
+    failure (timeout, malformed JSON, etc.) still raises, because
+    those are real problems the operator should see.
+
+    Returned dict shape mirrors firmware/src/net/serial_console.cpp
+    cmd_hw_info_:
+        {
+          "fw":      "0.4.0",
+          "chip":    "ESP32-S3" | "ESP32-D0WD-V3" | ...,
+          "board":   "wroom32u" | "freenove-s3" | "generic" | ...,
+          "node_id": "<32 hex>",
+          "sensors": [
+            {"name": "bme280", "bus": "i2c",    "addr": 118, "active": true},
+            {"name": "mq135",  "bus": "analog",              "active": true},
+            ...
+          ],
+        }
+    """
+    line = _send_and_read_line(port, "HW_INFO")
+    if line.startswith("ERR unknown"):
+        return None
+    if not line.startswith("OK "):
+        raise TreeError(f"HW_INFO: {line}")
+    payload = line[3:].strip()
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError as e:
+        raise TreeError(f"HW_INFO payload not JSON: {payload!r} ({e})") from e
+
+
 def set_wifi(port: str, ssid: str, password: str) -> None:
     if " " in ssid:
         # The simple v1 command parser splits on the first space; SSIDs

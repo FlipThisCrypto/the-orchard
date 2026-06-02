@@ -207,7 +207,13 @@ def serial_ports():
 @bp.post("/serial/identify")
 @_private
 def serial_identify():
-    """Talk to a Tree, return its identity. Run after the user picks a port."""
+    """Talk to a Tree, return its identity. Run after the user picks a port.
+
+    Phase 9.0: also pulls the optional hardware fingerprint via
+    HW_INFO. None when the connected Tree runs firmware <0.4.0 (or
+    forgets to register the HW_INFO command). The wizard falls back
+    to its pre-9.0 identify card in that case.
+    """
     body = request.get_json(silent=True) or {}
     port = body.get("port")
     if not port:
@@ -218,10 +224,12 @@ def serial_identify():
         node_id = tree_serial.get_node_id(port)
         signing_key = tree_serial.get_signing_key(port)
         status = tree_serial.get_status(port)
+        hw_info = tree_serial.get_hw_info(port)
         return _ok({
             "node_id": node_id,
             "signing_key_hex": signing_key,
             "status": status,
+            "hw_info": hw_info,
         })
     except tree_serial.TreeError as e:
         return _err(str(e), code=502)

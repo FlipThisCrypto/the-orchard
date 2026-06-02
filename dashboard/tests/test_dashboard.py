@@ -107,15 +107,89 @@ def test_api_serial_identify_missing_port(client):
 
 
 def test_api_serial_identify_happy(client, monkeypatch):
+    """Legacy firmware (<0.4.0): get_hw_info returns None. The route
+    must still return 200 with hw_info=null — graceful fallback."""
     monkeypatch.setattr(tree_serial, "ping", lambda port: True)
     monkeypatch.setattr(tree_serial, "get_node_id", lambda port: "5B9BB022649FA93D4091DA4BA40714B9")
     monkeypatch.setattr(tree_serial, "get_signing_key", lambda port: "AA" * 32)
     monkeypatch.setattr(tree_serial, "get_status", lambda port: {"fw": "0.1.0", "wifi": "unconfigured", "oracle": ""})
+    monkeypatch.setattr(tree_serial, "get_hw_info", lambda port: None)
     r = client.post("/api/serial/identify", json={"port": "COM4"})
     assert r.status_code == 200
     body = r.get_json()
     assert body["node_id"] == "5B9BB022649FA93D4091DA4BA40714B9"
     assert body["status"]["fw"] == "0.1.0"
+    assert body["hw_info"] is None
+
+
+def test_api_serial_identify_includes_hw_info_when_present(client, monkeypatch):
+    """Phase 9.0: when the Tree runs firmware 0.4.0+, /api/serial/identify
+    surfaces the full board + sensor fingerprint to the wizard. The
+    wizard renders this as the new "board" / "chip" / sensor-chip
+    fields under the identify card."""
+    hw_payload = {
+        "fw": "0.4.0",
+        "chip": "ESP32-S3",
+        "board": "freenove-s3",
+        "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+        "sensors": [
+            {"name": "bme280", "bus": "i2c",    "addr": 0x76, "active": True},
+            {"name": "mq135",  "bus": "analog",                "active": True},
+            {"name": "gps",    "bus": "uart",                  "active": False},
+        ],
+    }
+    monkeypatch.setattr(tree_serial, "ping", lambda port: True)
+    monkeypatch.setattr(tree_serial, "get_node_id", lambda port: hw_payload["node_id"])
+    monkeypatch.setattr(tree_serial, "get_signing_key", lambda port: "AA" * 32)
+    monkeypatch.setattr(tree_serial, "get_status",
+                        lambda port: {"fw": "0.4.0", "wifi": "connected", "oracle": ""})
+    monkeypatch.setattr(tree_serial, "get_hw_info", lambda port: dict(hw_payload))
+    r = client.post("/api/serial/identify", json={"port": "COM4"})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["hw_info"]["board"] == "freenove-s3"
+    assert body["hw_info"]["chip"]  == "ESP32-S3"
+    assert len(body["hw_info"]["sensors"]) == 3
+    bme = next(s for s in body["hw_info"]["sensors"] if s["name"] == "bme280")
+    assert bme["active"] is True
+    assert bme["addr"]   == 0x76
+
+
+def test_get_hw_info_returns_none_on_legacy_firmware(monkeypatch):
+    """Direct test of the tree_serial helper: a Tree running pre-0.4.0
+    firmware responds with 'ERR unknown' to HW_INFO. The helper must
+    map that to None (NOT raise) so the wizard's identify flow keeps
+    working against the field of existing already-deployed Trees."""
+    monkeypatch.setattr(tree_serial, "_send_and_read_line",
+                        lambda port, cmd: "ERR unknown")
+    assert tree_serial.get_hw_info("COM4") is None
+
+
+def test_get_hw_info_parses_json_on_modern_firmware(monkeypatch):
+    """Direct test of the tree_serial helper: 0.4.0+ firmware emits
+    `OK {json}` and the helper returns the parsed dict."""
+    import json as _json
+    sample = {
+        "fw": "0.4.0", "chip": "ESP32-S3", "board": "freenove-s3",
+        "node_id": "AB" * 16,
+        "sensors": [{"name": "bme280", "bus": "i2c", "addr": 118, "active": True}],
+    }
+    monkeypatch.setattr(tree_serial, "_send_and_read_line",
+                        lambda port, cmd: "OK " + _json.dumps(sample))
+    out = tree_serial.get_hw_info("COM4")
+    assert out is not None
+    assert out["board"] == "freenove-s3"
+    assert out["sensors"][0]["name"] == "bme280"
+
+
+def test_get_hw_info_raises_on_garbage_response(monkeypatch):
+    """A response that's neither 'ERR unknown' nor 'OK <valid json>' is
+    a real problem (corrupted serial line, firmware bug, etc.); we
+    surface it loudly instead of pretending it's a legacy fw response."""
+    monkeypatch.setattr(tree_serial, "_send_and_read_line",
+                        lambda port, cmd: "OK {garbage")
+    with pytest.raises(tree_serial.TreeError):
+        tree_serial.get_hw_info("COM4")
 
 
 def test_api_oracle_register_passthrough(client, monkeypatch):

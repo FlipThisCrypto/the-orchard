@@ -449,8 +449,11 @@ In the dashboard browser tab:
 7. Click **Identify Tree**. The page should show:
    - `node_id` — 32 hex characters, unique to your board.
    - `signing_key` — first 16 hex characters of the device's HMAC signing secret.
-   - `fw` — the firmware version (`0.3.0` or newer).
+   - `fw` — the firmware version (`0.3.0` or newer; `0.4.0+` enables the next two fields).
+   - `board` — Phase 9.0+: the board hint baked into the firmware build. `wroom32u` for the classic WROOM-32U enclosure, `freenove-s3` for the Freenove S3-DevKitC, or other variants in later Phase 9.x phases. Only shown on firmware 0.4.0+.
+   - `chip` — Phase 9.0+: the actual ESP chip family reported at runtime (`ESP32-S3`, `ESP32-D0WD-V3`, etc.). Should agree with the `board` value above; a mismatch means the firmware was built for the wrong target. Only shown on firmware 0.4.0+.
    - `wifi`, `oracle url` — both should currently be unset.
+   - `sensors` — Phase 9.0+: one chip per sensor compiled into the firmware. **Green ✓** means the sensor was probed and responded on its declared bus (BME280 ACK at 0x76/0x77, DS18B20 ROM enumerable, GPS UART seeing bytes). **Grey ⊘** means the sensor is supported but didn't respond — usually a wiring issue. Read this as an instant sanity-check that your wiring is correct before you bother provisioning. Only shown on firmware 0.4.0+; older firmware just shows the legacy fields above.
 8. **Verify your Orchard Pass.** Step 2 reads your connected wallet address from the session (no typing). Click **Verify Pass**. The dashboard queries the MintGarden indexer; if your wallet holds a Pass you'll see a green confirmation showing the bound NFT (e.g. *Orchard Pass #0001*) with a link to view it on MintGarden.
    - If the dashboard says "Connect your wallet first" here, your session expired or you connected in a different tab — repeat step 10a in this tab.
    - If you don't own a Pass yet, the verification fails and the wizard halts. Acquire one on MintGarden and re-run Verify Pass.

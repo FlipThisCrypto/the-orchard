@@ -356,6 +356,32 @@ details.raw summary:hover { color: var(--cyber); }
   100% { background-position: 200% 50%; }
 }
 
+/* ---- Sensor chips (Phase 9.0) ----------------------------------- */
+/* One per registered sensor on the Tree, rendered after Identify in
+   the Plant-a-Tree wizard. Green ✓ = active (probe found it on its
+   declared bus). Grey ⊘ = compiled in but not present. Operators
+   read these to spot wiring issues at a glance. */
+
+.sensor-chip {
+  display: inline-block;
+  padding: 3px 9px;
+  margin: 2px 4px 2px 0;
+  border-radius: 999px;
+  background: var(--bg-card-2);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.sensor-chip.ok {
+  border-color: var(--leaf);
+  color: var(--leaf);
+}
+.sensor-chip.muted {
+  color: var(--fg-muted);
+  opacity: 0.65;
+}
+
 /* ---- Public-mode network stats card ------------------------------ */
 /* Phase 6.6. Shown on the home page when ORCHARD_VIEW_PUBLIC_MODE is
    on. Four big-number tiles in a responsive grid — visitor lands and
