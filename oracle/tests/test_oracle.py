@@ -796,6 +796,68 @@ def test_verify_chia_signed_message_round_trip_through_real_bls():
     assert "BLS signature verification failed" in bad.reason
 
 
+# ---------------- Phase 6.6 #52: /network/stats ----------------
+
+def test_network_stats_empty_oracle_returns_zeros(client: TestClient):
+    """Fresh oracle with no Trees, readings, or attestations returns
+    a well-formed snapshot with zeros — not 500, not 404."""
+    r = client.get("/network/stats")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["trees_registered"] == 0
+    assert body["trees_active_24h"] == 0
+    assert body["readings_total"] == 0
+    assert body["readings_last_24h"] == 0
+    assert body["attestations_total"] == 0
+    assert isinstance(body["current_season"], int)
+    assert body["as_of_utc"].startswith("20")  # ISO timestamp
+
+
+def test_network_stats_counts_after_register_and_reading(client: TestClient):
+    """After a Tree registers + posts a reading, the stats reflect it."""
+    nid = "AB" * 16
+    skey = "11" * 32
+    rr = client.post("/register", json={"node_id": nid, "signing_key_hex": skey})
+    assert rr.status_code == 201
+
+    # Post one signed reading. Use the canonical X-Orchard-* headers
+    # the firmware uses.
+    body = json.dumps({"node_id": nid, "ts_ms": 1, "sensors": {}}).encode()
+    sig = hmac.new(bytes.fromhex(skey), body, sha256).hexdigest().upper()
+    pr = client.post("/readings", content=body,
+                     headers={"Content-Type": "application/json",
+                              "X-Orchard-Node": nid,
+                              "X-Orchard-Sig": sig})
+    assert pr.status_code == 202, pr.text
+
+    r = client.get("/network/stats")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["trees_registered"] == 1
+    assert body["trees_active_24h"] == 1
+    assert body["readings_total"] == 1
+    assert body["readings_last_24h"] == 1
+
+
+def test_network_stats_does_not_expose_per_tree_data(client: TestClient):
+    """Belt-and-braces: register a Tree with a wallet, then assert
+    that the wallet address never appears in /network/stats. This is
+    the privacy contract of the endpoint."""
+    addr = "xch1m3rvtj86wzzfjyk5mc7wzpr7h4zkaknm4wte7kg6afleu4f2tfxsr7nk3n"
+    nid = "CD" * 16
+    rr = client.post("/register", json={
+        "node_id": nid, "signing_key_hex": "22" * 32,
+        "wallet_address": addr,
+    })
+    # Pass check may 403 against a fake wallet; either way the
+    # subsequent stats call must NEVER include the address.
+    r = client.get("/network/stats")
+    assert r.status_code == 200
+    text = r.text
+    assert addr not in text
+    assert nid not in text
+
+
 # ---------------- Phase 6.6: /register hardening ----------------
 #
 # The new policy: /register requires Authorization: Bearer <token>
@@ -970,14 +1032,15 @@ def test_list_nodes_unauthenticated_returns_all(auth_client: TestClient):
     assert ids == {"AA" * 16, "BB" * 16}
 
 
-@pytest.mark.skip(reason="TODO: in-mem SQLite session pool plumbing — fixture wrestle, route logic verified manually")
-def test_list_nodes_authenticated_scoped_to_session_wallet(auth_client: TestClient):
+def test_list_nodes_authenticated_scoped_to_session_wallet(auth_client):
     """With a session bound to wallet X, /nodes returns only nodes
     whose wallet_address == X."""
-    from oracle.app import sessions
-    pk_hex, addr = _test_keypair()
+    import oracle.app.sessions as sm
+    from oracle.app import models
+    from sqlalchemy import update
 
-    # Two nodes — one owned by the session wallet, one by someone else.
+    _, addr = _test_keypair()
+
     auth_client.post("/register", json={
         "node_id": "AA" * 16, "signing_key_hex": "11" * 32,
     })
@@ -985,17 +1048,15 @@ def test_list_nodes_authenticated_scoped_to_session_wallet(auth_client: TestClie
         "node_id": "BB" * 16, "signing_key_hex": "22" * 32,
     })
 
-    # Bypass the wallet-auth flow for fixture simplicity — mint a
-    # token directly. Validates that scoping reads session.address.
-    import oracle.app.sessions as sm
+    # Mint a session directly — the wallet-verify flow is exercised
+    # in the dedicated /auth tests; here we just want to test scoping.
     token, _ = sm.issue(addr)
 
-    # Hand-set AA's wallet to addr, BB's wallet to something else.
-    from sqlalchemy import update
-    from oracle.app import models
-    from oracle.app.db import session_factory
-    Sess = session_factory()
-    with Sess() as s:
+    # Hand-set AA's wallet to addr, BB's wallet to someone else.
+    # Use the FIXTURE's sessionmaker so we hit the same in-memory
+    # engine the route's get_db dependency uses — `oracle.app.db.
+    # session_factory()` would build its own engine and miss the data.
+    with auth_client.Session() as s:
         s.execute(update(models.Node).where(
             models.Node.node_id == "AA" * 16).values(wallet_address=addr))
         s.execute(update(models.Node).where(
@@ -1009,24 +1070,21 @@ def test_list_nodes_authenticated_scoped_to_session_wallet(auth_client: TestClie
     assert ids == ["AA" * 16]
 
 
-@pytest.mark.skip(reason="TODO: in-mem SQLite session pool plumbing — fixture wrestle, route logic verified manually")
-def test_get_node_authed_wrong_owner_returns_404(auth_client: TestClient):
+def test_get_node_authed_wrong_owner_returns_404(auth_client):
     """A logged-in operator probing for someone else's node_id gets
     404, not 403 — don't leak existence."""
-    from oracle.app import sessions as sm
-    pk_hex, addr = _test_keypair()
+    import oracle.app.sessions as sm
+    from oracle.app import models
+    from sqlalchemy import update
+
+    _, addr = _test_keypair()
     token, _ = sm.issue(addr)
 
     auth_client.post("/register", json={
         "node_id": "CC" * 16, "signing_key_hex": "33" * 32,
     })
 
-    # Set CC to belong to someone else.
-    from sqlalchemy import update
-    from oracle.app import models
-    from oracle.app.db import session_factory
-    Sess = session_factory()
-    with Sess() as s:
+    with auth_client.Session() as s:
         s.execute(update(models.Node).where(
             models.Node.node_id == "CC" * 16).values(
                 wallet_address="xch1otherop00000000000000000000000000000000000000000000000lzckhk"))
@@ -1037,8 +1095,8 @@ def test_get_node_authed_wrong_owner_returns_404(auth_client: TestClient):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 404
-    # Without auth same id IS retrievable — confirms scoping is the
-    # only thing hiding it.
+    # Without auth, the same id IS retrievable — confirms scoping is
+    # the only thing hiding it (vs. the row being missing entirely).
     r2 = auth_client.get(f"/nodes/{'CC' * 16}")
     assert r2.status_code == 200
 
@@ -1051,26 +1109,23 @@ def test_delete_node_unauthenticated_returns_401(auth_client: TestClient):
     assert r.status_code == 401
 
 
-@pytest.mark.skip(reason="TODO: in-mem SQLite session pool plumbing — fixture wrestle, route logic verified manually")
-def test_delete_node_owner_succeeds_cascade(auth_client: TestClient):
+def test_delete_node_owner_succeeds_cascade(auth_client):
     """Owner-only DELETE removes the node + its child rows."""
-    from oracle.app import sessions as sm
-    pk_hex, addr = _test_keypair()
+    import oracle.app.sessions as sm
+    from oracle.app import models
+    from sqlalchemy import select, update
+
+    _, addr = _test_keypair()
     token, _ = sm.issue(addr)
 
     NID = "EE" * 16
     auth_client.post("/register", json={
         "node_id": NID, "signing_key_hex": "55" * 32,
     })
-    # Set ownership + add a child row.
-    from sqlalchemy import update
-    from oracle.app import models
-    from oracle.app.db import session_factory
-    Sess = session_factory()
-    with Sess() as s:
+    # Set ownership + add a child row through the fixture's engine.
+    with auth_client.Session() as s:
         s.execute(update(models.Node).where(
             models.Node.node_id == NID).values(wallet_address=addr))
-        from datetime import datetime, timezone
         s.add(models.Reading(
             node_id=NID, received_at=datetime.now(timezone.utc),
             payload_json="{}", sig_hex="00" * 32))
@@ -1084,18 +1139,19 @@ def test_delete_node_owner_succeeds_cascade(auth_client: TestClient):
 
     # Gone end-to-end.
     assert auth_client.get(f"/nodes/{NID}").status_code == 404
-    with Sess() as s:
-        from sqlalchemy import select
+    with auth_client.Session() as s:
         n_left = s.execute(
             select(models.Reading).where(models.Reading.node_id == NID)
         ).scalars().all()
         assert n_left == []
 
 
-@pytest.mark.skip(reason="TODO: in-mem SQLite session pool plumbing — fixture wrestle, route logic verified manually")
-def test_delete_node_non_owner_returns_404(auth_client: TestClient):
+def test_delete_node_non_owner_returns_404(auth_client):
     """Trying to delete someone else's node returns 404 (not 403)."""
-    from oracle.app import sessions as sm
+    import oracle.app.sessions as sm
+    from oracle.app import models
+    from sqlalchemy import update
+
     _, addr = _test_keypair()
     token, _ = sm.issue(addr)
 
@@ -1103,11 +1159,7 @@ def test_delete_node_non_owner_returns_404(auth_client: TestClient):
     auth_client.post("/register", json={
         "node_id": NID, "signing_key_hex": "66" * 32,
     })
-    from sqlalchemy import update
-    from oracle.app import models
-    from oracle.app.db import session_factory
-    Sess = session_factory()
-    with Sess() as s:
+    with auth_client.Session() as s:
         s.execute(update(models.Node).where(
             models.Node.node_id == NID).values(
                 wallet_address="xch1otherop00000000000000000000000000000000000000000000000lzckhk"))

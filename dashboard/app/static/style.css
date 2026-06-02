@@ -356,6 +356,43 @@ details.raw summary:hover { color: var(--cyber); }
   100% { background-position: 200% 50%; }
 }
 
+/* ---- Public-mode network stats card ------------------------------ */
+/* Phase 6.6. Shown on the home page when ORCHARD_VIEW_PUBLIC_MODE is
+   on. Four big-number tiles in a responsive grid — visitor lands and
+   immediately sees the network's pulse. */
+
+.network-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 18px;
+  margin-top: 12px;
+}
+.network-stats .stat {
+  background: var(--bg-card-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 16px;
+  text-align: center;
+}
+.network-stats .stat-value {
+  font-family: var(--mono);
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--citrus);
+  line-height: 1.1;
+  /* tabular-nums so numbers don't jump width as they grow */
+  font-variant-numeric: tabular-nums;
+}
+.network-stats .stat-label {
+  margin-top: 6px;
+  font-size: 14px;
+  color: var(--fg);
+}
+.network-stats .stat-sub {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
 /* ---- Small-screen tweaks ----------------------------------------- */
 
 @media (max-width: 640px) {
@@ -364,4 +401,8 @@ details.raw summary:hover { color: var(--cyber); }
   main { padding: 0 12px; margin: 14px auto; }
   h1 { font-size: 22px; }
   .hero { border-radius: 10px; }
+
+  .network-stats { gap: 12px; }
+  .network-stats .stat { padding: 14px 12px; }
+  .network-stats .stat-value { font-size: 28px; }
 }

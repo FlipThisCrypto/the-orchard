@@ -44,7 +44,13 @@ if (typeof WebSocket !== "undefined" && !WebSocket.prototype.terminate) {
 
 const Orchard = (() => {
 
-  // sessionStorage key. Survives tab reloads but not new windows.
+  // localStorage key. Shared across all tabs of the same origin so
+  // connecting in one tab updates the others (the per-tab
+  // sessionStorage we used first broke the wizard when operators
+  // had the Plant-a-Tree page open in a separate tab from where
+  // they clicked Connect Wallet). Security boundary is enforced by
+  // the JWT's exp claim + the oracle's expiry check, not by
+  // storage lifetime.
   const TOKEN_KEY = "orchard.session";
 
   // Loaded once.
@@ -54,28 +60,29 @@ const Orchard = (() => {
   let wcSession  = null;     // the active WC session (post-approve)
 
   // Cached so other modules can ask "am I logged in" without
-  // re-parsing sessionStorage every call.
+  // re-parsing localStorage every call. Refreshed on every
+  // write/clear here, and on cross-tab `storage` events below.
   let memoSession = readSession();
 
   // -------------------------- helpers --------------------------------
 
   function readSession() {
     try {
-      const raw = sessionStorage.getItem(TOKEN_KEY);
+      const raw = localStorage.getItem(TOKEN_KEY);
       if (!raw) return null;
       const j = JSON.parse(raw);
       if (!j || !j.token || !j.expires_at) return null;
       // Drop if expired client-side too — the oracle would 401 anyway,
       // but we avoid attaching a stale token to every API call.
       if (j.expires_at * 1000 < Date.now()) {
-        sessionStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(TOKEN_KEY);
         return null;
       }
       return j;
     } catch { return null; }
   }
   function writeSession(j) {
-    sessionStorage.setItem(TOKEN_KEY, JSON.stringify(j));
+    localStorage.setItem(TOKEN_KEY, JSON.stringify(j));
     memoSession = j;
     renderConnectArea();
     // Other pages (e.g. the Plant-a-Tree wizard's wallet-status
@@ -85,12 +92,25 @@ const Orchard = (() => {
     window.dispatchEvent(new CustomEvent("orchard:session", { detail: j }));
   }
   function clearSession() {
-    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
     memoSession = null;
     renderConnectArea();
     window.dispatchEvent(new CustomEvent("orchard:session", { detail: null }));
   }
   function getSession() { return memoSession; }
+
+  // Cross-tab sync: the browser fires a `storage` event on every
+  // OTHER tab of the same origin when localStorage changes. (The
+  // writing tab doesn't get it — that's why writeSession/clearSession
+  // dispatch the orchard:session CustomEvent locally too.) Without
+  // this listener, connecting in tab A would leave tab B's nav and
+  // any wizard panel stuck on "Connect Wallet" until manual reload.
+  window.addEventListener("storage", (e) => {
+    if (e.key !== TOKEN_KEY) return;
+    memoSession = readSession();
+    renderConnectArea();
+    window.dispatchEvent(new CustomEvent("orchard:session", { detail: memoSession }));
+  });
 
   function shorten(addr) {
     if (!addr) return "";

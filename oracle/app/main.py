@@ -16,7 +16,7 @@ from fastapi import FastAPI
 
 from . import db
 from .config import settings
-from .routes import attestations, auth, health, nodes, readings, register, uptime
+from .routes import attestations, auth, health, network, nodes, readings, register, uptime
 
 
 @asynccontextmanager
@@ -43,6 +43,7 @@ app.include_router(readings.router)
 app.include_router(nodes.router)
 app.include_router(uptime.router)
 app.include_router(attestations.router)
+app.include_router(network.router)
 
 
 def main() -> None:

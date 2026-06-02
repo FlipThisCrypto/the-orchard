@@ -22,6 +22,43 @@
   {% endif %}
 </section>
 
+{% if public_mode %}
+<section class="card">
+  <h2>The Network</h2>
+  {% if stats %}
+    <div class="network-stats">
+      <div class="stat">
+        <div class="stat-value">{{ stats.trees_active_24h }}</div>
+        <div class="stat-label">Trees online <span class="muted">(24h)</span></div>
+        <div class="stat-sub muted">{{ stats.trees_registered }} ever registered</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">{{ '{:,}'.format(stats.readings_last_24h) }}</div>
+        <div class="stat-label">Readings <span class="muted">(24h)</span></div>
+        <div class="stat-sub muted">{{ '{:,}'.format(stats.readings_total) }} all-time</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">{{ stats.attestations_total }}</div>
+        <div class="stat-label">Attestations on chain</div>
+        <div class="stat-sub muted">via Chia DataLayer</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">{{ stats.current_season }}</div>
+        <div class="stat-label">Current Season</div>
+        <div class="stat-sub muted">~24h per Season</div>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:14px">
+      The Orchard is an open-source environmental DePIN on Chia.
+      Operators run a Tree, sign sensor readings, and earn $JUICE for uptime.
+      Want to plant your own?
+      <a href="https://github.com/FlipThisCrypto/the-orchard" target="_blank" rel="noopener">Get started on GitHub →</a>
+    </p>
+  {% else %}
+    <p class="muted">Network stats unavailable right now.</p>
+  {% endif %}
+</section>
+{% else %}
 <section>
   <h2>Registered Trees</h2>
   {% if nodes %}
@@ -46,5 +83,6 @@
     <p><a class="btn primary" href="{{ url_for('provision.provision_page') }}">Plant your first Tree →</a></p>
   {% endif %}
 </section>
+{% endif %}
 
 {% endblock %}

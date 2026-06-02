@@ -131,3 +131,16 @@ def list_attestations(node_id: str, limit: int = 50) -> list[dict]:
         raise OracleError(
             f"GET /attestations/{node_id} -> {r.status_code}: {r.text}")
     return r.json() or []
+
+
+def network_stats() -> dict:
+    """Phase 6.6 — aggregate network stats for the public-mode home
+    card. Returns the parsed JSON dict from the oracle's
+    /network/stats endpoint."""
+    try:
+        r = requests.get(_url("/network/stats"), timeout=5)
+    except requests.RequestException as e:
+        raise OracleError(f"GET /network/stats unreachable: {e}") from e
+    if r.status_code != 200:
+        raise OracleError(f"GET /network/stats -> {r.status_code}: {r.text}")
+    return r.json()

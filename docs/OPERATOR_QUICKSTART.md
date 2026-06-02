@@ -421,26 +421,45 @@ Open `http://127.0.0.1:5000/` in your browser. You should see the Orchard View h
 
 ## 10. Plant your Tree
 
+You'll need a **Chia wallet that holds at least one Orchard Pass NFT** and supports CHIP-22 WalletConnect. **Sage** and **Goby** are confirmed working; the official Chia reference wallet is on the roadmap. Don't have a Pass yet? Acquire one on [MintGarden](https://mintgarden.io/collections/col1a56lp9zufakywlq4k5nntu3nd7k6jy2pe6ee23046ydlahmungqslvmj29) and come back.
+
 In the dashboard browser tab:
 
-1. Click **Plant a Tree** in the top nav.
-2. **Pick the COM port** your Tree is on. Click **Refresh ports** if it isn't listed.
-3. Click **Identify Tree**. The page should show:
+### 10a. Connect your wallet
+
+1. Click **Connect Wallet** in the top-right nav. The official WalletConnect modal opens.
+2. Pick **Sage** (or scan the QR with your mobile wallet). Approve the session in the wallet — the requested permissions are *get address* and *sign message by address*. No spend authority is requested. Ever.
+3. Your wallet pops a sign prompt showing the literal text:
+
+   ```
+   Sign in to Orchard View.
+
+   Challenge nonce: <random 64-hex string>
+   If you didn't initiate this, decline.
+   ```
+
+   Approve. Behind the scenes, the wallet wraps that text in the CHIP-22 cons cell `("Chia Signed Message" . message_bytes)` and BLS-signs the tree hash. The oracle verifies both that the signature is valid AND that the pubkey derives to your claimed `xch1…` address — without the second check, an attacker could submit their own signature under someone else's address and pass.
+
+4. The nav flips to **Connected as xch1kdzq…e3j04** with a Disconnect button. You now have a session token (HS256 JWT, 1-hour TTL by default — set `ORCHARD_ORACLE_SESSION_TTL_SECONDS` in `oracle/.env` to change).
+
+### 10b. Plant the Tree
+
+5. Click **Plant a Tree** in the top nav.
+6. **Pick the COM port** your Tree is on. Click **Refresh ports** if it isn't listed.
+7. Click **Identify Tree**. The page should show:
    - `node_id` — 32 hex characters, unique to your board.
    - `signing_key` — first 16 hex characters of the device's HMAC signing secret.
    - `fw` — the firmware version (`0.3.0` or newer).
    - `wifi`, `oracle url` — both should currently be unset.
-4. **Verify your Orchard Pass** (Phase 6.5+):
-   - An **Orchard Pass** is the on-chain NFT credential **required** to operate a Tree on this network. Paste the `xch1…` wallet address that holds your Pass.
-   - Click **Verify Pass**. The dashboard queries the MintGarden indexer; if the wallet holds a Pass you'll see a green confirmation showing the bound NFT (e.g. *Orchard Pass #0001*) and a link to view it on MintGarden.
-   - If you don't own a Pass yet: click the **MintGarden** link to acquire one, then return and re-run Verify Pass. Pass ownership is mandatory — there is no skip path.
-   - **Phase 6.6 (coming next):** the wallet-address paste is being replaced with **Connect Wallet** via WalletConnect (Sage + Goby first), so the bound address is cryptographically yours — not just a claim. Until then, treat the current paste flow as a placeholder for trusted operators only.
-5. Fill in the configuration step:
+8. **Verify your Orchard Pass.** Step 2 reads your connected wallet address from the session (no typing). Click **Verify Pass**. The dashboard queries the MintGarden indexer; if your wallet holds a Pass you'll see a green confirmation showing the bound NFT (e.g. *Orchard Pass #0001*) with a link to view it on MintGarden.
+   - If the dashboard says "Connect your wallet first" here, your session expired or you connected in a different tab — repeat step 10a in this tab.
+   - If you don't own a Pass yet, the verification fails and the wizard halts. Acquire one on MintGarden and re-run Verify Pass.
+9. Fill in the configuration step:
    - **Label** — a friendly name (optional). E.g. `backyard-1`.
    - **WiFi SSID** — your home WiFi name.
    - **WiFi password** — your home WiFi password.
    - **Oracle URL** — what the Tree should POST to. If you went with **Option B** in step 8, this should be `http://192.168.1.42:8000/readings` (your PC's LAN IP). If Option A, the Tree won't be able to reach the Oracle and we'll cover the workaround in troubleshooting.
-6. Click **Provision Tree**.
+10. Click **Provision Tree**. The browser sends the registration request with `Authorization: Bearer <your_session_token>`; the oracle uses your session's verified address as the source of truth for the Tree's wallet binding. If you ever needed to script this against the oracle directly with `curl`, the same Bearer token must be attached or `/register` returns 401 (set `ORCHARD_ORACLE_REQUIRE_WALLET_SESSION=false` in `oracle/.env` only for legacy scripts during transition).
 
 The wizard runs four steps, each showing live status. If you bound a Pass, the first step shows the bound NFT id alongside:
 

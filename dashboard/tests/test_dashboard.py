@@ -256,6 +256,85 @@ def test_public_mode_oracle_status_still_works(public_client, monkeypatch):
     assert r.get_json()["oracle"]["current_season"] == 7
 
 
+# ----- public mode home-page pivot (Phase 6.6 #52) ------------------
+
+_FAKE_STATS = {
+    "trees_registered":   42,
+    "trees_active_24h":   17,
+    "readings_total":     123456,
+    "readings_last_24h":  4321,
+    "attestations_total": 8,
+    "current_season":     11,
+    "as_of_utc":          "2026-06-01T12:00:00+00:00",
+}
+
+
+def test_public_mode_home_renders_network_stats_card(public_client, monkeypatch):
+    """Public-mode home page must show the aggregate Network card,
+    NOT the per-Tree table. The card pulls from oracle /network/stats
+    via oracle_client.network_stats()."""
+    monkeypatch.setattr(oracle_client, "root",
+                        lambda: {"version": "0.1.0", "current_season": 11,
+                                 "now_utc": "2026-06-01T12:00:00+00:00"})
+    monkeypatch.setattr(oracle_client, "network_stats", lambda: dict(_FAKE_STATS))
+
+    # list_nodes MUST NOT be called in public mode — wire it to fail
+    # if anyone accidentally re-enables it. Catches a regression where
+    # the route would leak per-Tree info under the public surface.
+    def _no_list_nodes():
+        raise AssertionError("list_nodes called in public mode")
+    monkeypatch.setattr(oracle_client, "list_nodes", _no_list_nodes)
+
+    r = public_client.get("/")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "The Network" in body
+    assert "Trees online" in body
+    assert "Attestations on chain" in body
+    # Big numbers from the stats payload must surface.
+    assert "17" in body     # trees_active_24h
+    assert "4,321" in body  # readings_last_24h with thousands separator
+    # The per-Tree table heading must NOT appear in public mode.
+    assert "Registered Trees" not in body
+    assert "Plant your first Tree" not in body
+
+
+def test_public_mode_home_graceful_when_oracle_down(public_client, monkeypatch):
+    """If the oracle's down, public-mode home should render the
+    'unavailable' state cleanly, not 500."""
+    def boom():
+        raise oracle_client.OracleError("connection refused")
+    monkeypatch.setattr(oracle_client, "root", boom)
+    monkeypatch.setattr(oracle_client, "network_stats", boom)
+    r = public_client.get("/")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "Oracle unreachable" in body
+
+
+def test_private_mode_home_still_shows_per_tree_table(client, monkeypatch):
+    """The private-mode home must continue to show the per-Tree table
+    — public-mode pivot must NOT change operator UX."""
+    monkeypatch.setattr(oracle_client, "root",
+                        lambda: {"version": "0.1.0", "current_season": 1,
+                                 "now_utc": "2026-06-01T12:00:00+00:00"})
+    monkeypatch.setattr(oracle_client, "list_nodes", lambda: [
+        {"node_id": "AB" * 16, "label": "backyard-1",
+         "fw_version": "0.3.0", "last_reading_at": "2026-06-01T11:55:00+00:00"},
+    ])
+    # network_stats MUST NOT be called in private mode.
+    def _no_network_stats():
+        raise AssertionError("network_stats called in private mode")
+    monkeypatch.setattr(oracle_client, "network_stats", _no_network_stats)
+
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "Registered Trees" in body
+    assert "backyard-1" in body
+    assert "The Network" not in body
+
+
 # ----- public mode response scrubbing (U1 + U2) ---------------------
 
 _DOXX_WALLET = "xch1m3rvtj86wzzfjyk5mc7wzpr7h4zkaknm4wte7kg6afleu4f2tfxsr7nk3n"
