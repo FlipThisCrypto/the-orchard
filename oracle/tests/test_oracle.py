@@ -12,6 +12,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+from datetime import datetime, timezone
 from hashlib import sha256
 
 # Force a fresh in-memory DB BEFORE importing the app so settings()
@@ -34,6 +35,13 @@ KEY_HEX = "00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF"
 
 @pytest.fixture()
 def client(monkeypatch):
+    # Most legacy tests POST /register without an Authorization header.
+    # Phase 6.6 made unauthenticated /register a 401 by default. Pin
+    # the legacy path explicitly so these tests keep covering their
+    # original concern (the registration-vs-Pass-binding logic) and
+    # auth-specific behavior is exercised separately via the
+    # `auth_register_client` fixture below.
+    monkeypatch.setenv("ORCHARD_ORACLE_REQUIRE_WALLET_SESSION", "false")
     reset_settings_for_tests()
     reset_for_tests()
 
@@ -485,6 +493,10 @@ def auth_client(monkeypatch):
     without a real wallet."""
     monkeypatch.setenv("ORCHARD_ORACLE_AUTH_TEST_MODE", "true")
     monkeypatch.setenv("ORCHARD_ORACLE_DB_URL", "sqlite:///:memory:")
+    # Same as for `client` — most auth-flow tests register a Tree via
+    # HTTP without holding a session token. Specific register-hardening
+    # tests below override this env per-test to exercise the gate.
+    monkeypatch.setenv("ORCHARD_ORACLE_REQUIRE_WALLET_SESSION", "false")
 
     from oracle.app.config import reset_settings_for_tests
     from oracle.app.db import Base, get_db, reset_for_tests
@@ -782,6 +794,168 @@ def test_verify_chia_signed_message_round_trip_through_real_bls():
     )
     assert not bad.ok
     assert "BLS signature verification failed" in bad.reason
+
+
+# ---------------- Phase 6.6: /register hardening ----------------
+#
+# The new policy: /register requires Authorization: Bearer <token>
+# from a wallet that completed /auth/challenge + /auth/verify. The
+# resolved session.address is the authoritative wallet identity for
+# Pass binding and the Node row; body.wallet_address is either ignored
+# or, if present and mismatched, rejected with 400.
+
+
+@pytest.fixture()
+def gated_register_client(monkeypatch):
+    """Like `auth_client` but with require_wallet_session forced ON,
+    so we can verify the gate actually rejects unauthenticated and
+    cross-wallet attempts."""
+    monkeypatch.setenv("ORCHARD_ORACLE_AUTH_TEST_MODE", "true")
+    monkeypatch.setenv("ORCHARD_ORACLE_REQUIRE_WALLET_SESSION", "true")
+    monkeypatch.setenv("ORCHARD_ORACLE_DB_URL", "sqlite:///:memory:")
+
+    from oracle.app.config import reset_settings_for_tests
+    from oracle.app.db import Base, get_db, reset_for_tests
+    from oracle.app import sessions
+    from oracle.app.main import app
+
+    reset_settings_for_tests()
+    reset_for_tests()
+    sessions.reset_for_tests()
+
+    test_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    TestSession = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(test_engine)
+
+    def override_get_db():
+        db = TestSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+    sessions.reset_for_tests()
+
+
+def _bearer_for(client: TestClient) -> tuple[str, str]:
+    """Run a full challenge -> verify cycle (in test_mode) and return
+    (bearer_token, address). Uses our own derivation so the BLS step
+    is bypassed but the pk -> address binding is still real."""
+    pk_hex, addr = _test_keypair()
+    rc = client.post("/auth/challenge")
+    nonce = rc.json()["nonce"]
+    rv = client.post("/auth/verify", json={
+        "address":    addr,
+        "public_key": pk_hex,
+        "signature":  "00" * 96,
+        "nonce":      nonce,
+    })
+    assert rv.status_code == 200, rv.text
+    return rv.json()["session_token"], addr
+
+
+def test_register_without_session_returns_401(gated_register_client: TestClient):
+    """The whole point of the hardening — anonymous /register is gone."""
+    r = gated_register_client.post("/register", json={
+        "node_id": "AA" * 16, "signing_key_hex": "11" * 32,
+    })
+    assert r.status_code == 401
+    detail = r.json()["detail"]
+    assert "wallet session" in detail or "WalletConnect" in detail
+
+
+def test_register_with_session_uses_session_address_not_body(
+    monkeypatch, gated_register_client: TestClient
+):
+    """The session's verified address is the source of truth — the
+    body's wallet_address is ignored when present and matching, and
+    a missing body wallet_address is fine (the session supplies it).
+    Pass-check is monkeypatched to return a sentinel so we can prove
+    the right wallet went into the check."""
+    from oracle.app.routes import register as register_mod
+
+    seen_wallets = []
+    def fake_first_pass(addr):
+        seen_wallets.append(addr)
+        return "nft1FAKE"
+    monkeypatch.setattr(register_mod.pass_verify, "first_pass_nft_id", fake_first_pass)
+    monkeypatch.setattr(register_mod.pass_verify, "utcnow",
+                        lambda: datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    token, addr = _bearer_for(gated_register_client)
+
+    # Case A: body omits wallet_address entirely.
+    r = gated_register_client.post(
+        "/register",
+        json={"node_id": "AA" * 16, "signing_key_hex": "11" * 32},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["pass_nft_id"] == "nft1FAKE"
+    assert seen_wallets == [addr]
+
+
+def test_register_rejects_mismatched_body_wallet_address(
+    monkeypatch, gated_register_client: TestClient
+):
+    """Body wallet_address that doesn't match the session is a 400 —
+    a confused or malicious client. We surface it rather than silently
+    overriding because silent override would hide bugs in the wizard."""
+    from oracle.app.routes import register as register_mod
+    monkeypatch.setattr(register_mod.pass_verify, "first_pass_nft_id",
+                        lambda addr: "nft1IGNORED")
+
+    token, addr = _bearer_for(gated_register_client)
+    other_wallet = (
+        "xch1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqs0nfx5p"
+    )
+    assert other_wallet != addr
+
+    r = gated_register_client.post(
+        "/register",
+        json={
+            "node_id": "BB" * 16, "signing_key_hex": "22" * 32,
+            "wallet_address": other_wallet,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 400
+    assert "does not match" in r.json()["detail"]
+
+
+def test_register_accepts_matching_body_wallet_address(
+    monkeypatch, gated_register_client: TestClient
+):
+    """If the body redundantly carries the same wallet as the session,
+    that's harmless — accept it. (The wizard could simplify and drop
+    the field; older clients can keep sending it during transition.)"""
+    from oracle.app.routes import register as register_mod
+    monkeypatch.setattr(register_mod.pass_verify, "first_pass_nft_id",
+                        lambda addr: "nft1MATCH")
+    monkeypatch.setattr(register_mod.pass_verify, "utcnow",
+                        lambda: datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    token, addr = _bearer_for(gated_register_client)
+
+    r = gated_register_client.post(
+        "/register",
+        json={
+            "node_id": "CC" * 16, "signing_key_hex": "33" * 32,
+            "wallet_address": addr,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["pass_nft_id"] == "nft1MATCH"
 
 
 # ---------------- Phase 6.6: scoped GETs + DELETE ----------------

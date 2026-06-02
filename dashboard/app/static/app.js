@@ -104,7 +104,43 @@ const OrchardView = (() => {
   // After step 2 (Verify Pass): { wallet, pass_nft_id, pass_name }.
   // Required to reach step 3. The Skip path was removed — operating
   // a Tree on the network now requires a verified Pass at all times.
+  // Phase 6.6: `wallet` is always sourced from Orchard.getSession()
+  // (the wallet that signed the challenge), never from a typed input.
   let passDecision = null;
+
+  // Render the connected-wallet status panel in step 2. Called from
+  // initProvisionPage at load and again whenever the session changes
+  // (Connect / Disconnect from the top nav, which fires a custom
+  // event via writeSession / clearSession in connect.js).
+  function renderWalletStatus() {
+    const slot = $('#wallet-status');
+    if (!slot) return;
+    const sess = (window.Orchard && Orchard.getSession()) || null;
+    const verifyBtn = $('#verify-pass-btn');
+    if (!sess) {
+      // No session — gate Step 2 entirely and point at the nav
+      // Connect button. We don't render a duplicate Connect button
+      // here so there's only one canonical place to authenticate.
+      slot.innerHTML =
+        '<div class="muted" style="padding:10px;border:1px dashed #555;border-radius:8px">' +
+        '<strong>Connect your wallet first.</strong> ' +
+        'Use the <em>Connect Wallet</em> button in the top right. ' +
+        'Your wallet signs a challenge to prove you control the address ' +
+        'before any Tree gets bound to it.</div>';
+      if (verifyBtn) verifyBtn.disabled = true;
+      passDecision = null;
+      return;
+    }
+    const addr = sess.address || '';
+    const short = addr.length > 16
+      ? `${addr.slice(0, 12)}…${addr.slice(-8)}` : addr;
+    slot.innerHTML =
+      '<div class="field" style="padding:8px 12px;background:#1a1c2e;border-radius:8px">' +
+      '<div class="k">Connected wallet</div>' +
+      `<div class="v"><code title="${esc(addr)}">${esc(short)}</code></div>` +
+      '</div>';
+    if (verifyBtn) verifyBtn.disabled = false;
+  }
 
   async function onIdentify() {
     const port = $('#port-select').value;
@@ -133,12 +169,14 @@ const OrchardView = (() => {
   }
 
   async function onVerifyPass() {
-    const wallet = $('#wallet').value.trim();
+    const sess = (window.Orchard && Orchard.getSession()) || null;
     const out = $('#verify-pass-result');
-    if (!wallet) {
-      out.innerHTML = `<div class="err">Paste a Chia wallet address first.</div>`;
+    if (!sess) {
+      out.innerHTML =
+        '<div class="err">Connect your wallet first (top right).</div>';
       return;
     }
+    const wallet = sess.address;
     out.innerHTML = '<div class="muted">Querying chain via MintGarden…</div>';
     const r = await jpost('/api/oracle/verify_pass', { wallet_address: wallet });
     if (!r.ok) {
@@ -181,6 +219,14 @@ const OrchardView = (() => {
       alert('Verify your Orchard Pass first.');
       return;
     }
+    const sess = (window.Orchard && Orchard.getSession()) || null;
+    if (!sess) {
+      // Defensive — Step 2 also gates on this, but the operator could
+      // have disconnected between verifying the Pass and clicking
+      // Provision.
+      alert('Your wallet session ended. Please reconnect and re-verify.');
+      return;
+    }
     const ssid = $('#ssid').value.trim();
     const password = $('#password').value;
     const oracleUrl = $('#oracle-url').value.trim();
@@ -201,14 +247,23 @@ const OrchardView = (() => {
       else progress.insertAdjacentHTML('beforeend', html);
     }
 
+    // Register via authFetch so the session Bearer is attached.
+    // wallet_address is intentionally omitted from the body — the
+    // oracle uses session.address as the source of truth, and an
+    // explicit mismatched value would be a 400. (See
+    // oracle.app.routes.register._resolve_wallet_for_register.)
     setStep(0, 'Register with oracle', 'doing');
-    let r = await jpost('/api/oracle/register', {
-      node_id: identified.node_id,
-      signing_key_hex: identified.signing_key_hex,
-      label: label || null,
-      wallet_address: passDecision.wallet || null,
-      fw_version: identified.status?.fw || null,
+    const regResp = await Orchard.authFetch('/api/oracle/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        node_id: identified.node_id,
+        signing_key_hex: identified.signing_key_hex,
+        label: label || null,
+        fw_version: identified.status?.fw || null,
+      }),
     });
+    let r = { ok: regResp.ok, status: regResp.status,
+              body: await regResp.json().catch(() => ({})) };
     if (!r.ok) { setStep(0, 'Register with oracle', 'err', r.body.error || `HTTP ${r.status}`); btn.disabled = false; return; }
     const regMsg = r.body.register?.pass_nft_id
       ? `Pass bound: ${r.body.register.pass_nft_id.slice(0, 16)}…`
@@ -239,6 +294,10 @@ const OrchardView = (() => {
     $('#identify-btn').addEventListener('click', onIdentify);
     $('#verify-pass-btn').addEventListener('click', onVerifyPass);
     $('#provision-btn').addEventListener('click', onProvision);
+    // Render initial wallet-status panel and re-render whenever the
+    // session changes (Connect / Disconnect in the top nav).
+    renderWalletStatus();
+    window.addEventListener('orchard:session', renderWalletStatus);
     refreshPorts();
   }
 

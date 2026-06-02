@@ -63,7 +63,17 @@ def register_node(
     label: str | None = None,
     wallet_address: str | None = None,
     fw_version: str | None = None,
+    authorization: str | None = None,
 ) -> dict:
+    """POST /register on the oracle.
+
+    Phase 6.6: ``authorization`` is the operator's session Bearer
+    token (sourced from the browser's sessionStorage and forwarded
+    by the dashboard's /api/oracle/register proxy). When set, the
+    oracle uses session.address as the source of truth for the
+    wallet binding; ``wallet_address`` from the body is optional and
+    only echoed back as a sanity-check.
+    """
     body: dict = {"node_id": node_id, "signing_key_hex": signing_key_hex}
     if label:
         body["label"] = label
@@ -71,7 +81,10 @@ def register_node(
         body["wallet_address"] = wallet_address
     if fw_version:
         body["fw_version"] = fw_version
-    r = requests.post(_url("/register"), json=body, timeout=5)
+    headers: dict = {}
+    if authorization:
+        headers["Authorization"] = authorization
+    r = requests.post(_url("/register"), json=body, headers=headers, timeout=5)
     if r.status_code not in (200, 201):
         raise OracleError(f"POST /register -> {r.status_code}: {r.text}")
     return r.json()

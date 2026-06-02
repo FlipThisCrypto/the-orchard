@@ -130,6 +130,55 @@ def test_api_oracle_register_passthrough(client, monkeypatch):
     assert body["register"]["new"] is True
 
 
+def test_api_oracle_register_forwards_authorization_header(client, monkeypatch):
+    """The wizard's authFetch attaches Authorization: Bearer <session>.
+    The Flask proxy must forward it so the oracle's require_wallet_session
+    gate sees the token. Without this, every wizard-driven /register
+    would 401 against a hardened oracle."""
+    captured = {}
+
+    def fake_register(**kw):
+        captured.update(kw)
+        return {"node_id": kw["node_id"], "new": True}
+
+    monkeypatch.setattr(oracle_client, "register_node", fake_register)
+
+    r = client.post(
+        "/api/oracle/register",
+        json={
+            "node_id": "0123456789ABCDEF0123456789ABCDEF",
+            "signing_key_hex": "AA" * 32,
+        },
+        headers={"Authorization": "Bearer eyJhbGc.fake.token"},
+    )
+    assert r.status_code == 200
+    assert captured.get("authorization") == "Bearer eyJhbGc.fake.token"
+
+
+def test_api_oracle_register_no_auth_header_passes_none(client, monkeypatch):
+    """If no Authorization header is sent, the proxy passes None down —
+    the oracle then applies its own gate (legacy fallback or 401).
+    Closes the bug where a missing header would have been passed as a
+    blank string and confused the downstream check."""
+    captured = {}
+
+    def fake_register(**kw):
+        captured.update(kw)
+        return {"node_id": kw["node_id"], "new": True}
+
+    monkeypatch.setattr(oracle_client, "register_node", fake_register)
+
+    r = client.post(
+        "/api/oracle/register",
+        json={
+            "node_id": "0123456789ABCDEF0123456789ABCDEF",
+            "signing_key_hex": "AA" * 32,
+        },
+    )
+    assert r.status_code == 200
+    assert captured.get("authorization") is None
+
+
 def test_api_tree_latest_unknown(client, monkeypatch):
     monkeypatch.setattr(oracle_client, "get_node", lambda node_id: None)
     r = client.get("/api/tree/ABCDEF01/latest")

@@ -78,11 +78,17 @@ const Orchard = (() => {
     sessionStorage.setItem(TOKEN_KEY, JSON.stringify(j));
     memoSession = j;
     renderConnectArea();
+    // Other pages (e.g. the Plant-a-Tree wizard's wallet-status
+    // panel) want to react when the operator connects or disconnects
+    // mid-flow. A bubbling CustomEvent on window is the simplest
+    // pub/sub here — no shared dependency, no polling.
+    window.dispatchEvent(new CustomEvent("orchard:session", { detail: j }));
   }
   function clearSession() {
     sessionStorage.removeItem(TOKEN_KEY);
     memoSession = null;
     renderConnectArea();
+    window.dispatchEvent(new CustomEvent("orchard:session", { detail: null }));
   }
   function getSession() { return memoSession; }
 

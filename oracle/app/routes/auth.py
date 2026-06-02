@@ -33,11 +33,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from .. import sessions, wallet_auth
 from ..config import settings
+from ..session_deps import require_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -73,32 +74,13 @@ class WhoAmI(BaseModel):
     expires_at: int
 
 
-# ---------- session dependency for downstream routes ----------------
-
-def require_session(
-    authorization: str | None = Header(None),
-) -> sessions.Session:
-    """FastAPI dependency: extracts the session from the
-    Authorization header and validates it. Use in any route that
-    needs to know the calling operator's verified wallet."""
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="missing or malformed Authorization header",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    token = authorization.split(None, 1)[1].strip()
-    try:
-        return sessions.validate(token)
-    except sessions.SessionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-
 # ---------- routes ---------------------------------------------------
+#
+# (The session-dep helpers used to live here as local functions; they
+# were duplicated in routes/nodes.py too. Both now import from
+# oracle.app.session_deps. ``require_session`` is re-exported at the
+# top of this file for the same import path the rest of the codebase
+# was already using.)
 
 def _message_for_nonce(nonce: str) -> str:
     """The exact UTF-8 string the wallet displays in its sign prompt.

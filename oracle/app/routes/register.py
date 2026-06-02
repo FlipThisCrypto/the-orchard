@@ -13,13 +13,25 @@ rejected with 403. The verified Pass NFT id gets bound to the Tree
 record so downstream consumers (Phase 7 payout, dashboard credentials
 display) can resolve which Pass authorized the Tree's existence.
 
-Backward compatibility: registration without ``wallet_address`` still
-succeeds and leaves ``pass_nft_id`` NULL. This keeps legacy nodes
-working and supports a future "soft launch" where operators register
-hardware first and bind a Pass later.
+Phase 6.6 hardening: the wallet address is no longer trusted from the
+request body. The operator must first prove control of their wallet
+via the WalletConnect challenge flow (see /auth/challenge + /auth/verify),
+present the resulting session token here as ``Authorization: Bearer
+<token>``, and the oracle uses ``session.address`` as the source of
+truth for the Pass check and Tree binding. If the body still carries
+a ``wallet_address`` field, it must match the session address — a
+mismatch is a 400 (suggests a confused client). The body field is
+kept on the type only for the brief transition period; once the
+wizard is fully migrated everywhere it can be removed.
+
+When ``settings().require_wallet_session`` is True (default), an
+unauthenticated /register call is rejected with 401. Operators
+running legacy curl/CI scripts can flip the setting to False during
+transition, but the new wizard always sends a session.
 """
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 
@@ -27,10 +39,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from .. import models, pass_verify
+from .. import models, pass_verify, sessions
+from ..config import settings
 from ..db import get_db
+from ..session_deps import maybe_session
 
 router = APIRouter()
+log = logging.getLogger("orchard.oracle.register")
 
 _HEX32 = re.compile(r"^[0-9A-Fa-f]{32}$")  # 16 bytes / node_id
 _HEX64 = re.compile(r"^[0-9A-Fa-f]{64}$")  # 32 bytes / signing key
@@ -129,11 +144,77 @@ def _resolve_pass_nft_id(wallet_address: str | None) -> tuple[str | None, dateti
     return nft_id, pass_verify.utcnow()
 
 
+def _resolve_wallet_for_register(
+    req_wallet_address: str | None,
+    sess: sessions.Session | None,
+) -> str | None:
+    """Reconcile the wallet identity for /register.
+
+    Policy (Phase 6.6):
+      - With a session: session.address is the source of truth. If the
+        body also carries a wallet_address that doesn't match the
+        session, return 400 — that's a confused or malicious client,
+        better surfaced than silently overridden.
+      - Without a session: behavior is controlled by the
+        ``require_wallet_session`` setting. When True (default), reject
+        with 401. When False, fall back to body.wallet_address and log
+        a deprecation warning so operators know the legacy path is on
+        its way out.
+
+    Returns the wallet address to use for Pass check + Tree binding,
+    or None if no wallet binding is desired (only possible on the
+    legacy path with a missing body field).
+    """
+    if sess is not None:
+        if req_wallet_address and req_wallet_address != sess.address:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "wallet_address in request body does not match the "
+                    "authenticated session's verified address — drop the "
+                    "body field (the session is the source of truth) or "
+                    "reconnect the wallet you actually want to bind."
+                ),
+            )
+        return sess.address
+
+    if settings().require_wallet_session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "/register requires a verified wallet session — call "
+                "/auth/challenge, sign with your wallet via WalletConnect, "
+                "POST /auth/verify, and resend with Authorization: Bearer "
+                "<session_token>."
+            ),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Legacy unauthenticated path. Still accepted (for now) so existing
+    # curl/CI scripts keep working — but we want visibility into who's
+    # still using it so we know when it's safe to retire.
+    log.warning(
+        "register: legacy unauthenticated registration (wallet=%s) — "
+        "require_wallet_session is False; update your script to obtain "
+        "a session token first",
+        req_wallet_address or "<none>",
+    )
+    return req_wallet_address
+
+
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
-def register(req: RegisterRequest, db: Session = Depends(get_db)) -> RegisterResponse:
+def register(
+    req: RegisterRequest,
+    db: Session = Depends(get_db),
+    sess: sessions.Session | None = Depends(maybe_session),
+) -> RegisterResponse:
+    # Resolve the wallet first — this is where the auth policy lives.
+    # If it rejects (401, 400), we bail before touching the DB.
+    wallet_address = _resolve_wallet_for_register(req.wallet_address, sess)
+
     # Resolve Pass binding BEFORE touching the DB so a verification
     # failure never leaves a half-registered row behind.
-    pass_nft_id, pass_verified_at = _resolve_pass_nft_id(req.wallet_address)
+    pass_nft_id, pass_verified_at = _resolve_pass_nft_id(wallet_address)
 
     existing = db.get(models.Node, req.node_id)
     if existing is not None:
@@ -145,9 +226,14 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)) -> RegisterRes
                 status_code=status.HTTP_409_CONFLICT,
                 detail="node_id already registered with a different signing key",
             )
-        # Update mutable metadata if provided.
-        if req.wallet_address is not None:
-            existing.wallet_address = req.wallet_address
+        # Update mutable metadata if provided. With a session, the
+        # resolved wallet_address is always set (== sess.address) so
+        # any re-registration through the wizard re-binds the wallet
+        # to the connected one. That's correct: the operator's
+        # intent in clicking Provision again is "this Tree is mine
+        # now under the wallet I'm currently connected with."
+        if wallet_address is not None:
+            existing.wallet_address = wallet_address
             # When wallet changes, re-bind the Pass (or clear if the
             # operator deliberately moved to an unverified state by
             # passing a wallet that we already verified is empty —
@@ -171,7 +257,7 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)) -> RegisterRes
     node = models.Node(
         node_id=req.node_id,
         signing_key_hex=req.signing_key_hex,
-        wallet_address=req.wallet_address,
+        wallet_address=wallet_address,
         label=req.label,
         fw_version=req.fw_version,
         pass_nft_id=pass_nft_id,

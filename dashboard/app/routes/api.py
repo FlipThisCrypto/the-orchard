@@ -166,7 +166,18 @@ def oracle_verify_pass():
 @bp.post("/oracle/register")
 @_private
 def oracle_register():
+    """Proxy to oracle /register.
+
+    Phase 6.6: the operator's wallet session token (from the browser's
+    sessionStorage, attached as Authorization: Bearer by the wizard's
+    authFetch wrapper) is forwarded to the oracle so /register can
+    bind the Tree to the verified wallet. Without the forward, the
+    oracle would 401 on require_wallet_session=True. The body's
+    wallet_address is now optional and, when present, must match the
+    session's verified address — the oracle enforces this.
+    """
     body = request.get_json(silent=True) or {}
+    auth = request.headers.get("Authorization")
     try:
         result = oracle_client.register_node(
             node_id=body["node_id"],
@@ -174,6 +185,7 @@ def oracle_register():
             label=body.get("label"),
             wallet_address=body.get("wallet_address"),
             fw_version=body.get("fw_version"),
+            authorization=auth,
         )
         return _ok({"register": result})
     except KeyError as e:

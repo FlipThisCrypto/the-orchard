@@ -22,13 +22,18 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .. import models, sessions
 from ..db import get_db
+# Session deps are shared with /auth and /register so all three routes
+# see identical 401 semantics. ``_maybe_session`` / ``_require_session``
+# are alias names kept for the existing call sites in this module.
+from ..session_deps import maybe_session as _maybe_session
+from ..session_deps import require_session as _require_session
 
 router = APIRouter()
 
@@ -61,53 +66,6 @@ def _to_public(n: models.Node) -> NodePublic:
         pass_nft_id=n.pass_nft_id,
         pass_verified_at=n.pass_verified_at,
     )
-
-
-def _maybe_session(
-    authorization: str | None = Header(None),
-) -> sessions.Session | None:
-    """Optional FastAPI dependency: returns the session if a valid
-    Bearer token was presented, None otherwise. Routes that scope on
-    operator identity when authed but stay public-readable when not
-    use this instead of require_session.
-
-    Malformed tokens here raise 401 (rather than silently degrading to
-    public) because "I tried to authenticate, my token is broken" is
-    a fixable error the client wants to see; degrading would mask it.
-    """
-    if not authorization or not authorization.lower().startswith("bearer "):
-        return None
-    token = authorization.split(None, 1)[1].strip()
-    try:
-        return sessions.validate(token)
-    except sessions.SessionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-
-def _require_session(
-    authorization: str | None = Header(None),
-) -> sessions.Session:
-    """Strict variant — 401 if no valid session. Used by mutation
-    routes (DELETE /nodes/{id}) where anonymous access is wrong."""
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="missing or malformed Authorization header",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    token = authorization.split(None, 1)[1].strip()
-    try:
-        return sessions.validate(token)
-    except sessions.SessionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
 
 @router.get("/nodes", response_model=list[NodePublic])

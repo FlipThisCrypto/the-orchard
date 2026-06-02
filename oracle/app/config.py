@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     # ONLY in tests/CI. Defaults False so production fails closed.
     auth_test_mode: bool = False
 
+    # Phase 6.6 register hardening: /register requires a verified
+    # wallet session by default. Closes the "anyone can claim someone
+    # else's address" attack — the requester's session.address becomes
+    # the source of truth for the bound wallet, not a free-form body
+    # field. Operators with legacy curl/CI registration scripts that
+    # haven't been updated to do the WalletConnect challenge first can
+    # set this to false during transition, but the default is True for
+    # security-by-default. Once everything is migrated this option
+    # goes away.
+    require_wallet_session: bool = True
+
     model_config = SettingsConfigDict(
         env_prefix="ORCHARD_ORACLE_",
         env_file=str(_ENV_PATH),
