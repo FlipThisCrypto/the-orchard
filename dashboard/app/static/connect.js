@@ -28,6 +28,7 @@ const Orchard = (() => {
 
   // Loaded once.
   let signClient = null;
+  let wcModal    = null;
   let wcConfig   = null;
   let wcSession  = null;     // the active WC session (post-approve)
 
@@ -110,17 +111,21 @@ const Orchard = (() => {
 
   // -------------------------- WalletConnect --------------------------
 
-  async function loadSignClient() {
+  async function loadDeps() {
     // esm.sh hosts pre-bundled WalletConnect v2 with deps resolved.
-    // Pinned to v2.x major; minor bumps are SDK-compat.
-    const mod = await import(
-      "https://esm.sh/@walletconnect/sign-client@2.17.0?bundle"
-    );
-    return mod.SignClient;
+    // Pinned to a v2.x major; minor bumps are SDK-compat.
+    const [signMod, modalMod] = await Promise.all([
+      import("https://esm.sh/@walletconnect/sign-client@2.17.0?bundle"),
+      import("https://esm.sh/@walletconnect/modal@2.7.0?bundle"),
+    ]);
+    return {
+      SignClient:           signMod.SignClient,
+      WalletConnectModal:   modalMod.WalletConnectModal,
+    };
   }
 
-  async function ensureSignClient() {
-    if (signClient) return signClient;
+  async function ensureClients() {
+    if (signClient && wcModal) return { signClient, wcModal };
     if (!wcConfig) {
       const r = await jget("/api/auth/config");
       wcConfig = r.body;
@@ -132,16 +137,37 @@ const Orchard = (() => {
         "https://cloud.walletconnect.com)."
       );
     }
-    const SignClient = await loadSignClient();
-    signClient = await SignClient.init({
-      projectId: wcConfig.wc_project_id,
-      metadata:  wcConfig.metadata,
-    });
-    return signClient;
+    const { SignClient, WalletConnectModal } = await loadDeps();
+    if (!signClient) {
+      signClient = await SignClient.init({
+        projectId: wcConfig.wc_project_id,
+        metadata:  wcConfig.metadata,
+      });
+    }
+    if (!wcModal) {
+      // The modal handles QR rendering (mobile wallets), copy-URI
+      // button, and a wallet picker. Chia chain ids tell it which
+      // wallets to surface — wallets registered as Chia-capable in
+      // the WalletConnect explorer get featured automatically.
+      wcModal = new WalletConnectModal({
+        projectId:        wcConfig.wc_project_id,
+        chains:           ["chia:mainnet"],
+        themeMode:        "dark",
+        themeVariables: {
+          // Match the Orchard brand palette so the modal doesn't feel
+          // like a foreign popup.
+          "--wcm-z-index":              "2000",
+          "--wcm-accent-color":         "#ffae33",
+          "--wcm-background-color":     "#0e1124",
+          "--wcm-font-family":          "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif",
+        },
+      });
+    }
+    return { signClient, wcModal };
   }
 
   async function connect() {
-    const client = await ensureSignClient();
+    const { signClient: client, wcModal: modal } = await ensureClients();
 
     // Request a Chia mainnet session with the signMessageByAddress
     // permission only — least privilege, no spend capability.
@@ -155,16 +181,25 @@ const Orchard = (() => {
       },
     });
 
-    // For desktop browser wallets (Goby) the uri is consumed via
-    // postMessage; for mobile wallets (Sage in iOS/Android) it's
-    // rendered as a QR. WalletConnect's own modal lib handles both,
-    // but pulling in the modal package is heavy — for v1 we show
-    // the raw URI and let operators copy it into Sage's "Scan QR"
-    // or Goby's "Connect via WC" flow. Modal lib comes later.
-    showConnectUri(uri);
-
-    // Wait for the wallet user to approve in their app.
-    const session = await approval();
+    // Show the official WalletConnect modal: QR for mobile, copy-URI
+    // button, and a wallet picker for any registered Chia wallets.
+    // Modal lives in shadow DOM, so its DOM doesn't collide with the
+    // dashboard's CSS.
+    let session;
+    try {
+      await modal.openModal({ uri });
+      // Wait for the wallet user to approve in their app. If the
+      // operator dismisses the modal, the approval Promise will hang
+      // until they retry — fine for v1.
+      session = await approval();
+    } catch (e) {
+      modal.closeModal();
+      throw e;
+    } finally {
+      // Always close the modal once approval resolves or rejects so
+      // we're not leaving a stale QR on screen.
+      modal.closeModal();
+    }
     wcSession = session;
     console.log("[orchard.connect] session approved. namespaces:",
                 session.namespaces);
@@ -249,7 +284,6 @@ const Orchard = (() => {
       expires_at: ver.body.expires_at,
     });
 
-    hideConnectUri();
     return ver.body;
   }
 
@@ -267,23 +301,6 @@ const Orchard = (() => {
   }
 
   // -------------------------- UI ------------------------------------
-
-  function showConnectUri(uri) {
-    const out = $("#connect-uri");
-    if (!out) return;
-    out.innerHTML =
-      `<div class="muted" style="margin-top:8px;font-size:13px">` +
-        `Approve in your wallet. If your wallet asks for a connection ` +
-        `URI:<br>` +
-        `<code style="word-break:break-all;display:block;margin-top:4px;` +
-          `padding:6px 8px;background:var(--bg-card-2);border-radius:4px;` +
-          `font-size:11px">${esc(uri)}</code>` +
-      `</div>`;
-  }
-  function hideConnectUri() {
-    const out = $("#connect-uri");
-    if (out) out.innerHTML = "";
-  }
 
   function renderConnectArea() {
     const slot = $("#connect-slot");
