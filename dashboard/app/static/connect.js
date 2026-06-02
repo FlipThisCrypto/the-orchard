@@ -220,8 +220,7 @@ const Orchard = (() => {
     // CAIP-10 format per CHIP-22 is "chia:mainnet:<fingerprint>".
     // The fingerprint identifies the wallet (master key); a wallet
     // has many xch1 addresses derived from one master. We need a
-    // specific xch1 to bind to the Tree — get the operator's current
-    // receive address via chia_getCurrentAddress.
+    // specific xch1 to bind to the Tree.
     const accounts = session.namespaces.chia?.accounts || [];
     if (accounts.length === 0) {
       throw new Error("Wallet did not return any Chia accounts");
@@ -236,14 +235,16 @@ const Orchard = (() => {
     }
     console.log("[orchard.connect] wallet fingerprint:", fingerprint);
 
-    // Ask the wallet for the current XCH receive address. Sage/Goby
-    // both implement this; the operator may see a prompt the first
-    // time depending on their wallet's permission settings. walletId
-    // 1 is the standard XCH wallet for every Chia keychain.
-    console.log("[orchard.connect] requesting current address from wallet…");
-    let addressResult;
+    // Try to fetch the current receive address from the wallet — works
+    // on Goby + older Chia reference wallet. Sage doesn't implement
+    // chia_getCurrentAddress, so on "Unsupported method" we fall back
+    // to asking the operator directly. Either way, the wallet has to
+    // sign with the resulting address; Sage will refuse to sign for
+    // an address it doesn't own, which IS the security check we want.
+    let address = null;
     try {
-      addressResult = await client.request({
+      console.log("[orchard.connect] trying chia_getCurrentAddress…");
+      const r = await client.request({
         topic:   session.topic,
         chainId: "chia:mainnet",
         request: {
@@ -251,25 +252,38 @@ const Orchard = (() => {
           params: { fingerprint, walletId: 1 },
         },
       });
+      address = (typeof r === "string")
+        ? r
+        : (r?.address || r?.data?.address);
+      console.log("[orchard.connect] wallet supplied address:", address);
     } catch (e) {
-      console.error("[orchard.connect] getCurrentAddress rejected:", e);
-      throw new Error(
-        `Wallet refused to share its address: ${e?.message || e}. ` +
-        `Check the wallet for a permission prompt you may have ` +
-        `dismissed, then retry.`);
+      console.log(
+        "[orchard.connect] wallet doesn't support getCurrentAddress " +
+        "(this is normal for Sage); falling back to operator prompt.");
     }
-    console.log("[orchard.connect] getCurrentAddress result:", addressResult);
 
-    // Sage and Goby both return the address as a plain string; older
-    // implementations wrapped it in { address: "xch1..." }. Tolerate both.
-    let address = (typeof addressResult === "string")
-      ? addressResult
-      : (addressResult?.address || addressResult?.data?.address);
     if (typeof address !== "string" ||
         !/^xch1[0-9a-z]{50,80}$/.test(address)) {
-      throw new Error(
-        `Wallet returned an unexpected address shape: ${JSON.stringify(addressResult)}. ` +
-        `Expected an xch1... string.`);
+      // Sage's RPC surface doesn't include getCurrentAddress in this
+      // build. Ask the operator directly. Native prompt is plain but
+      // immediate; we'll upgrade to a proper in-page card in a
+      // follow-up.
+      address = window.prompt(
+        "Sage didn't share an address automatically.\n\n" +
+        "Paste the xch1 address you want to bind to your Tree. " +
+        "Sage will refuse to sign if it doesn't actually control this " +
+        "address — that's the security check.\n\n" +
+        "Wallet fingerprint: " + fingerprint
+      );
+      if (!address) {
+        throw new Error("Connect cancelled (no address provided).");
+      }
+      address = address.trim();
+      if (!/^xch1[0-9a-z]{50,80}$/.test(address)) {
+        throw new Error(
+          "That doesn't look like a Chia mainnet address (expected " +
+          "xch1... with 50-80 lowercase base32 characters after the prefix).");
+      }
     }
     console.log("[orchard.connect] address for signing:", address);
 
