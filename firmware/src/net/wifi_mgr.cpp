@@ -18,6 +18,18 @@ String cached_pass_;
 uint32_t last_reconnect_attempt_ = 0;
 constexpr uint32_t kReconnectIntervalMs = 30000;
 
+// Async-connect state machine. try_connect_() kicks WiFi.begin() then
+// returns immediately. wifi_loop() polls WiFi.status() and logs the
+// outcome (connected | timeout) when the in-flight attempt resolves.
+// Without this, EVERY blocking-wait inside the main loop (sample tick,
+// console dispatch, ota_loop) was stalled for up to
+// ORCHARD_WIFI_CONNECT_TIMEOUT_MS — which is exactly what made the
+// wizard's WIFI_SET-followed-by-ORACLE_SET sequence time out: the
+// ORACLE_SET command arrived while wifi_loop was mid-blocking-wait
+// from the connect kicked by WIFI_SET, so console_loop couldn't run.
+bool connect_in_flight_ = false;
+uint32_t connect_started_at_ = 0;
+
 void load_creds_() {
   Preferences prefs;
   prefs.begin(ORCHARD_NVS_NAMESPACE, /*readOnly=*/true);
@@ -31,24 +43,16 @@ void try_connect_() {
     Serial.println("[wifi] no creds stored; idle. Use WIFI_SET over serial.");
     return;
   }
+  if (connect_in_flight_) {
+    // Already in flight; let wifi_loop resolve it. Avoids stacking
+    // multiple WiFi.begin() calls if WIFI_SET races a wifi_loop tick.
+    return;
+  }
   Serial.printf("[wifi] connecting to '%s'\n", cached_ssid_.c_str());
   WiFi.mode(WIFI_STA);
   WiFi.begin(cached_ssid_.c_str(), cached_pass_.c_str());
-
-  const uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - start < ORCHARD_WIFI_CONNECT_TIMEOUT_MS) {
-    delay(250);
-    Serial.print(".");
-  }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("[wifi] connected, ip=%s rssi=%d\n",
-                  WiFi.localIP().toString().c_str(),
-                  WiFi.RSSI());
-  } else {
-    Serial.println("[wifi] connect timeout; will retry");
-  }
+  connect_in_flight_ = true;
+  connect_started_at_ = millis();
 }
 
 }  // namespace
@@ -59,6 +63,23 @@ void wifi_begin() {
 }
 
 void wifi_loop() {
+  // If a connect attempt is in flight, poll its status and log the
+  // result on transition. Non-blocking — returns within microseconds.
+  if (connect_in_flight_) {
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("[wifi] connected, ip=%s rssi=%d\n",
+                    WiFi.localIP().toString().c_str(),
+                    WiFi.RSSI());
+      connect_in_flight_ = false;
+    } else if (millis() - connect_started_at_ >=
+               ORCHARD_WIFI_CONNECT_TIMEOUT_MS) {
+      Serial.println("[wifi] connect timeout; will retry");
+      connect_in_flight_ = false;
+      last_reconnect_attempt_ = millis();
+    }
+    return;
+  }
+
   if (WiFi.status() == WL_CONNECTED) return;
   const uint32_t now = millis();
   if (now - last_reconnect_attempt_ < kReconnectIntervalMs) return;

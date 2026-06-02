@@ -206,6 +206,14 @@ def set_oracle_url(port: str, url: str) -> None:
 
 
 def sample_now(port: str) -> None:
-    line = _send_and_read_line(port, "SAMPLE_NOW")
+    # SAMPLE_NOW samples every active sensor AND POSTs the resulting
+    # JSON to the oracle. The POST is an HTTPClient call that can take
+    # 500ms-3s on a marginal WiFi link or busy oracle. Give it 10s of
+    # headroom — longer than the wizard's 3s default but still bounded
+    # so an unresponsive oracle doesn't hang the wizard forever.
+    line = _send_and_read_line(
+        port, "SAMPLE_NOW",
+        timeout_override=10.0,
+    )
     if not line.startswith("OK"):
         raise TreeError(f"SAMPLE_NOW: {line}")
