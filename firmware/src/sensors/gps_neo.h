@@ -22,10 +22,19 @@ class GpsNeoSensor : public Sensor {
   bool read(JsonObject out) override;
 
  private:
+  // Probe-window outcome at one baud rate.
+  //   passed > 0 → bytes arrive AND validate (right baud, clean)
+  //   passed = 0, failed > 0 → bytes arrive in sentence shape but
+  //     fail checksum → right baud + data-integrity problem
+  //   passed = 0, failed = 0 → no sentence framing → wrong baud
+  //     (or wires/power)
+  struct ProbeResult {
+    uint32_t passed;
+    uint32_t failed;
+  };
+
   void pump_uart_();
-  // True if begin() found a baud rate that produces clean NMEA. False
-  // means we fell back to a default and operators should check wiring.
-  bool try_baud_(uint32_t baud);
+  ProbeResult try_baud_probe_(uint32_t baud);
   TinyGPSPlus gps_;
   // Baud rate the driver locked onto at startup. 0 = no clean NMEA at
   // any tried rate (driver fell back to 9600 and the dashboard will

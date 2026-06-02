@@ -28,7 +28,7 @@ constexpr size_t kCommonBaudCount =
 constexpr uint32_t kBaudProbeMs = 1500;
 }  // namespace
 
-bool GpsNeoSensor::try_baud_(uint32_t baud) {
+GpsNeoSensor::ProbeResult GpsNeoSensor::try_baud_probe_(uint32_t baud) {
   gps_uart.end();
   gps_uart.begin(baud, SERIAL_8N1,
                  ORCHARD_PIN_GPS_RX, ORCHARD_PIN_GPS_TX);
@@ -37,12 +37,20 @@ bool GpsNeoSensor::try_baud_(uint32_t baud) {
 
   // Track delta on TinyGPS++'s passed/failed counters across THIS
   // probe — the underlying counters are cumulative across all
-  // begin() attempts. A "passed checksum" sentence means the bytes
-  // arrived framed correctly: `$...*XX\r\n` with the XX matching
-  // the XOR of payload bytes. Valid NMEA arrives whether or not the
-  // module has a satellite fix, so this baud check works on a
-  // cold-started indoor module too.
+  // begin() attempts. We watch BOTH counters because they encode
+  // different diagnoses:
+  //   passed > 0  → bytes arrive AND validate, baud is right
+  //   failed > 0  → bytes arrive in sentence shape but checksum
+  //                 doesn't match, which means either a flipped bit
+  //                 in transit (loose wire, EMI, weak driver) OR
+  //                 something close-but-not-quite (rare baud aliasing)
+  //   both = 0    → no sentence framing at all, this baud is wrong
+  // The previous version only watched `passed` and so couldn't tell
+  // "wrong baud" from "right baud but corrupt line" — that masked a
+  // hardware-side regression (e.g. a wire jiggled loose during USB
+  // cable manipulation for the flash) as a software regression.
   const uint32_t start_passed = gps_.passedChecksum();
+  const uint32_t start_failed = gps_.failedChecksum();
 
   const uint32_t end_ms = millis() + kBaudProbeMs;
   while (millis() < end_ms) {
@@ -51,39 +59,91 @@ bool GpsNeoSensor::try_baud_(uint32_t baud) {
     }
     delay(2);
   }
-  const uint32_t got_passed = gps_.passedChecksum() - start_passed;
-  Serial.printf("[gps] probe baud=%6u: passed_checksum=%u\n",
-                baud, got_passed);
-  // Two or more correctly-framed sentences in 1.5s = right baud.
-  // (1 might be a coincidental alignment at the wrong baud.)
-  return got_passed >= 2;
+  return {
+    gps_.passedChecksum() - start_passed,
+    gps_.failedChecksum() - start_failed,
+  };
 }
 
 bool GpsNeoSensor::begin() {
   // Auto-detect the GPS baud rate. u-blox factory is 9600 but a lot
   // of clone modules (HiLetgo, generic AliExpress) ship preconfigured
-  // for 38400 or other rates, producing garbled output at 9600. The
-  // failure mode is silent + confusing for operators ("the wires are
-  // right but I just see weird characters"), so we just probe.
+  // for 38400 or other rates, producing garbled output at 9600.
+  //
+  // Lock strategy:
+  //   1. The rate with the highest `passed` count wins (clean lock).
+  //   2. If no rate has `passed >= 2` but some rate has framing
+  //      activity (failed > 0), lock at the rate with the most TOTAL
+  //      framing — that's almost certainly the correct baud, but
+  //      something downstream is corrupting bytes (hardware issue).
+  //      We surface that distinction loudly in the boot log so the
+  //      operator immediately knows it's a wiring/EMI check, not a
+  //      firmware change.
+  //   3. Nothing has framing at all → default to 9600 with a generic
+  //      "is the GPS even talking?" warning.
+  uint32_t best_baud = 0;
+  ProbeResult best{0, 0};
   for (size_t i = 0; i < kCommonBaudCount; ++i) {
-    if (try_baud_(kCommonBauds[i])) {
-      detected_baud_ = kCommonBauds[i];
-      Serial.printf("[gps] locked at %u baud\n", detected_baud_);
-      return true;
+    const uint32_t baud = kCommonBauds[i];
+    const ProbeResult r = try_baud_probe_(baud);  // NOLINT(misc-include-cleaner)
+    Serial.printf("[gps] probe baud=%6u: passed=%u failed=%u\n",
+                  baud, r.passed, r.failed);
+    // Prefer the rate with the most clean sentences. If that's tied
+    // (likely all zero), the rate with the most TOTAL framing wins.
+    const bool better =
+        (r.passed > best.passed) ||
+        (r.passed == best.passed &&
+         (r.passed + r.failed) > (best.passed + best.failed));
+    if (better) {
+      best_baud = baud;
+      best = r;
     }
   }
 
-  // Nothing produced clean NMEA. Could mean: wires disconnected, GPS
-  // unpowered, GPS in UBX-binary-only mode, or just no antenna signal
-  // yet (no fix is OK; *no bytes at all* is the failure we caught
-  // here). Fall back to 9600 so the UART is in a sane state and any
-  // future bytes get parsed. Surface that we didn't lock with
-  // detected_baud_ = 0.
+  if (best.passed >= 2) {
+    // Clean lock.
+    gps_uart.end();
+    gps_uart.begin(best_baud, SERIAL_8N1,
+                   ORCHARD_PIN_GPS_RX, ORCHARD_PIN_GPS_TX);
+    detected_baud_ = best_baud;
+    Serial.printf("[gps] locked at %u baud (clean NMEA)\n", detected_baud_);
+    return true;
+  }
+
+  if (best.failed > 0) {
+    // Framing at this baud, but every sentence corrupt → almost
+    // certainly the right baud + a HARDWARE integrity problem
+    // (loose wire, cold solder joint, EMI from GPS antenna onto the
+    // data line, marginal 3.3V brown-out under wifi + sample load).
+    // Lock at the best rate so the dashboard tile shows real data
+    // when sentences DO arrive clean — but surface the diagnosis.
+    gps_uart.end();
+    gps_uart.begin(best_baud, SERIAL_8N1,
+                   ORCHARD_PIN_GPS_RX, ORCHARD_PIN_GPS_TX);
+    detected_baud_ = best_baud;
+    Serial.printf(
+      "[gps] WARN: best baud %u shows NMEA framing (failed=%u) but "
+      "ZERO clean checksums. This is a DATA INTEGRITY issue, not a "
+      "baud mismatch. Most likely: (a) a wire jiggled during USB "
+      "cable manipulation — re-seat the GPS connector, (b) cold "
+      "solder joint on the breakout — wiggle each wire while watching "
+      "GPS_RAW, (c) EMI from the GPS antenna onto the data line — "
+      "route it farther from the data wires, (d) marginal 3.3V under "
+      "wifi+sample load — try a powered USB hub.\n", best_baud, best.failed);
+    return true;
+  }
+
+  // Nothing produced any framing. Could mean: wires disconnected, GPS
+  // unpowered, GPS in UBX-binary-only mode, or the data wire is OPEN
+  // (no continuity at all). Fall back to 9600 so the UART is in a
+  // sane state and any future bytes get parsed. Surface baud=0 so the
+  // dashboard tile shows the operator the difference between "fix in
+  // progress" and "module silent."
   gps_uart.end();
   gps_uart.begin(9600, SERIAL_8N1,
                  ORCHARD_PIN_GPS_RX, ORCHARD_PIN_GPS_TX);
-  Serial.println("[gps] WARN: no clean NMEA at any tried baud rate. "
-                 "Defaulting to 9600. Check wiring (TX on GPIO 18), "
+  Serial.println("[gps] WARN: no NMEA framing at any tried baud rate. "
+                 "Check wiring (GPS TX -> GPIO 18), power (GPS VCC, GND), "
                  "antenna, and that the module isn't in UBX-only mode.");
   detected_baud_ = 0;
   return true;   // keep the sensor in the registry so the GPS tile
