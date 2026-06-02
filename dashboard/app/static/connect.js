@@ -437,3 +437,15 @@ const Orchard = (() => {
     disconnect,
   };
 })();
+
+// Make Orchard accessible as window.Orchard for cross-script
+// consumers that defensively guard with `window.Orchard && ...`
+// (app.js's wizard does this so it doesn't blow up on pages that
+// happen not to load connect.js). Top-level `const` in a non-module
+// script enters the global lexical environment but does NOT attach
+// to the global object — so without this line, `window.Orchard` is
+// undefined even though `Orchard` is accessible by bare name. That
+// mismatch was the bug that left the wizard's Step 2 stuck on
+// "Connect your wallet first" while the nav correctly showed
+// "Connected as xch1…".
+window.Orchard = Orchard;
