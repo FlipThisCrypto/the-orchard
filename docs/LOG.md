@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-01 — GPS regression after 0.4.x rebuild (and lesson)
+
+### What happened
+
+- Tree was running **fw 0.1.0** (the original single-`begin()` hardcoded-9600 path). GPS was producing clean NMEA, fix info reaching the dashboard for hours/days.
+- Upgrade to **fw 0.4.0** (Phase 9.0 — new `HW_INFO` serial command, no GPS-code changes per the diff). Auto-baud probe inherited from 0.3.0 ran on boot, logged `passed=0` at every rate, fell back to 9600 with a warning. Dashboard tile started showing `fix: no`, `baud: no lock`, `sentences: 0`, `bad checksum: 19`.
+- Three follow-up rebuilds (0.4.1 pinning every PIO dep, 0.4.2 making the probe report failed-checksum too) chased framework version drift theories. **None of those were the cause.**
+
+### Actual root cause
+
+- The 0.3.0 auto-baud probe (commit `08db0ac`) does **six end()/begin()/drain/wait cycles** before settling. On this WROOM-32U, that churn appears to leave UART1 in a degraded state — the **0.1.0 single-`begin()` path** worked cleanly. 0.4.2 probe results made it obvious: framing showed up at 9600 (`failed=5`), 115200 (`failed=3`), AND 4800 (`failed=6`). At a single correct baud you'd see framing at ONE rate. Seeing it at three is statistical noise + half/quarter-rate aliasing — meaning the GPS *is* at 9600 (matches what 0.1.0 expected) but the receiver is too degraded to checksum any of it.
+- The probe **locked at 4800** because that rate happened to have the highest framed-but-corrupt count. 4800 is half of 9600. Listening at half-rate on a clean line catches every other bit — perfect recipe for "framing visible, payload garbage."
+
+### Fix (in `432ac62`'s successor)
+
+- Default GPS init back to the 0.1.0 path: single `gps_uart.begin(ORCHARD_GPS_BAUD, ...)` at the hardcoded factory rate. No probe, no end/begin churn.
+- Auto-baud is now **opt-in** via `-D ORCHARD_GPS_AUTOBAUD=1` for operators with HiLetgo-style clones at 38400.
+- Version bumped to 0.4.3.
+
+### Lesson for future me
+
+- **Read LOG.md and `git log -- firmware/` BEFORE rewriting a probe that already shipped.** I had four separate prior touch-points on this exact subsystem (initial 18/19 pin remap, GPS_RAW diagnostic command, 0.3.0 auto-baud, dashboard tile interpretation). The 0.3.0 commit message literally said the symptom was "Result C from the GPS triage table: $GPRMC headers leaking through pages of garbage" — which is exactly what the operator was seeing again. Half an hour of bad theorizing (framework version drift, library bumps, hardware integrity) could have been one `git log` away.
+- The `0.4.1` exact-version PIO pin is still good practice and stays. The `0.4.2` failed/passed diagnostic in the probe is still a useful signal and stays gated behind the opt-in flag.
+- **When an operator says "this worked before your change" — believe them and `git diff` the change first, theorize second.**
+
+---
+
 ## 2026-05-30 — Genesis collection live on chain
 
 The Orchard — Genesis Passes (10 NFTs) are minted and indexed on MintGarden.

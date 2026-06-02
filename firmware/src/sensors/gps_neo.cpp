@@ -66,7 +66,31 @@ GpsNeoSensor::ProbeResult GpsNeoSensor::try_baud_probe_(uint32_t baud) {
 }
 
 bool GpsNeoSensor::begin() {
-  // Auto-detect the GPS baud rate. u-blox factory is 9600 but a lot
+  // Default path: single begin() at ORCHARD_GPS_BAUD (9600, u-blox
+  // factory). Matches firmware 0.1.0 verbatim — which is what was
+  // working on the live WROOM-32U Tree before the auto-baud probe
+  // was added in 0.3.0 (commit 08db0ac).
+  //
+  // The 0.3.0 probe was a real win for HiLetgo-style clones at 38400,
+  // but its 6-cycle end()/begin()/drain churn appeared to leave the
+  // ESP32's UART peripheral in a degraded state on the live WROOM-32U
+  // (likely arduino-esp32 framework behavior change between the
+  // version 0.1.0 was built against and the version 0.4.x fetched on
+  // rebuild). The probe locked at 4800 — exactly half of 9600, where
+  // half-rate aliasing made corrupted-byte framing accidentally look
+  // higher than at the actual 9600 transmit rate.
+  //
+  // To re-enable the probe for a HiLetgo-style clone at 38400, build
+  // with -D ORCHARD_GPS_AUTOBAUD=1. Default keeps the single-begin
+  // path that works on factory NEO modules.
+  //
+  // History: LOG.md 2026-05-29 entry + commit 08db0ac (probe added).
+#ifndef ORCHARD_GPS_AUTOBAUD
+#define ORCHARD_GPS_AUTOBAUD 0
+#endif
+
+#if ORCHARD_GPS_AUTOBAUD
+  // Opt-in: u-blox factory is 9600 but a lot
   // of clone modules (HiLetgo, generic AliExpress) ship preconfigured
   // for 38400 or other rates, producing garbled output at 9600.
   //
@@ -140,15 +164,22 @@ bool GpsNeoSensor::begin() {
   // dashboard tile shows the operator the difference between "fix in
   // progress" and "module silent."
   gps_uart.end();
-  gps_uart.begin(9600, SERIAL_8N1,
+  gps_uart.begin(ORCHARD_GPS_BAUD, SERIAL_8N1,
                  ORCHARD_PIN_GPS_RX, ORCHARD_PIN_GPS_TX);
   Serial.println("[gps] WARN: no NMEA framing at any tried baud rate. "
                  "Check wiring (GPS TX -> GPIO 18), power (GPS VCC, GND), "
                  "antenna, and that the module isn't in UBX-only mode.");
   detected_baud_ = 0;
-  return true;   // keep the sensor in the registry so the GPS tile
-                 // still appears in the dashboard; operator will see
-                 // baud=0 and know to dig in.
+  return true;
+#endif  // ORCHARD_GPS_AUTOBAUD
+
+  // 0.1.0 path: single begin at the configured baud, no probe.
+  gps_uart.begin(ORCHARD_GPS_BAUD, SERIAL_8N1,
+                 ORCHARD_PIN_GPS_RX, ORCHARD_PIN_GPS_TX);
+  detected_baud_ = ORCHARD_GPS_BAUD;
+  Serial.printf("[gps] init at %u baud (hardcoded, factory default)\n",
+                (unsigned)ORCHARD_GPS_BAUD);
+  return true;
 }
 
 void GpsNeoSensor::pump_uart_() {
