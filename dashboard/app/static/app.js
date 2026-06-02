@@ -264,7 +264,23 @@ const OrchardView = (() => {
     });
     let r = { ok: regResp.ok, status: regResp.status,
               body: await regResp.json().catch(() => ({})) };
-    if (!r.ok) { setStep(0, 'Register with oracle', 'err', r.body.error || `HTTP ${r.status}`); btn.disabled = false; return; }
+    if (!r.ok) {
+      // Friendlier copy for the most common 401 cause: oracle restart
+      // rotated its session-signing secret since we connected. The
+      // authFetch wrapper already cleared the stale token so a single
+      // reconnect fixes it.
+      let msg;
+      if (r.status === 401) {
+        msg = 'Wallet session was rejected by the oracle ' +
+              '(likely an oracle restart since you connected). ' +
+              'Click Disconnect, then Connect Wallet again, then Verify Pass, then re-click Provision Tree.';
+      } else {
+        msg = r.body.error || `HTTP ${r.status}`;
+      }
+      setStep(0, 'Register with oracle', 'err', msg);
+      btn.disabled = false;
+      return;
+    }
     const regMsg = r.body.register?.pass_nft_id
       ? `Pass bound: ${r.body.register.pass_nft_id.slice(0, 16)}…`
       : (r.body.register?.new ? 'new' : 'updated');

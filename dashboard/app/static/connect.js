@@ -146,6 +146,14 @@ const Orchard = (() => {
 
   // Authenticated fetch wrapper — attaches Bearer if a session exists.
   // Exposed via Orchard.authFetch so the wizard + tree pages can use it.
+  //
+  // Auto-401 cleanup: if we sent a token and the server rejected it
+  // (oracle restart rotated its ephemeral secret, or the token
+  // genuinely expired), drop the local copy and notify so any open
+  // wizard panel re-renders into the "Connect Wallet" state instead
+  // of leaving the user staring at a cryptic "Signature verification
+  // failed" deep in a flow. The response is passed through unchanged
+  // so the caller still sees the 401 and can show its own UX.
   async function authFetch(url, opts = {}) {
     const s = getSession();
     const headers = new Headers(opts.headers || {});
@@ -153,7 +161,14 @@ const Orchard = (() => {
     if (opts.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    return fetch(url, { ...opts, headers });
+    const resp = await fetch(url, { ...opts, headers });
+    if (resp.status === 401 && s) {
+      console.warn(
+        "[orchard.connect] auth fetch returned 401 for " + url +
+        " — clearing stale session and prompting reconnect.");
+      clearSession();
+    }
+    return resp;
   }
 
   // -------------------------- WalletConnect --------------------------
