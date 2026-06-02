@@ -76,7 +76,7 @@ $JUICE becomes:
 - Ecosystem utility
 - Liquidity asset
 
-Potential future reward logic considers: uptime, sensor diversity, geographic scarcity, validated submissions, reputation, Orchard Pass tier bonuses.
+Potential future reward logic considers: uptime, sensor diversity, geographic scarcity, validated submissions, reputation, Orchard Pass tier bonuses, **mirror-operator uptime** (operators who bond DataLayer mirrors of *other* operators' stores earn $JUICE proportional to mirror availability — see [decisions/0002-grove-federation-direction.md](decisions/0002-grove-federation-direction.md) for the architecture).
 
 ---
 
