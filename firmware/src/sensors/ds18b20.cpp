@@ -41,16 +41,33 @@ bool DS18B20Sensor::begin() {
   // it'd be too slow if we ever shrink the sample interval.
   dt_.setResolution(rom_, 12);
 
-  // Default DallasTemperature behavior is to block in
-  // requestTemperatures() for the full conversion time. We accept
-  // that for v1 — it's ~750 ms once a minute, negligible.
+  // Non-blocking conversions. By default DallasTemperature blocks inside
+  // requestTemperatures() for the full ~750 ms 12-bit conversion. That
+  // 750 ms block overlapping the WiFi association handshake at boot was
+  // the root cause of the ESP32-S3 power-cycle loop (see LOG 2026-06-02):
+  // the radio's association current draw plus a stalled main task browned
+  // the chip out ~12 s in, before it could ever connect. Gating the
+  // sample tick on wifi_connected() in 0.4.6 was a workaround that left
+  // the block in place; setWaitForConversion(false) removes it entirely
+  // so read() always returns in microseconds, connected or not.
+  //
+  // The pattern: request a conversion now, read its result on the NEXT
+  // sample tick. With a 60 s sample interval the 750 ms conversion is
+  // always finished long before we read it. Kick the first conversion
+  // here so the first sample tick already has a valid result waiting.
+  dt_.setWaitForConversion(false);
+  dt_.requestTemperatures();
 
   return true;
 }
 
 bool DS18B20Sensor::read(JsonObject out) {
-  dt_.requestTemperatures();
+  // Read the conversion requested on the previous tick (or in begin()),
+  // then immediately kick the next one. Because begin() called
+  // setWaitForConversion(false), requestTemperatures() returns without
+  // blocking — this whole call is a few microseconds, not ~750 ms.
   const float t = dt_.getTempC(rom_);
+  dt_.requestTemperatures();
 
   // DallasTemperature reports DEVICE_DISCONNECTED_C (-127.0) when the
   // chip doesn't respond. Drop the sample if so — better to omit the

@@ -15,12 +15,18 @@ flasher/
 ├── README.md                              (this file)
 ├── index.html                             # the install page
 ├── manifest.json                          # esp-web-tools build descriptor
-└── wroom32u/
-    └── orchard-wroom32u-0.1.0.bin         # merged firmware blob
-                                           #   (bootloader + partitions +
-                                           #    boot_app0 + app, ready to
-                                           #    flash at offset 0x0)
+├── wroom32u/
+│   └── orchard-wroom32u-0.4.7.bin         # classic ESP32 (WROOM-32U)
+└── freenove-s3-uart/
+    └── orchard-s3-uart-0.4.7.bin          # ESP32-S3 w/ CH343 UART bridge
+                                           # both are merged blobs (bootloader
+                                           # + partitions + boot_app0 + app),
+                                           # ready to flash at offset 0x0.
 ```
+
+esp-web-tools reads the connected chip's family and automatically picks
+the matching `builds[]` entry from `manifest.json` (ESP32 → WROOM image,
+ESP32-S3 → S3 image), so one install button serves both boards.
 
 `index.html` loads [`esp-web-tools`](https://www.npmjs.com/package/esp-web-tools) from unpkg CDN — no build step, no `npm install`. Open `index.html` in any Chromium-based browser served over HTTPS or `http://localhost` and it works.
 
@@ -60,9 +66,12 @@ python -m platformio run -e freenove_esp32_wroom
 # 2. Merge bootloader + partitions + boot_app0 + app into a single
 #    file that esp-web-tools can flash to offset 0x0.
 cd ..
-python -m esptool --chip esp32 merge-bin \
+# --flash-mode/--flash-freq = keep: preserve exactly what the env baked
+# into bootloader.bin (the WROOM env forces dio/40m). "keep" can't drift
+# out of sync with platformio.ini the way hardcoded values can.
+python -m esptool --chip esp32 merge_bin \
     --output flasher/wroom32u/orchard-wroom32u-<VERSION>.bin \
-    --flash-mode dio --flash-freq 40m --flash-size 4MB \
+    --flash-mode keep --flash-freq keep --flash-size 4MB \
     0x1000  firmware/.pio/build/freenove_esp32_wroom/bootloader.bin \
     0x8000  firmware/.pio/build/freenove_esp32_wroom/partitions.bin \
     0xe000  ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
@@ -75,33 +84,49 @@ python -m esptool --chip esp32 merge-bin \
 
 The `<VERSION>` string should match `ORCHARD_FIRMWARE_VERSION` in `firmware/platformio.ini` (and `firmware/include/version.h` if you bumped it).
 
-## ESP32-S3 build (not yet shipped)
+## ESP32-S3 build
 
-The manifest is structured so adding S3 later is a one-line change — `esp-web-tools` auto-detects the connected chip and picks the right build entry. To add it:
+Shipped as of 0.4.7 (`freenove-s3-uart/orchard-s3-uart-0.4.7.bin`).
+`esp-web-tools` auto-detects the connected chip and picks the matching
+`builds[]` entry, so the same install button serves both boards.
+
+We ship the **`freenove_esp32s3_uart`** variant (Arduino `Serial` over the
+external CH343 UART bridge) because that's what the S3 Trees in the field
+use. A board with native USB-CDC instead would need the `freenove_esp32s3`
+env's image — but esp-web-tools keys on chip *family* (both report
+"ESP32-S3"), so only one S3 image can be live at a time.
+
+To regenerate after a firmware change:
 
 ```bash
-python -m platformio run -e freenove_esp32s3
-python -m esptool --chip esp32s3 merge-bin \
-    --output flasher/esp32s3/orchard-esp32s3-<VERSION>.bin \
-    --flash-mode dio --flash-freq 40m --flash-size 8MB \
-    0x0     firmware/.pio/build/freenove_esp32s3/bootloader.bin \
-    0x8000  firmware/.pio/build/freenove_esp32s3/partitions.bin \
+python -m platformio run -e freenove_esp32s3_uart
+python -m esptool --chip esp32s3 merge_bin \
+    --output flasher/freenove-s3-uart/orchard-s3-uart-<VERSION>.bin \
+    --flash-mode keep --flash-freq keep --flash-size 8MB \
+    0x0     firmware/.pio/build/freenove_esp32s3_uart/bootloader.bin \
+    0x8000  firmware/.pio/build/freenove_esp32s3_uart/partitions.bin \
     0xe000  ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
-    0x10000 firmware/.pio/build/freenove_esp32s3/firmware.bin
+    0x10000 firmware/.pio/build/freenove_esp32s3_uart/firmware.bin
 ```
 
-Then add a second `builds[]` entry to `manifest.json`:
+The matching `manifest.json` `builds[]` entry (already present):
 
 ```json
 {
   "chipFamily": "ESP32-S3",
   "parts": [
-    { "path": "esp32s3/orchard-esp32s3-<VERSION>.bin", "offset": 0 }
+    { "path": "freenove-s3-uart/orchard-s3-uart-<VERSION>.bin", "offset": 0 }
   ]
 }
 ```
 
-(Note that ESP32-S3's bootloader sits at offset `0x0`, not `0x1000` — that's the only material difference vs classic ESP32.)
+(Note ESP32-S3's bootloader sits at offset `0x0`, not `0x1000` like classic
+ESP32 — that's the one material difference in the offset map above.)
+
+> ⚠️ The S3 web-flasher image is newly added in 0.4.7 and has not yet had an
+> end-to-end smoke test through the browser installer. The CLI path
+> (`pio run -e freenove_esp32s3_uart -t upload`) is the verified one — flash
+> one S3 through the web page and confirm it boots before relying on it.
 
 ## Publishing
 

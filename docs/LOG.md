@@ -4,6 +4,85 @@
 
 ---
 
+## 2026-06-02 (cont.) — "Sensor data not showing" triaged: dashboard is healthy, breakage is device-side; DS18B20 made non-blocking (0.4.7)
+
+Operator report: *"GPS no longer showing in the dashboard with the newest
+firmware, neither is the other sensor data — it all worked at one point."*
+Resisted touching the dashboard. Measured the data path end-to-end first.
+
+### Evidence (ran the oracle against the live DB, pulled the exact browser JSON)
+
+`GET /api/tree/<id>/latest` for all three nodes:
+
+- **WROOM `5B9BB022` (fw 0.4.3)** — MQ-135 reporting REAL data *right now*;
+  GPS `chars_processed: 0` → UART1/GPIO18 receiving zero bytes.
+- **S3 `98EA8567` (fw 0.4.0)** — every sensor 0, `ds18b20: read_failed`.
+  Flashed before the S3 pin overrides (0.4.3) → wrong pins (ADC on a
+  non-existent GPIO 34, etc.).
+- **S3 `D8F89B9E` (fw 0.4.5)** — `last_reading_at: null`, never POSTed. The
+  0.4.5 power-cycle loop; the 0.4.6 fix was never flashed to it.
+
+**Conclusion: the dashboard, oracle, `/readings`, `/api/tree/latest`, and
+app.js render path are ALL correct. 82/82 tests pass. Whatever a Tree
+sends, the dashboard renders.** The breakage is 100% on the devices.
+
+### GPS is hardware, not firmware — do NOT rebuild the driver again
+
+- `git diff 50ede87 HEAD -- gps_neo.cpp`: the 0.4.3 driver is byte-identical
+  to the working 0.1.0 single-`begin()` path; the only delta is the opt-in
+  `#if ORCHARD_GPS_AUTOBAUD` block, which is compiled out by default.
+- 0.1.0 built against `espressif32@^6.7.0`; 0.4.x pins exactly `6.7.0`. Same
+  floor → not framework drift either.
+- A real fix was captured on 0.1.0 (reading id 6119, 2026-05-31) with
+  `fix_age_ms` ≈ 33 h — i.e. the module had already gone silent ~05-30.
+- `chars_processed: 0` = nothing on the wire. Same symptom as the 2026-05-29
+  entry: loose GPS TX→GPIO18 wire / power / antenna. Triage with `GPS_RAW`
+  before changing any code.
+
+### DS18B20 non-blocking — the real fix for the S3 power-cycle (0.4.7)
+
+Root cause of the 0.4.5 power-cycle: DS18B20's `requestTemperatures()` blocks
+the main task ~750 ms (12-bit conversion). Firing that at boot *during* the
+WiFi association handshake (0.4.5 made `wifi_begin()` non-blocking, so the
+boot sample fired immediately instead of after connect) browned the chip out
+~12 s in. 0.4.6 gated the sample on `wifi_connected()` — a workaround that
+left the 750 ms block in place (just moved it past connect).
+
+0.4.7 removes the block at the source:
+- `setWaitForConversion(false)` in `DS18B20Sensor::begin()`, kick one
+  conversion there; `read()` returns the PREVIOUS conversion's result (always
+  done — samples are 60 s apart) and kicks the next. `read()` now returns in
+  microseconds. The brownout can't recur even if the WiFi gate were removed.
+- Kept the WiFi gate in `main.cpp` as an efficiency guard only (don't sample
+  with nowhere to POST); updated its comment so it no longer claims to be
+  load-bearing for stability.
+- Compiles clean on all three envs (wroom / s3 / s3_uart); `0.4.7` verified
+  embedded in both `firmware.bin`s.
+
+### Web flasher was serving 0.3.0 (the broken auto-baud GPS build!)
+
+`flasher/manifest.json` still pointed at `orchard-wroom32u-0.3.0.bin` — the
+exact regressed firmware. Bumped to 0.4.7, regenerated the WROOM merged image
+(`esptool merge_bin`, `--flash-mode/--freq keep`), added the long-missing
+**ESP32-S3** build (`freenove-s3-uart` variant — matches the field boards),
+deleted the stale 0.3.0 blob, and updated `index.html` + `README.md`. The S3
+web-flash image is new and flagged for a one-time browser smoke test (the CLI
+upload path is the verified one).
+
+### Operator actions to close it out (hardware — only the operator can)
+
+1. **WROOM GPS:** monitor + `GPS_RAW`. Silence → re-seat GPS TX→GPIO18,
+   check 5V/GND + antenna. Bytes-but-no-fix → antenna/sky view.
+2. **Reflash all boards to 0.4.7** (`pio run -e <env> -t upload`); S3 boards
+   use `freenove_esp32s3_uart`.
+   - `98EA8567` 0.4.0→0.4.7 fixes its pins (MQ135→7, SCL→9, DS18B20→10).
+   - `D8F89B9E` 0.4.5→0.4.7 fixes the power-cycle. If it STILL resets ~12 s
+     in during connect with no sampling involved, it's a pure power brownout
+     → powered USB hub / better cable.
+3. Watch `/tree/<id>` — tiles populate within 60 s of the first good POST.
+
+---
+
 ## 2026-06-02 — Marathon multi-board bring-up + handover
 
 A long session: Phase 9.0 completion, two S3 boards, two firmware
