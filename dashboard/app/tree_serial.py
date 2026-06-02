@@ -65,17 +65,38 @@ def _open(port: str) -> serial.Serial:
     return s
 
 
-def _send_and_read_line(port: str, cmd: str) -> str:
+def _send_and_read_line(
+    port: str,
+    cmd: str,
+    *,
+    timeout_override: float | None = None,
+) -> str:
     """Send `cmd\\n`, read lines until we see one starting with OK/ERR.
 
     Skips background log lines (sensor reports, wifi messages, etc.).
     If the command times out, the error message includes the last few
     non-matching lines we saw — invaluable when debugging.
+
+    ``timeout_override`` lets known-slow commands (WIFI_SET kicks an
+    asynchronous WiFi connect that the firmware ack's only after the
+    blocking-ish call returns) wait longer than the default 3s without
+    bumping the default for fast commands like PING / STATUS / HW_INFO.
     """
+    eff_timeout = (
+        timeout_override
+        if timeout_override is not None
+        else settings().serial_timeout
+    )
     with _open(port) as s:
+        # If we have a longer timeout, the port-level read timeout
+        # also needs to be at least that long, otherwise readline()
+        # returns empty after the per-read timeout and we'd be
+        # polling the deadline in tight 3s slices.
+        if eff_timeout > s.timeout:
+            s.timeout = eff_timeout
         s.write((cmd + "\n").encode("utf-8"))
         s.flush()
-        deadline = time.time() + settings().serial_timeout
+        deadline = time.time() + eff_timeout
         seen: list[str] = []
         while time.time() < deadline:
             line = s.readline().decode("utf-8", errors="replace").strip()
@@ -89,7 +110,7 @@ def _send_and_read_line(port: str, cmd: str) -> str:
                 seen = seen[-8:]
         excerpt = " | ".join(seen) if seen else "<no output at all>"
         raise TreeError(
-            f"no response from {port} to {cmd!r} within {settings().serial_timeout}s. "
+            f"no response from {port} to {cmd!r} within {eff_timeout}s. "
             f"Recent serial output: {excerpt}"
         )
 
@@ -164,7 +185,16 @@ def set_wifi(port: str, ssid: str, password: str) -> None:
         # The simple v1 command parser splits on the first space; SSIDs
         # with spaces aren't supported until we add a quoted form.
         raise TreeError("SSID cannot contain spaces in v1")
-    line = _send_and_read_line(port, f"WIFI_SET {ssid} {password}")
+    # WIFI_SET stores creds in NVS then kicks a reconnect via
+    # WiFi.begin() — the firmware ack's `OK` only after that returns.
+    # WiFi.begin() can spin ~10s on a marginal AP (auth handshake,
+    # DHCP, etc.) so the default 3s timeout is too short. Give it 20s
+    # of headroom; if a Tree can't make progress in 20s, the operator
+    # has a network problem to fix, not a serial-comm one.
+    line = _send_and_read_line(
+        port, f"WIFI_SET {ssid} {password}",
+        timeout_override=20.0,
+    )
     if not line.startswith("OK"):
         raise TreeError(f"WIFI_SET: {line}")
 
