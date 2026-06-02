@@ -96,9 +96,22 @@ bool wifi_set_credentials(const String& ssid, const String& password) {
   }
   cached_ssid_ = ssid;
   cached_pass_ = password;
+
+  // Non-blocking: drop the current connection so the next wifi_loop()
+  // tick picks up the new creds. We do NOT call try_connect_() here —
+  // that's a synchronous spin that blocks for ORCHARD_WIFI_CONNECT_TIMEOUT_MS
+  // (~10s) and starves the serial console. The console caller (e.g.
+  // the dashboard wizard's WIFI_SET) needs an immediate OK ack; if we
+  // block, the dashboard's serial timeout fires and the wizard reports
+  // "Push WiFi credentials" as failed even though the creds DID land.
+  //
+  // The throttle reset below makes wifi_loop() try the new creds on
+  // its very next pass instead of waiting up to kReconnectIntervalMs.
+  // The result is identical to the old synchronous version from the
+  // operator's POV (Tree connects within seconds) without the
+  // console-blocking side effect.
   WiFi.disconnect(true);
-  delay(200);
-  try_connect_();
+  last_reconnect_attempt_ = millis() - kReconnectIntervalMs;
   return true;
 }
 
