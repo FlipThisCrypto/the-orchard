@@ -20,6 +20,27 @@
 // When ORCHARD_VIEW_WC_PROJECT_ID is unset the page renders an
 // instructional "WalletConnect not configured" state and the button is
 // disabled — no half-working state.
+//
+// -------- WalletConnect v2.17.0 ping-watchdog polyfill ---------------
+//
+// The SDK's relay client fires a setTimeout to "force-close stale
+// connections" by calling `socket.terminate()`. That method ships on
+// Node's `ws` library but not on browser-native WebSocket — browsers
+// only have `.close()`. Without this shim every successful Connect
+// flow leaves a scary
+//   "Uncaught TypeError: s.terminate is not a function"
+// in the console after auth completes. Functionally harmless (the
+// auth/verify POST has already returned by the time the watchdog
+// fires), but distracting.
+//
+// We only install the alias if the property is missing, so this is a
+// no-op in a future where either the browser adds `terminate` natively
+// or the WC SDK switches to `close()` directly.
+if (typeof WebSocket !== "undefined" && !WebSocket.prototype.terminate) {
+  WebSocket.prototype.terminate = function terminate() {
+    try { this.close(); } catch { /* already closing */ }
+  };
+}
 
 const Orchard = (() => {
 
@@ -170,23 +191,30 @@ const Orchard = (() => {
     const { signClient: client, wcModal: modal } = await ensureClients();
 
     // Request a Chia mainnet session with two methods:
-    //   chia_getCurrentAddress     — fetch the operator's current xch1
+    //   chia_getAddress            — fetch the operator's current xch1
     //                                receive address from the wallet
     //                                (per CHIP-22, the account in the
     //                                CAIP-10 identifier is the wallet's
     //                                master-key fingerprint, not a
     //                                specific address; the wallet
     //                                derives many addresses from one
-    //                                master key)
+    //                                master key — so we have to ask
+    //                                for the address explicitly).
+    //                                Method name confirmed against the
+    //                                Sage source at
+    //                                xch-dev/sage src/walletconnect/
+    //                                commands.ts — Sage exposes this
+    //                                (NOT chia_getCurrentAddress, which
+    //                                is the older Chia-reference name).
     //   chia_signMessageByAddress  — sign the challenge with that
-    //                                specific address
+    //                                specific address.
     // No spend capability requested — least privilege.
     const { uri, approval } = await client.connect({
       requiredNamespaces: {
         chia: {
           chains:  ["chia:mainnet"],
           methods: [
-            "chia_getCurrentAddress",
+            "chia_getAddress",
             "chia_signMessageByAddress",
           ],
           events:  [],
@@ -235,55 +263,37 @@ const Orchard = (() => {
     }
     console.log("[orchard.connect] wallet fingerprint:", fingerprint);
 
-    // Try to fetch the current receive address from the wallet — works
-    // on Goby + older Chia reference wallet. Sage doesn't implement
-    // chia_getCurrentAddress, so on "Unsupported method" we fall back
-    // to asking the operator directly. Either way, the wallet has to
-    // sign with the resulting address; Sage will refuse to sign for
-    // an address it doesn't own, which IS the security check we want.
-    let address = null;
+    // Ask the wallet for the operator's current receive address.
+    // Both Sage and Goby implement chia_getAddress with empty params
+    // and return { address: "xch1..." } per the Sage commands.ts
+    // schema. No spend prompt — Sage marks this method as
+    // confirm: false, so it returns instantly.
+    console.log("[orchard.connect] requesting chia_getAddress…");
+    let getAddrResult;
     try {
-      console.log("[orchard.connect] trying chia_getCurrentAddress…");
-      const r = await client.request({
+      getAddrResult = await client.request({
         topic:   session.topic,
         chainId: "chia:mainnet",
-        request: {
-          method: "chia_getCurrentAddress",
-          params: { fingerprint, walletId: 1 },
-        },
+        request: { method: "chia_getAddress", params: {} },
       });
-      address = (typeof r === "string")
-        ? r
-        : (r?.address || r?.data?.address);
-      console.log("[orchard.connect] wallet supplied address:", address);
     } catch (e) {
-      console.log(
-        "[orchard.connect] wallet doesn't support getCurrentAddress " +
-        "(this is normal for Sage); falling back to operator prompt.");
+      console.error("[orchard.connect] chia_getAddress failed:", e);
+      throw new Error(
+        `Wallet refused to share its address: ${e?.message || e}. ` +
+        `If you're on an older Chia reference wallet, please use Sage ` +
+        `or Goby — chia_getAddress is the CHIP-22 method we use.`);
     }
+    console.log("[orchard.connect] chia_getAddress result:", getAddrResult);
 
+    const address = (typeof getAddrResult === "string")
+      ? getAddrResult
+      : (getAddrResult?.address || getAddrResult?.data?.address);
     if (typeof address !== "string" ||
         !/^xch1[0-9a-z]{50,80}$/.test(address)) {
-      // Sage's RPC surface doesn't include getCurrentAddress in this
-      // build. Ask the operator directly. Native prompt is plain but
-      // immediate; we'll upgrade to a proper in-page card in a
-      // follow-up.
-      address = window.prompt(
-        "Sage didn't share an address automatically.\n\n" +
-        "Paste the xch1 address you want to bind to your Tree. " +
-        "Sage will refuse to sign if it doesn't actually control this " +
-        "address — that's the security check.\n\n" +
-        "Wallet fingerprint: " + fingerprint
-      );
-      if (!address) {
-        throw new Error("Connect cancelled (no address provided).");
-      }
-      address = address.trim();
-      if (!/^xch1[0-9a-z]{50,80}$/.test(address)) {
-        throw new Error(
-          "That doesn't look like a Chia mainnet address (expected " +
-          "xch1... with 50-80 lowercase base32 characters after the prefix).");
-      }
+      throw new Error(
+        `Wallet returned an unexpected getAddress response shape: ` +
+        `${JSON.stringify(getAddrResult)}. ` +
+        `Expected {address: "xch1..."}.`);
     }
     console.log("[orchard.connect] address for signing:", address);
 

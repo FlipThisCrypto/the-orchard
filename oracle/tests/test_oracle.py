@@ -536,7 +536,18 @@ def test_challenge_issues_a_nonce(auth_client: TestClient):
     assert r.status_code == 200
     body = r.json()
     assert len(body["nonce"]) >= 32
-    assert "Chia Signed Message" in body["message"]
+    # The user-facing message must:
+    #   - identify which oracle this is (so the operator knows what
+    #     they're authorizing in the wallet's sign prompt)
+    #   - bind the signature to this specific challenge (the nonce
+    #     appearing in the message text is what makes replay obvious)
+    # It does NOT need to contain "Chia Signed Message" anymore — that
+    # prefix is applied as a CLVM cons-cell wrapper at sign time, not
+    # as a user-visible string concatenation. (Including it in the
+    # readable text was a leftover bug from when verify did UTF-8
+    # concatenation; Sage would have hashed it twice.)
+    assert "Orchard View" in body["message"]
+    assert body["nonce"] in body["message"]
     assert body["expires_at"] > 0
 
 
@@ -633,6 +644,144 @@ def test_whoami_with_garbage_token_returns_401(auth_client: TestClient):
         headers={"Authorization": "Bearer not.a.jwt"},
     )
     assert r.status_code == 401
+
+
+def test_puzzle_hash_for_synthetic_pk_matches_canonical_chia_spec():
+    """Pin the live Sage WalletConnect test vector against the value
+    that the official chia library's ``puzzle_for_synthetic_public_key
+    (pk).get_tree_hash()`` produces. Without this, any drift in the
+    hand-rolled ``curry_and_treehash`` would silently break the pk
+    -> address binding check (i.e. all wallet logins would 401 with
+    "pk-binding check failed") — exactly the regression that broke
+    the live flow before this fix landed.
+
+    Test vector source: a real Sage Wallet chia_signMessageByAddress
+    response received during the Phase 6.6 bring-up. The address was
+    decoded with chia.util.bech32m.decode_puzzle_hash and the puzzle
+    hash with chia.wallet.puzzles.p2_delegated_puzzle_or_hidden_puzzle
+    .puzzle_for_synthetic_public_key(pk).get_tree_hash() — both inside
+    the canonical chia 2.7.1 library."""
+    from oracle.app.wallet_auth import (
+        puzzle_hash_for_synthetic_pk,
+        xch_address_for_synthetic_pk,
+    )
+
+    # Synthetic pk returned by Sage for the address below. NB: this
+    # is the *synthetic* pk, not the master pk — CHIP-22 wallets
+    # return the synthetic key already.
+    SAGE_PK = bytes.fromhex(
+        "9837de38806397d09c570ec84867e009bd6c39756ffd1ad7d4130f07d2e7a52f"
+        "90471324857e03ec6b22752d7f76bb7d"
+    )
+    EXPECTED_ADDR = (
+        "xch1kdzqtkpd42n2avcr6qwdvj69fjn97xl555v0lkpvfg84gdfuchsqee3j04"
+    )
+    EXPECTED_PH = bytes.fromhex(
+        "b34405d82daaa6aeb303d01cd64b454ca65f1bf4a518ffd82c4a0f54353cc5e0"
+    )
+
+    assert puzzle_hash_for_synthetic_pk(SAGE_PK) == EXPECTED_PH
+    assert xch_address_for_synthetic_pk(SAGE_PK) == EXPECTED_ADDR
+
+
+def test_parse_signature_message_matches_sage():
+    """Mirror Sage's parse_signature_message Rust unit tests verbatim.
+    Source: xch-dev/sage/crates/sage/src/utils/parse.rs."""
+    from oracle.app.wallet_auth import _parse_signature_message as p
+
+    # hex with 0x prefix
+    assert p("0x1234567890abcdef") == bytes.fromhex("1234567890abcdef")
+    # hex without prefix
+    assert p("1234567890abcdef")   == bytes.fromhex("1234567890abcdef")
+    # Plain text (non-hex chars present)
+    assert p("Hello, world!")      == b"Hello, world!"
+    # Short hex variants
+    assert p("0xcafe") == b"\xca\xfe"
+    assert p("cafe")   == b"\xca\xfe"
+    # Empty string is NOT all-hex (the .is_empty() guard) — UTF-8 path
+    assert p("") == b""
+    # Mixed-case hex still hex
+    assert p("CaFe") == b"\xca\xfe"
+
+
+def test_signed_message_payload_pins_cons_cell_recipe():
+    """Pin the 32-byte tree-hash that Sage feeds into AugScheme.sign.
+    Computed by hand from the spec — left=b'Chia Signed Message',
+    right=parse_signature_message(msg), then shatree_pair."""
+    import hashlib
+    from oracle.app.wallet_auth import signed_message_payload
+
+    def sha(b): return hashlib.sha256(b).digest()
+
+    def expected(msg_bytes: bytes) -> bytes:
+        left  = sha(b"\x01" + b"Chia Signed Message")
+        right = sha(b"\x01" + msg_bytes)
+        return sha(b"\x02" + left + right)
+
+    # Plain-text path
+    assert signed_message_payload("hello") == expected(b"hello")
+    assert signed_message_payload(
+        "Sign in to Orchard View.\n\nChallenge nonce: " + "a" * 64
+    ) == expected(
+        ("Sign in to Orchard View.\n\nChallenge nonce: " + "a" * 64).encode("utf-8")
+    )
+
+    # Hex auto-detect path: oracle nonce is always all-hex, so the
+    # wallet hex-decodes to raw bytes before tree-hashing.
+    assert signed_message_payload("deadbeef") == expected(b"\xde\xad\xbe\xef")
+    assert signed_message_payload("0xdeadbeef") == expected(b"\xde\xad\xbe\xef")
+
+
+def test_verify_chia_signed_message_round_trip_through_real_bls():
+    """End-to-end BLS verify with a sk we generate ourselves: sign with
+    AugScheme + signed_message_payload, verify through the public API.
+    Proves the cons-cell recipe AND the chia-rs glue are wired right.
+    Without this, the live wallet sig from Sage will continue to fail
+    "BLS signature verification failed" even after the cons-cell fix —
+    because there's no way to know that AugScheme is being fed the
+    exact same 32 bytes Sage hands to its sign() function."""
+    from chia_rs import AugSchemeMPL, PrivateKey
+    from oracle.app.wallet_auth import (
+        signed_message_payload,
+        verify_chia_signed_message,
+        xch_address_for_synthetic_pk,
+    )
+
+    # Pick a deterministic synth-sk-like value. AugScheme works with
+    # ANY 32-byte scalar; the wallet derivation hierarchy is upstream
+    # of this point and doesn't change the verification recipe.
+    sk = PrivateKey.from_bytes(b"\x42" * 32)
+    pk_bytes = bytes(sk.get_g1())
+
+    addr = xch_address_for_synthetic_pk(pk_bytes)
+    message = (
+        "Sign in to Orchard View.\n\n"
+        f"Challenge nonce: {'7e57'*16}\n"
+        "If you didn't initiate this, decline."
+    )
+
+    payload = signed_message_payload(message)
+    sig_bytes = bytes(AugSchemeMPL.sign(sk, payload))
+
+    result = verify_chia_signed_message(
+        address=addr,
+        public_key_hex=pk_bytes.hex(),
+        signature_hex=sig_bytes.hex(),
+        message=message,
+    )
+    assert result.ok, result.reason
+
+    # Negative control: a one-bit flip in the message must fail the
+    # verify. Catches a regression where signed_message_payload
+    # accidentally ignored its input.
+    bad = verify_chia_signed_message(
+        address=addr,
+        public_key_hex=pk_bytes.hex(),
+        signature_hex=sig_bytes.hex(),
+        message=message + "x",
+    )
+    assert not bad.ok
+    assert "BLS signature verification failed" in bad.reason
 
 
 # ---------------- Phase 6.6: scoped GETs + DELETE ----------------

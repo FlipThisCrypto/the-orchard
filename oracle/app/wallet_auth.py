@@ -21,9 +21,25 @@ Chia WalletConnect (CHIP-22) ``chia_signMessageByAddress`` returns:
     "signature": "<96-byte G2 element, hex>",  # AugScheme over the message
   }
 
-The message that's signed is the *raw* challenge string. (Sage and
-Goby both pre-pend ``Chia Signed Message:\\n`` before passing to
-AugScheme.sign(); we mirror that here on verify.)
+The message that's signed is NOT a string concatenation. Per Sage
+source (``xch-dev/sage/crates/sage/src/endpoints/wallet_connect.rs``):
+
+    let decoded_message = parse_signature_message(req.message)?;
+    let signature = sign(
+        &secret_key,
+        ("Chia Signed Message", decoded_message).tree_hash(),
+    );
+
+So the 32 bytes actually signed are the CLVM tree-hash of the cons
+cell ``(b"Chia Signed Message" . decoded_message)``, where
+``decoded_message`` is:
+
+  - ``bytes.fromhex(msg.removeprefix("0x"))``  if msg is hex-shaped, OR
+  - ``msg.encode("utf-8")``                     otherwise
+
+Goby uses the same recipe (CHIP-22 spec). We mirror it here. AugScheme
+internally hash-to-curves whatever bytes you give it, so we pass the
+32-byte tree hash directly to ``AugSchemeMPL.verify``.
 
 Wallet-pk → xch1-address derivation uses the standard p2 delegated
 puzzle: the address's puzzle hash is
@@ -43,9 +59,11 @@ P2_DELEGATED_TEMPLATE_HASH: Final[bytes] = bytes.fromhex(
     "e9aaa49f45bad5c889b86ee3341550c155cfdd10c3a6757de618d20612fffd52"
 )
 
-# Prefix Chia wallets prepend to a signMessageByAddress payload before
-# BLS-signing. Documented in CHIP-22.
-SIGNED_MESSAGE_PREFIX: Final[str] = "Chia Signed Message:\n"
+# The left-side atom of the cons cell that wallets wrap the message in
+# before BLS-signing. The bytes are EXACTLY this — no colon, no
+# newline, no UTF-8 BOM. Source: Sage's wallet_connect.rs signs
+# ``("Chia Signed Message", decoded_message).tree_hash()``.
+SIGNED_MESSAGE_PREFIX_ATOM: Final[bytes] = b"Chia Signed Message"
 
 
 class WalletAuthError(RuntimeError):
@@ -128,31 +146,102 @@ def _sha256(b: bytes) -> bytes:
     return hashlib.sha256(b).digest()
 
 
-def _atom_tree_hash(atom: bytes) -> bytes:
-    """The "tree hash" of a CLVM atom is sha256(0x01 || atom)."""
+def _shatree_atom(atom: bytes) -> bytes:
+    """Tree hash of a CLVM atom: sha256(0x01 || atom)."""
     return _sha256(b"\x01" + atom)
 
 
-def _curry_one_pk_treehash(template_hash: bytes, pk_bytes: bytes) -> bytes:
-    """Compute the puzzle hash of (currying ``pk_bytes`` into the
-    template puzzle whose hash is ``template_hash``).
+def _shatree_pair(left: bytes, right: bytes) -> bytes:
+    """Tree hash of a CLVM cons cell: sha256(0x02 || treehash(L) || treehash(R))."""
+    return _sha256(b"\x02" + left + right)
 
-    This is the standard Chia ``curry_and_treehash`` for a single 48-byte
-    pubkey arg. The formula reduces to:
 
-      pair = ph_pair(treehash(pk_atom), treehash_of_empty_list)
-      return ph_pair(template_hash, pair)
+# Pre-computed CLVM keyword tree hashes (quote=1, apply=2, cons=4).
+# Mirrors chia.wallet.util.curry_and_treehash exactly.
+_Q_KW_TH:   Final[bytes] = _shatree_atom(b"\x01")
+_A_KW_TH:   Final[bytes] = _shatree_atom(b"\x02")
+_C_KW_TH:   Final[bytes] = _shatree_atom(b"\x04")
+_ONE_TH:    Final[bytes] = _shatree_atom(b"\x01")
+_NIL_TH:    Final[bytes] = _shatree_atom(b"")
 
-    where ph_pair(l, r) = sha256(0x02 || l || r). For the single-arg
-    curry case the right side of the inner pair is the "treehash of
-    an empty environment" which is the well-known constant below.
+
+def _calculate_hash_of_quoted_mod_hash(mod_hash: bytes) -> bytes:
+    """Tree hash of ``(q . MOD)`` where ``mod_hash`` is already the
+    tree hash of MOD. NB: ``mod_hash`` is used as-is on the right side
+    — it is NOT wrapped in shatree_atom again."""
+    return _shatree_pair(_Q_KW_TH, mod_hash)
+
+
+def _curried_values_tree_hash(arg_hashes: list[bytes]) -> bytes:
+    """Tree hash of the curried environment recursively:
+
+        []       -> ONE   (the CLVM `1` env passthrough)
+        [a, ...] -> (c (q . a) (curried_values_tree_hash(rest) . nil))
+
+    This is the canonical Chia algorithm (see
+    ``chia.wallet.util.curry_and_treehash``). The base case is ONE,
+    NOT NIL — that's what makes the curried puzzle pass runtime args
+    through to the inner module instead of swallowing them.
     """
-    PH_NIL = _atom_tree_hash(b"")   # treehash of `()` atom
+    if not arg_hashes:
+        return _ONE_TH
+    return _shatree_pair(
+        _C_KW_TH,
+        _shatree_pair(
+            _shatree_pair(_Q_KW_TH, arg_hashes[0]),
+            _shatree_pair(_curried_values_tree_hash(arg_hashes[1:]), _NIL_TH),
+        ),
+    )
 
-    # Build the curried-environment treehash bottom-up.
-    pk_ph = _atom_tree_hash(pk_bytes)
-    inner = _sha256(b"\x02" + pk_ph + PH_NIL)
-    return _sha256(b"\x02" + template_hash + inner)
+
+def _curry_and_treehash(quoted_mod_hash: bytes, *hashed_args: bytes) -> bytes:
+    """Tree hash of ``(a (q . MOD) E)`` where E is the curried env."""
+    env = _curried_values_tree_hash(list(hashed_args))
+    return _shatree_pair(
+        _A_KW_TH,
+        _shatree_pair(quoted_mod_hash, _shatree_pair(env, _NIL_TH)),
+    )
+
+
+# Pre-computed once: tree hash of (q . P2_DELEGATED_MOD).
+_QUOTED_P2_DELEGATED_MOD_TH: Final[bytes] = _calculate_hash_of_quoted_mod_hash(
+    P2_DELEGATED_TEMPLATE_HASH
+)
+
+
+def _parse_signature_message(message: str) -> bytes:
+    """Mirror Sage's ``parse_signature_message`` exactly.
+
+    - ``"0xabc..."`` (any case, any length, valid hex) -> hex-decoded bytes
+    - ``"abc..."``   (no prefix, all-hex, non-empty)   -> hex-decoded bytes
+    - ``"anything else"``                              -> UTF-8 bytes
+
+    The hex auto-detect is what lets Sage support both "sign this 32-byte
+    digest" use cases (hex blob) and "sign this human-readable sentence"
+    use cases (regular text) under one method.
+    """
+    stripped = message.removeprefix("0x")
+    if stripped and all(c in "0123456789abcdefABCDEF" for c in stripped):
+        try:
+            return bytes.fromhex(stripped)
+        except ValueError:
+            pass  # malformed odd-length hex -> fall back to UTF-8
+    return message.encode("utf-8")
+
+
+def signed_message_payload(message: str) -> bytes:
+    """The 32-byte CLVM tree-hash that Sage/Goby feed into AugScheme.
+
+    Equivalent to the Rust expression:
+
+        ("Chia Signed Message", parse_signature_message(message)).tree_hash()
+
+    See module docstring for the source link.
+    """
+    decoded = _parse_signature_message(message)
+    left  = _shatree_atom(SIGNED_MESSAGE_PREFIX_ATOM)
+    right = _shatree_atom(decoded)
+    return _shatree_pair(left, right)
 
 
 def puzzle_hash_for_synthetic_pk(synth_pk_bytes: bytes) -> bytes:
@@ -160,11 +249,18 @@ def puzzle_hash_for_synthetic_pk(synth_pk_bytes: bytes) -> bytes:
 
     The CHIP-22 signMessageByAddress flow returns the synthetic pk
     directly, so this is the value the wallet's address derives from.
+
+    Verified against ``chia.wallet.puzzles.p2_delegated_puzzle_or_hidden_puzzle
+    .puzzle_for_synthetic_public_key(pk).get_tree_hash()`` for the live
+    Sage test vector pk=9837de38... -> xch1kdzqtkpd...
     """
     if len(synth_pk_bytes) != 48:
         raise WalletAuthError(
             f"synthetic public key must be 48 bytes, got {len(synth_pk_bytes)}")
-    return _curry_one_pk_treehash(P2_DELEGATED_TEMPLATE_HASH, synth_pk_bytes)
+    return _curry_and_treehash(
+        _QUOTED_P2_DELEGATED_MOD_TH,
+        _shatree_atom(synth_pk_bytes),
+    )
 
 
 def xch_address_for_synthetic_pk(synth_pk_bytes: bytes,
@@ -244,7 +340,7 @@ def verify_chia_signed_message(
             "public_key does NOT derive to address (pk-binding check failed)",
         )
 
-    # 3) BLS verify the signature over the prefixed message.
+    # 3) BLS verify the signature over the cons-cell tree-hash payload.
     if test_mode:
         return VerifyResult(True, "test_mode bypass (BLS verify skipped)")
 
@@ -253,7 +349,7 @@ def verify_chia_signed_message(
     except ValueError:
         return VerifyResult(False, "signature_hex: not valid hex")
 
-    prefixed = (SIGNED_MESSAGE_PREFIX + message).encode("utf-8")
+    payload = signed_message_payload(message)   # 32-byte CLVM tree hash
     try:
         # Imported lazily so the module is importable in test
         # environments that don't have chia-rs installed.
@@ -269,7 +365,7 @@ def verify_chia_signed_message(
     except Exception as e:
         return VerifyResult(False, f"BLS element parse failed: {e}")
 
-    if not AugSchemeMPL.verify(pk, prefixed, sig):
+    if not AugSchemeMPL.verify(pk, payload, sig):
         return VerifyResult(False, "BLS signature verification failed")
 
     return VerifyResult(True)

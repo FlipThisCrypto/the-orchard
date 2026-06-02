@@ -4,10 +4,21 @@
 The challenge-response handshake mirrors the WalletConnect / CHIP-22
 flow used by Sage and Goby:
 
-    1. Browser hits  POST /auth/challenge          -> { nonce, expires }
-    2. Wallet signs `Chia Signed Message:\\n<nonce>` -> { publicKey, signature }
+    1. Browser hits  POST /auth/challenge          -> { nonce, expires, message }
+    2. Wallet signs the message via chia_signMessageByAddress
+                                                     -> { publicKey, signature }
     3. Browser hits  POST /auth/verify             -> { session_token, expires_at }
     4. Subsequent requests carry  Authorization: Bearer <session_token>
+
+The "message" the wallet signs is a short human-readable challenge
+string. Sage/Goby wrap it as ``("Chia Signed Message", message_bytes)
+.tree_hash()`` internally before BLS-signing; the oracle mirrors that
+recipe on verify (see ``wallet_auth.signed_message_payload``).
+
+/auth/verify reconstructs the message from the nonce server-side
+rather than trusting the client's copy — that closes a class of
+"client sent a different message than it asked the wallet to sign"
+shenanigans.
 
 The verify step validates both that the BLS signature is valid AND
 that the public key derives to the claimed xch1 address — without
@@ -34,12 +45,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # ---------- request / response shapes -------------------------------
 
 class ChallengeResponse(BaseModel):
-    nonce: str = Field(..., description="random hex string to be signed")
+    nonce: str = Field(..., description="random hex string, the per-challenge salt")
     expires_at: int = Field(..., description="unix timestamp")
     message: str = Field(..., description=(
-        "the exact string the wallet should sign. Includes the "
-        "'Chia Signed Message:\\n' prefix that Sage/Goby auto-add, "
-        "so the operator can verify what they're signing."
+        "the exact human-readable string the wallet displays in its "
+        "sign prompt. The wallet internally wraps this in the "
+        "CHIP-22 cons-cell (b'Chia Signed Message' . message_bytes) "
+        "before BLS-signing — see oracle.app.wallet_auth."
     ))
 
 
@@ -88,6 +100,19 @@ def require_session(
 
 # ---------- routes ---------------------------------------------------
 
+def _message_for_nonce(nonce: str) -> str:
+    """The exact UTF-8 string the wallet displays in its sign prompt.
+    Reconstructed server-side from the nonce on both /challenge AND
+    /verify so the client can't ask the wallet to sign one thing and
+    submit "I signed something else" to us. Operators see this string
+    in the Sage/Goby modal — keep it readable and self-describing."""
+    return (
+        "Sign in to Orchard View.\n\n"
+        f"Challenge nonce: {nonce}\n"
+        "If you didn't initiate this, decline."
+    )
+
+
 @router.post("/challenge", response_model=ChallengeResponse)
 def challenge() -> ChallengeResponse:
     """Issue a one-time nonce for the wallet to sign."""
@@ -95,7 +120,7 @@ def challenge() -> ChallengeResponse:
     return ChallengeResponse(
         nonce=nonce,
         expires_at=expires_at,
-        message=wallet_auth.SIGNED_MESSAGE_PREFIX + nonce,
+        message=_message_for_nonce(nonce),
     )
 
 
@@ -112,14 +137,17 @@ def verify(req: VerifyRequest) -> VerifyResponse:
         )
 
     # 2) verify the BLS signature AND that the pubkey binds to the
-    #    claimed address. test_mode lets the test suite exercise the
+    #    claimed address. The message we verify against is rebuilt
+    #    server-side from the nonce so a malicious client can't ask
+    #    the wallet to sign "transfer 1000 XCH" and then submit that
+    #    sig to log in. test_mode lets the test suite exercise the
     #    flow without a real wallet; production requires
     #    settings().auth_test_mode = False (the default).
     result = wallet_auth.verify_chia_signed_message(
         address=req.address,
         public_key_hex=req.public_key,
         signature_hex=req.signature,
-        message=req.nonce,
+        message=_message_for_nonce(req.nonce),
         test_mode=settings().auth_test_mode,
     )
     if not result.ok:
