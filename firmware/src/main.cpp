@@ -71,8 +71,22 @@ void loop() {
   orchard::net::wifi_loop();
   orchard::net::ota_loop();
 
+  // Don't sample-and-post until WiFi is up. The sample path includes
+  // DS18B20::requestTemperatures() which blocks the main task for
+  // ~750ms (one full 12-bit conversion). If that blocking window
+  // overlaps the WiFi connect handshake at boot, the WiFi task can
+  // starve and the chip can brown out trying to TX while the main
+  // task is stuck in a 1-Wire wait. The old blocking try_connect_()
+  // implicitly serialized this — WiFi always finished connecting
+  // before the first sample fired. The non-blocking version (0.4.5)
+  // didn't, which manifested as ~12s power-cycle loops on the S3
+  // dev board with CH343 bridge + DS18B20 wired up.
+  //
+  // Once WiFi is connected, the radio's TX bursts are short and the
+  // 750ms DS18B20 read doesn't conflict.
   const uint32_t now = millis();
-  if (now - last_sample_ms_ >= ORCHARD_SAMPLE_INTERVAL_MS) {
+  if (now - last_sample_ms_ >= ORCHARD_SAMPLE_INTERVAL_MS &&
+      orchard::net::wifi_connected()) {
     last_sample_ms_ = now;
     do_sample_and_post();
   }

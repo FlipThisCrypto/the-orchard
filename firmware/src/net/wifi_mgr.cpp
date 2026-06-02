@@ -29,6 +29,15 @@ constexpr uint32_t kReconnectIntervalMs = 30000;
 // from the connect kicked by WIFI_SET, so console_loop couldn't run.
 bool connect_in_flight_ = false;
 uint32_t connect_started_at_ = 0;
+// Last time wifi_loop polled WiFi.status() while connect_in_flight_
+// was true. We throttle to ~once every 250ms instead of every 10ms
+// (the main loop's delay) — hammering WiFi.status() 100x/sec while
+// the radio is doing its connect handshake starves the WiFi internal
+// task on some boards and can manifest as connect failures or
+// brownouts. 250ms matches the cadence the previous blocking
+// try_connect_() spin used to use (delay(250) between status checks).
+uint32_t last_status_check_ = 0;
+constexpr uint32_t kStatusCheckIntervalMs = 250;
 
 void load_creds_() {
   Preferences prefs;
@@ -65,17 +74,22 @@ void wifi_begin() {
 void wifi_loop() {
   // If a connect attempt is in flight, poll its status and log the
   // result on transition. Non-blocking — returns within microseconds.
+  // Throttle status reads to kStatusCheckIntervalMs (250ms) to avoid
+  // starving the WiFi internal task.
   if (connect_in_flight_) {
+    const uint32_t now = millis();
+    if (now - last_status_check_ < kStatusCheckIntervalMs) return;
+    last_status_check_ = now;
     if (WiFi.status() == WL_CONNECTED) {
       Serial.printf("[wifi] connected, ip=%s rssi=%d\n",
                     WiFi.localIP().toString().c_str(),
                     WiFi.RSSI());
       connect_in_flight_ = false;
-    } else if (millis() - connect_started_at_ >=
+    } else if (now - connect_started_at_ >=
                ORCHARD_WIFI_CONNECT_TIMEOUT_MS) {
       Serial.println("[wifi] connect timeout; will retry");
       connect_in_flight_ = false;
-      last_reconnect_attempt_ = millis();
+      last_reconnect_attempt_ = now;
     }
     return;
   }
