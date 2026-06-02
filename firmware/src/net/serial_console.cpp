@@ -8,8 +8,17 @@
 #include "identity.h"
 #include "oracle.h"
 #include "sensors/gps_neo.h"
+#include "sensors/sensor.h"
 #include "version.h"
 #include "wifi_mgr.h"
+
+// Phase 9.0: per-build board identifier. Comes from -D in
+// platformio.ini for each env (wroom32u, freenove-s3, ...).
+// Fall back to "generic" if a build forgot to set it — that way
+// HW_INFO still has a valid JSON value, just an unhelpful one.
+#ifndef ORCHARD_BOARD_HINT
+#define ORCHARD_BOARD_HINT "generic"
+#endif
 
 namespace orchard::net {
 
@@ -33,6 +42,57 @@ void cmd_status_(const String& /*args*/) {
   s += millis();
   s += "}";
   Serial.println(s);
+}
+
+// Phase 9.0: machine-readable hardware fingerprint.
+//
+// Emits one line:
+//   OK {"fw":"0.4.0","chip":"ESP32-S3","board":"freenove-s3",
+//       "node_id":"<32 hex>",
+//       "sensors":[{"name":"bme280","bus":"i2c","addr":118,"active":true},
+//                  {"name":"mq135","bus":"analog","active":true},...]}
+//
+// "active" reflects what `Sensor::begin()` returned during boot — i.e.
+// "did the probe actually find this device on its declared bus." So an
+// inactive entry means "the firmware was compiled with support for
+// this sensor but couldn't talk to it on boot" (wiring wrong, sensor
+// missing, etc.), and an active entry means "the device responded."
+//
+// The wizard parses this to pre-fill Step 1's sensor checklist and to
+// drive the multi-board firmware variant picker downstream.
+void cmd_hw_info_(const String& /*args*/) {
+  const auto& sensors = orchard::sensors::SensorRegistry::instance().all();
+
+  // Use ArduinoJson to compose so we get proper escaping for free.
+  // Capacity: chip/board/node_id strings ~120 bytes + per-sensor
+  // ~80 bytes; sized generously to never realloc.
+  JsonDocument doc;
+  doc["fw"]      = orchard::kFirmwareVersion;
+  doc["chip"]    = ESP.getChipModel();
+  doc["board"]   = ORCHARD_BOARD_HINT;
+  doc["node_id"] = identity::node_id_hex();
+
+  JsonArray arr = doc["sensors"].to<JsonArray>();
+  for (const auto& s : sensors) {
+    JsonObject o = arr.add<JsonObject>();
+    o["name"]   = s->name();
+    o["active"] = s->is_active();
+    switch (s->bus_type()) {
+      case orchard::sensors::BusType::kI2C:
+        o["bus"]  = "i2c";
+        if (const uint8_t a = s->i2c_address(); a != 0) o["addr"] = a;
+        break;
+      case orchard::sensors::BusType::kUART:     o["bus"] = "uart";    break;
+      case orchard::sensors::BusType::kAnalog:   o["bus"] = "analog";  break;
+      case orchard::sensors::BusType::kDigital:  o["bus"] = "digital"; break;
+      case orchard::sensors::BusType::kInternal: o["bus"] = "internal";break;
+    }
+  }
+
+  String out;
+  serializeJson(doc, out);
+  Serial.print("OK ");
+  Serial.println(out);
 }
 
 void cmd_wifi_set_(const String& args) {
@@ -66,6 +126,8 @@ void dispatch_(const String& line) {
     Serial.println(
         identity::to_hex(identity::signing_secret(),
                          identity::kSigningSecretLen));
+  } else if (cmd == "HW_INFO") {
+    cmd_hw_info_(args);
   } else if (cmd == "WIFI_SET") {
     cmd_wifi_set_(args);
   } else if (cmd == "WIFI_CLEAR") {
