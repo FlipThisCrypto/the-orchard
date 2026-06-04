@@ -21,6 +21,18 @@
 #include <JPEGDEC.h>
 #include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_panel_ops.h"
+#include "font8x16.h"
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+#ifndef ORCHARD_WIFI_SSID
+#define ORCHARD_WIFI_SSID  ""
+#define ORCHARD_WIFI_PASS  ""
+#define ORCHARD_ORACLE_URL "http://192.168.0.223:8000"
+#endif
 
 // ---- panel geometry ---------------------------------------------------
 static constexpr int kHRes = 800;
@@ -173,6 +185,162 @@ static void preload_frames() {
   Serial.printf("[video] preloaded %d frames (%u bytes)\n", g_frames, (unsigned)total);
 }
 
+// ---- text (8x16 bitmap font, integer-scaled) --------------------------
+static void draw_char(uint16_t *fb, int x, int y, char c, int scale, uint16_t color) {
+  const uint8_t *g = font_glyph(c);
+  for (int row = 0; row < 16; row++) {
+    const uint8_t bits = g[row];
+    if (!bits) continue;
+    for (int col = 0; col < 8; col++) {
+      if (!(bits & (0x80 >> col))) continue;
+      for (int dy = 0; dy < scale; dy++) {
+        int py = y + row * scale + dy;
+        if (py < 0 || py >= kVRes) continue;
+        uint16_t *r = fb + (size_t)py * kHRes;
+        for (int dx = 0; dx < scale; dx++) {
+          int px = x + col * scale + dx;
+          if (px >= 0 && px < kHRes) r[px] = color;
+        }
+      }
+    }
+  }
+}
+static void draw_text(uint16_t *fb, int x, int y, const char *s, int scale, uint16_t color) {
+  for (; *s; s++) { draw_char(fb, x, y, *s, scale, color); x += 8 * scale; }
+}
+
+// ---- GT911 capacitive touch (I2C, shared bus on GPIO 8/9) -------------
+static uint8_t s_gt_addr = 0x5D;
+static void gt911_init() {
+  for (uint8_t a : {0x5D, 0x14}) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) { s_gt_addr = a; Serial.printf("[touch] GT911 at 0x%02X\n", a); return; }
+  }
+  Serial.println("[touch] GT911 not found (tried 0x5D/0x14)");
+}
+// True if a finger is down; fills x,y with the first point. The GT911's
+// 0x814E status byte: bit7=data ready, low nibble = number of points. We
+// must clear bit7 after reading or it stops reporting.
+static bool gt911_touched(int *x, int *y) {
+  Wire.beginTransmission(s_gt_addr);
+  Wire.write(0x81); Wire.write(0x4E);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(s_gt_addr, (uint8_t)1) != 1) return false;
+  uint8_t st = Wire.read();
+  bool down = false;
+  if (st & 0x80) {
+    if ((st & 0x0F) > 0) {
+      Wire.beginTransmission(s_gt_addr);
+      Wire.write(0x81); Wire.write(0x50);          // point 1, X-low
+      Wire.endTransmission(false);
+      if (Wire.requestFrom(s_gt_addr, (uint8_t)4) == 4) {
+        int xl = Wire.read(), xh = Wire.read(), yl = Wire.read(), yh = Wire.read();
+        *x = xl | (xh << 8); *y = yl | (yh << 8);
+        down = true;
+      }
+    }
+    Wire.beginTransmission(s_gt_addr);
+    Wire.write(0x81); Wire.write(0x4E); Wire.write(0x00);
+    Wire.endTransmission();
+  }
+  return down;
+}
+
+// ---- views (tap toggles) ----------------------------------------------
+enum View { V_VIDEO, V_STATS };
+static View g_view = V_VIDEO;
+static bool g_dirty = false;      // static content of the current view needs redraw
+static int  g_vframe = 0;         // current video frame index
+static bool g_was_down = false;
+static uint32_t g_swap_at = 0;
+
+// ---- live network stats (fetched from the oracle over WiFi) -----------
+struct NetStats { bool valid = false; long trees = 0, readings24 = 0, attest = 0, season = 0; };
+static NetStats g_stats;
+static uint32_t g_last_fetch = 0;
+
+static void wifi_begin() {
+  if (strlen(ORCHARD_WIFI_SSID) == 0) {
+    Serial.println("[wifi] no SSID — set it in src/secrets.h");
+    return;
+  }
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ORCHARD_WIFI_SSID, ORCHARD_WIFI_PASS);
+  Serial.printf("[wifi] connecting to '%s'\n", ORCHARD_WIFI_SSID);
+}
+
+static void fetch_stats() {
+  g_last_fetch = millis();
+  if (WiFi.status() != WL_CONNECTED) return;
+  HTTPClient http;
+  String url = String(ORCHARD_ORACLE_URL) + "/network/stats";
+  if (!http.begin(url)) return;
+  http.setConnectTimeout(2000);
+  http.setTimeout(3000);
+  const int code = http.GET();
+  if (code == 200) {
+    JsonDocument doc;
+    if (deserializeJson(doc, http.getString()) == DeserializationError::Ok) {
+      g_stats.trees      = doc["trees_active_24h"]   | 0;
+      g_stats.readings24 = doc["readings_last_24h"]  | 0;
+      g_stats.attest     = doc["attestations_total"] | 0;
+      g_stats.season     = doc["current_season"]     | 0;
+      g_stats.valid = true;
+      Serial.printf("[stats] trees=%ld readings24=%ld attest=%ld season=%ld\n",
+                    g_stats.trees, g_stats.readings24, g_stats.attest, g_stats.season);
+    }
+  } else {
+    Serial.printf("[stats] HTTP GET -> %d\n", code);
+  }
+  http.end();
+}
+
+static void stat_row(uint16_t *fb, int y, const char *label, long val,
+                     uint16_t lc, uint16_t vc, uint16_t mc) {
+  draw_text(fb, 40, y, label, 3, lc);
+  if (g_stats.valid) { char b[16]; snprintf(b, sizeof(b), "%ld", val); draw_text(fb, 540, y, b, 3, vc); }
+  else               { draw_text(fb, 540, y, "--", 3, mc); }
+}
+
+static void render_stats(uint16_t *fb) {
+  fb_fill(fb, 0x0000);
+  const uint16_t green = 0x9F6C, white = 0xFFFF, amber = 0xFD20, grey = 0x8410;
+  draw_text(fb, 40, 26, "THE ORCHARD",   4, green);
+  draw_text(fb, 42, 92, "NETWORK STATS", 2, white);
+  int y = 150;
+  stat_row(fb, y, "TREES ONLINE", g_stats.trees,      white, amber, grey); y += 58;
+  stat_row(fb, y, "READINGS 24H", g_stats.readings24, white, amber, grey); y += 58;
+  stat_row(fb, y, "ATTESTATIONS", g_stats.attest,     white, amber, grey); y += 58;
+  stat_row(fb, y, "SEASON",       g_stats.season,     white, amber, grey);
+  const char *status = (WiFi.status() == WL_CONNECTED)
+      ? (g_stats.valid ? "live  -  tap to return to video"
+                       : "connected, fetching...  -  tap for video")
+      : "wifi connecting...  (set password in secrets.h)";
+  draw_text(fb, 40, 448, status, 1, grey);
+}
+
+// Wait for the scheduled vsync, then hand the back buffer to the LCD.
+static void wait_and_swap() {
+  for (uint32_t ws = millis(); (int32_t)(g_swap_at - g_vsync) > 0; ) {
+    if (millis() - ws > 150) break;   // never stall to black if vsync is silent
+    delay(1);
+  }
+  esp_lcd_panel_draw_bitmap(s_panel, 0, 0, kHRes, kVRes, s_fb[s_back]);
+  s_back ^= 1;
+  g_swap_at += kVsyncPerFrame;
+}
+
+static void poll_touch() {
+  int x = 0, y = 0;
+  bool down = gt911_touched(&x, &y);
+  if (down && !g_was_down) {           // rising edge = a tap
+    g_view = (g_view == V_VIDEO) ? V_STATS : V_VIDEO;
+    g_dirty = true;
+    Serial.printf("[touch] tap @%d,%d -> %s\n", x, y, g_view == V_VIDEO ? "VIDEO" : "STATS");
+  }
+  g_was_down = down;
+}
+
 void setup() {
   Serial.begin(115200);
   delay(200);
@@ -203,38 +371,55 @@ void setup() {
   // swaps (the per-frame decode only touches the inner window).
   for (int i = 0; i < 2; i++) { if (s_fb[i]) { fb_fill(s_fb[i], 0x0000); fb_decor(s_fb[i]); } }
   s_back = 1;
+  gt911_init();
+  wifi_begin();
+  g_swap_at = g_vsync + kVsyncPerFrame;
 }
 
 void loop() {
-  if (!s_panel || !all_frames || g_frames == 0) { delay(1000); return; }
+  if (!s_panel) { delay(1000); return; }
 
-  const uint32_t loop_start = millis();
-  uint32_t work_ms = 0;
-  uint32_t swap_at = g_vsync + kVsyncPerFrame;   // next swap on the refresh grid
-  for (int i = 0; i < g_frames; i++) {
-    const uint32_t t0 = millis();
+  // Log + prime the stats once WiFi comes up, so the first tap to the stats
+  // view shows live numbers immediately (one-time ~0.5s fetch).
+  static bool wifi_logged = false;
+  if (!wifi_logged && WiFi.status() == WL_CONNECTED) {
+    wifi_logged = true;
+    Serial.print("[wifi] connected, ip="); Serial.println(WiFi.localIP());
+    fetch_stats();
+  }
+
+  poll_touch();
+
+  if (g_view == V_VIDEO) {
+    if (!all_frames || g_frames == 0) { delay(100); return; }
+    if (g_dirty) {                 // returning from STATS: restore the decor
+      for (int i = 0; i < 2; i++) { fb_fill(s_fb[i], 0x0000); fb_decor(s_fb[i]); }
+      g_swap_at = g_vsync + kVsyncPerFrame;     // re-anchor the refresh grid
+      g_dirty = false;
+    }
     g_target = s_fb[s_back];
-    if (jpeg.openRAM(all_frames + frame_off[i], frame_len[i], jpeg_draw)) {
+    if (jpeg.openRAM(all_frames + frame_off[g_vframe], frame_len[g_vframe], jpeg_draw)) {
       jpeg.decode(0, 0, 0);
       jpeg.close();
     }
-    work_ms += millis() - t0;
-    // Hold each frame for exactly kVsyncPerFrame refreshes, then swap on the
-    // vsync boundary. Aligning swaps to the refresh grid removes the 2-3
-    // refresh "beat" that made delay()-paced double-buffering judder.
-    // Safety cap: if the vsync counter isn't advancing (callback not firing
-    // on some IDF builds), bail after ~150ms so the loop never stalls to a
-    // black screen — it just falls back to running as fast as it can.
-    for (uint32_t ws = millis(); (int32_t)(swap_at - g_vsync) > 0; ) {
-      if (millis() - ws > 150) break;
-      delay(1);
+    g_vframe = (g_vframe + 1) % g_frames;
+    wait_and_swap();               // vsync-locked: even cadence, tear-free
+  } else {                         // V_STATS — fetch from oracle + render
+    if (g_dirty) {
+      g_swap_at = g_vsync + kVsyncPerFrame;
+      render_stats(s_fb[s_back]); wait_and_swap();   // immediate feedback
+      render_stats(s_fb[s_back]); wait_and_swap();
+      fetch_stats();                                  // ~0.5s blocking HTTP GET
+      render_stats(s_fb[s_back]); wait_and_swap();    // now with live numbers
+      render_stats(s_fb[s_back]); wait_and_swap();
+      g_dirty = false;
+    } else {
+      if (millis() - g_last_fetch > 10000) {          // refresh every 10s
+        fetch_stats();
+        render_stats(s_fb[s_back]); wait_and_swap();
+        render_stats(s_fb[s_back]); wait_and_swap();
+      }
+      delay(20);                   // idle; keep polling touch responsively
     }
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, kHRes, kVRes, s_fb[s_back]);
-    s_back ^= 1;
-    swap_at += kVsyncPerFrame;
   }
-  const uint32_t total = millis() - loop_start;
-  Serial.printf("[video] loop %d frames in %ums (work %ums/frame, %.1f fps)\n",
-                g_frames, (unsigned)total, (unsigned)(work_ms / g_frames),
-                1000.0f * g_frames / total);
 }

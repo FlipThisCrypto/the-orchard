@@ -6,3 +6,6 @@ data/
 
 # Local backups of prior firmware revisions
 *.bak.txt
+
+# WiFi credentials (local only — never commit)
+src/secrets.h
