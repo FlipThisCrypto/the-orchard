@@ -1,0 +1,8 @@
+# Build output
+.pio/
+
+# Generated MJPEG frames (regenerate via ffmpeg — see README)
+data/
+
+# Local backups of prior firmware revisions
+*.bak.txt
