@@ -1,0 +1,309 @@
+{
+  "schema_version": "1.0.0",
+  "canonical_examples": [
+    {
+      "obj": {
+        "b": 1,
+        "a": 2
+      },
+      "canonical": "{\"a\":2,\"b\":1}"
+    },
+    {
+      "obj": {
+        "z": [
+          3,
+          2,
+          1
+        ],
+        "a": {
+          "y": 1,
+          "x": 2
+        }
+      },
+      "canonical": "{\"a\":{\"x\":2,\"y\":1},\"z\":[3,2,1]}"
+    }
+  ],
+  "merkle": {
+    "empty_root": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+    "cases": [
+      {
+        "leaves": [
+          "929172fae51e7c4fedc288349b430c1ca2ee1b35f6a9493f3ca7c83b44786791"
+        ],
+        "root": "929172fae51e7c4fedc288349b430c1ca2ee1b35f6a9493f3ca7c83b44786791"
+      },
+      {
+        "leaves": [
+          "929172fae51e7c4fedc288349b430c1ca2ee1b35f6a9493f3ca7c83b44786791",
+          "dffe8596427fc50e8f64654a609af134d45552f18bbecef90b31135a9e7acaa0"
+        ],
+        "root": "dbcd3e88193813492c89683f224f535c304081a897eda192c8b518f79632b078"
+      },
+      {
+        "leaves": [
+          "929172fae51e7c4fedc288349b430c1ca2ee1b35f6a9493f3ca7c83b44786791",
+          "dffe8596427fc50e8f64654a609af134d45552f18bbecef90b31135a9e7acaa0",
+          "d76354d8457898445bb69e0dc0dc95fb74cc3cf334f8c1859162a16ad0041f8d"
+        ],
+        "root": "7febb55330c8e54c1a9e6b36de000114a3511cd1fb8c2a0ec5751d7ced53eafe"
+      },
+      {
+        "leaves": [
+          "929172fae51e7c4fedc288349b430c1ca2ee1b35f6a9493f3ca7c83b44786791",
+          "dffe8596427fc50e8f64654a609af134d45552f18bbecef90b31135a9e7acaa0",
+          "d76354d8457898445bb69e0dc0dc95fb74cc3cf334f8c1859162a16ad0041f8d",
+          "842983de8fb1d277a3fad5c8295c7a14317c458718a10c5a35b23e7f992a5c80"
+        ],
+        "root": "04321b63ce417a35a6510dc883d166eb4683c25215431f43afc9f95e5ebac2c5"
+      },
+      {
+        "leaves": [
+          "929172fae51e7c4fedc288349b430c1ca2ee1b35f6a9493f3ca7c83b44786791",
+          "dffe8596427fc50e8f64654a609af134d45552f18bbecef90b31135a9e7acaa0",
+          "d76354d8457898445bb69e0dc0dc95fb74cc3cf334f8c1859162a16ad0041f8d",
+          "842983de8fb1d277a3fad5c8295c7a14317c458718a10c5a35b23e7f992a5c80",
+          "4a5a97c6433c4c062457e9335709d57493e75527809d8a9586c141e591ac9f2c"
+        ],
+        "root": "4513d0f5dc05652fc2e929ebb19624b41856ebe4f531ed4b13680730b23f2f01"
+      }
+    ]
+  },
+  "device": {
+    "seed": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"
+  },
+  "oracle": {
+    "seed": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+    "pubkey": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0"
+  },
+  "readings_signed": [
+    {
+      "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+      "ts_ms": 1749480000123,
+      "block_anchor": "a1b2c3d4e5f60718",
+      "metrics": {
+        "temperature_mc": 21400,
+        "humidity_milli_pct": 48200,
+        "pressure_pa": 101260,
+        "gas_adc_raw": 1234,
+        "gas_mv": 994,
+        "gps_fix": true,
+        "gps_sats": 7
+      },
+      "sig": "1e265e3285f63645e448dc33d295aa28a1403c498bda61886df495d1cf340eeb72e8dc6b0dd50efb2d02e89b4fe44a23681ed493d2c0e468498913be2cbdd206"
+    },
+    {
+      "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+      "ts_ms": 1749480060456,
+      "block_anchor": "a1b2c3d4e5f60718",
+      "metrics": {
+        "temperature_mc": 21500,
+        "humidity_milli_pct": 48000,
+        "pressure_pa": 101270,
+        "gas_adc_raw": 1240,
+        "gas_mv": 999,
+        "gps_fix": true,
+        "gps_sats": 8
+      },
+      "sig": "c716ee9e851a7361cc38d2451040a548e803e259131bf044f57146c216fe54c2bb157c7ec2ddaf9f59874fe01a98ba28ea0a47e540dc1d65974bfa757bb13e03"
+    },
+    {
+      "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+      "ts_ms": 1749480120789,
+      "block_anchor": "b2c3d4e5f6071829",
+      "metrics": {
+        "temperature_mc": 21600,
+        "humidity_milli_pct": 47800,
+        "pressure_pa": 101250,
+        "gas_adc_raw": 1229,
+        "gas_mv": 990,
+        "gps_fix": true,
+        "gps_sats": 8
+      },
+      "sig": "b9fa9cd54423ec60f6fa530cf3cece9907b27fd32309c1409130c1e3405046898085469bd01dd62554d855c1eb68ff3e8e2255fed96cf6a460bfe0a8e6f95702"
+    }
+  ],
+  "reading_leaves": [
+    "533f0833760f34ad7e3b603980f7d41985418f2521d3d11b4339cb1df82abe39",
+    "b0154cc88bb0af8e146d441ad698d254bb85001b6e7e76d5751bb725f5fdefbc",
+    "d295803c6435329bfa9e94dd034a4e04258f06aa74925a0fbe10122c98786c0f"
+  ],
+  "hour_root": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65",
+  "season_root": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65",
+  "verified_hours": 1,
+  "season_score": 4,
+  "records": {
+    "meta": {
+      "orchard_schema": "1.0.0",
+      "store_role": "orchard-operator",
+      "operator_pass_nft": null,
+      "units": {
+        "temperature_mc": {
+          "display": "\u00b0C",
+          "pow10": -3
+        },
+        "humidity_milli_pct": {
+          "display": "%RH",
+          "pow10": -3
+        },
+        "pressure_pa": {
+          "display": "hPa",
+          "pow10": -2
+        },
+        "gas_adc_raw": {
+          "display": "adc",
+          "pow10": 0
+        },
+        "gas_mv": {
+          "display": "mV",
+          "pow10": 0
+        },
+        "pm25_ugm3_x100": {
+          "display": "\u00b5g/m\u00b3",
+          "pow10": -2
+        },
+        "pm10_ugm3_x100": {
+          "display": "\u00b5g/m\u00b3",
+          "pow10": -2
+        },
+        "gps_sats": {
+          "display": "sats",
+          "pow10": 0
+        }
+      },
+      "geohash_precision": 5,
+      "signer": {
+        "device_sig": "ed25519",
+        "season_sig": "ed25519",
+        "season_pubkey": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0"
+      },
+      "writer_version": "0.1.0",
+      "created_at": "2026-06-09T00:00:00Z"
+    },
+    "node": {
+      "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "board": "freenove-esp32s3-uart",
+      "fw": "0.4.7",
+      "sensors": [
+        {
+          "name": "mq135",
+          "unit": "adc",
+          "active": true
+        },
+        {
+          "name": "bme280",
+          "bus": "i2c",
+          "active": true
+        },
+        {
+          "name": "gps",
+          "bus": "uart",
+          "active": true
+        }
+      ],
+      "geohash": "dr5ru",
+      "first_seen_utc": "2026-05-28T20:43:27Z",
+      "label": null
+    },
+    "readings": {
+      "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+      "season": 5,
+      "hour": 13,
+      "count": 3,
+      "readings": [
+        {
+          "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+          "ts_ms": 1749480000123,
+          "block_anchor": "a1b2c3d4e5f60718",
+          "metrics": {
+            "temperature_mc": 21400,
+            "humidity_milli_pct": 48200,
+            "pressure_pa": 101260,
+            "gas_adc_raw": 1234,
+            "gas_mv": 994,
+            "gps_fix": true,
+            "gps_sats": 7
+          },
+          "sig": "1e265e3285f63645e448dc33d295aa28a1403c498bda61886df495d1cf340eeb72e8dc6b0dd50efb2d02e89b4fe44a23681ed493d2c0e468498913be2cbdd206"
+        },
+        {
+          "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+          "ts_ms": 1749480060456,
+          "block_anchor": "a1b2c3d4e5f60718",
+          "metrics": {
+            "temperature_mc": 21500,
+            "humidity_milli_pct": 48000,
+            "pressure_pa": 101270,
+            "gas_adc_raw": 1240,
+            "gas_mv": 999,
+            "gps_fix": true,
+            "gps_sats": 8
+          },
+          "sig": "c716ee9e851a7361cc38d2451040a548e803e259131bf044f57146c216fe54c2bb157c7ec2ddaf9f59874fe01a98ba28ea0a47e540dc1d65974bfa757bb13e03"
+        },
+        {
+          "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+          "ts_ms": 1749480120789,
+          "block_anchor": "b2c3d4e5f6071829",
+          "metrics": {
+            "temperature_mc": 21600,
+            "humidity_milli_pct": 47800,
+            "pressure_pa": 101250,
+            "gas_adc_raw": 1229,
+            "gas_mv": 990,
+            "gps_fix": true,
+            "gps_sats": 8
+          },
+          "sig": "b9fa9cd54423ec60f6fa530cf3cece9907b27fd32309c1409130c1e3405046898085469bd01dd62554d855c1eb68ff3e8e2255fed96cf6a460bfe0a8e6f95702"
+        }
+      ],
+      "hour_root": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65"
+    },
+    "attest": {
+      "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+      "season": 5,
+      "season_start_utc": "2026-05-31T00:00:00Z",
+      "season_end_utc": "2026-06-01T00:00:00Z",
+      "hours_online": 1,
+      "verified_hours": 1,
+      "season_score": 4,
+      "reading_count": 3,
+      "block_height_at_write": 8794728,
+      "data_hash": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65",
+      "season_root": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65",
+      "signed_at": "2026-06-01T00:05:00Z",
+      "oracle_sig": "4c6eab88499e2189f6f8847bf2f49b1fa292bce057ba09264f57aa7184fb95c18c51272413c88a8684208d76c6f17fbb4384343af0478fc0c3e70d524fc26100"
+    },
+    "latest": {
+      "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+      "season": 5,
+      "hour": 13,
+      "last_sealed_season": 4,
+      "running_hours_online": 1,
+      "last_reading": {
+        "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
+        "ts_ms": 1749480120789,
+        "block_anchor": "b2c3d4e5f6071829",
+        "metrics": {
+          "temperature_mc": 21600,
+          "humidity_milli_pct": 47800,
+          "pressure_pa": 101250,
+          "gas_adc_raw": 1229,
+          "gas_mv": 990,
+          "gps_fix": true,
+          "gps_sats": 8
+        },
+        "sig": "b9fa9cd54423ec60f6fa530cf3cece9907b27fd32309c1409130c1e3405046898085469bd01dd62554d855c1eb68ff3e8e2255fed96cf6a460bfe0a8e6f95702"
+      },
+      "updated_at": "2026-05-31T13:02:01Z"
+    }
+  },
+  "keys": {
+    "meta": "6d6574613a736368656d61",
+    "node": "6e6f64653a3542394242303232363439464139334434303931444134424134303731344239",
+    "readings": "72656164696e67733a35423942423032323634394641393344343039314441344241343037313442393a30303030303030353a3133",
+    "attest": "6174746573743a35423942423032323634394641393344343039314441344241343037313442393a3030303030303035",
+    "latest": "6c61746573743a3542394242303232363439464139334434303931444134424134303731344239"
+  }
+}
