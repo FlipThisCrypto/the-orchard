@@ -16,10 +16,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 import yaml
+
+# Recipient sanity-check at the spend boundary (defense in depth: the
+# oracle already validates wallet_address at registration).
+_XCH_ADDR = re.compile(r"^xch1[0-9a-z]{50,80}$")
 
 from .. import datalayer as dl_pkg  # type: ignore  # noqa: F401
 from ..datalayer import attest, config as base_config
@@ -292,6 +297,33 @@ def main(argv: list[str] | None = None) -> int:
         sent_fail = 0
         for wallet_address, owed_mojos in per_wallet.items():
             print(f"  + {wallet_address}: {calculator.mojos_to_juice(owed_mojos):.3f} $JUICE")
+
+            # L6: re-validate the recipient at the spend boundary. The
+            # oracle validates at registration, but never broadcast to an
+            # unvalidated address (a malformed/wrong-network address is an
+            # unrecoverable burn).
+            if not _XCH_ADDR.match(wallet_address or ""):
+                print(f"    ! SKIP: invalid recipient address {wallet_address!r}")
+                sent_fail += 1
+                continue
+
+            contributing = [p for p in ready_rows if p["wallet_address"] == wallet_address]
+
+            # M3: mark each (node, season) provisionally BEFORE broadcasting,
+            # so a crash after the tx is sent can't double-pay on the next
+            # run. On a clean RPC failure we leave the marks (we can't be
+            # sure the tx didn't broadcast) — reconcile failed rows against
+            # wallet history before re-running. Biases to at-most-once over
+            # double-spend.
+            for p in contributing:
+                wm.record_payment(
+                    node_id=p["node_id"],
+                    season=p["season"],
+                    wallet_address=wallet_address,
+                    paid_mojos=p["mojos"],
+                    tx_id=None,
+                )
+
             try:
                 resp = rpc.cat_spend(
                     wallet_id=cat_wallet_id,
@@ -301,26 +333,20 @@ def main(argv: list[str] | None = None) -> int:
                     memos=[args.memo] if args.memo else None,
                 )
             except WalletRpcError as e:
-                print(f"    ! FAILED: {e}")
+                print(f"    ! FAILED (left provisionally marked — reconcile "
+                      f"before re-running): {e}")
                 sent_fail += 1
                 continue
+
             tx_id = (resp.get("transaction_id")
                      or resp.get("tx_id")
                      or resp.get("transaction", {}).get("name", ""))
             print(f"    tx_id={tx_id}")
             sent_ok += 1
 
-            # Record every (node, season) that contributed to this wallet's
-            # owed amount. We've already filtered to status=ready.
-            for p in ready_rows:
-                if p["wallet_address"] == wallet_address:
-                    wm.record_payment(
-                        node_id=p["node_id"],
-                        season=p["season"],
-                        wallet_address=wallet_address,
-                        paid_mojos=p["mojos"],
-                        tx_id=tx_id,
-                    )
+            # Confirm: attach the tx_id to the provisional rows.
+            for p in contributing:
+                wm.set_tx(p["node_id"], p["season"], tx_id)
 
         print(f"[orchard.payout] sent ok={sent_ok} failed={sent_fail}")
         return 0 if sent_fail == 0 else 5

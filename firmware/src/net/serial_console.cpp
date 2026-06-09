@@ -7,6 +7,7 @@
 #include "config.h"
 #include "identity.h"
 #include "oracle.h"
+#include "ota.h"
 #include "sensors/gps_neo.h"
 #include "sensors/sensor.h"
 #include "version.h"
@@ -176,6 +177,12 @@ void dispatch_(const String& line) {
     Serial.println("OK gps_raw_start");
     orchard::sensors::gps_dump_raw(3000);
     Serial.println("OK gps_raw_end");
+  } else if (cmd == "OTA_ARM") {
+    // Open a 2-minute window during which POST /ota will accept a
+    // firmware upload. Requires this local serial command, so a remote
+    // LAN host can't flash the device (C1 hardening).
+    orchard::net::ota_arm(120000);
+    Serial.println("OK ota armed 120s");
   } else if (cmd == "REBOOT") {
     Serial.println("OK rebooting");
     Serial.flush();

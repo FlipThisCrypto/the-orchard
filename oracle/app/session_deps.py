@@ -15,9 +15,60 @@ These deps used to live duplicated across ``routes/auth.py`` and
 """
 from __future__ import annotations
 
-from fastapi import Header, HTTPException, status
+import hmac as _hmac
+
+from fastapi import Header, HTTPException, Request, status
 
 from . import sessions
+from .config import settings
+
+# Hosts treated as "the local machine". "testclient" is the Starlette
+# in-process TestClient peer — a real network client CANNOT present it
+# (the peer host is read from the actual socket), so allowlisting it is
+# safe and keeps the hermetic test suite working without weakening the
+# check for network callers.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+
+
+def client_is_loopback(request: Request) -> bool:
+    host = request.client.host if request.client else None
+    return host in LOOPBACK_HOSTS
+
+
+def require_writer(
+    request: Request,
+    x_orchard_writer_token: str | None = Header(
+        default=None, alias="X-Orchard-Writer-Token"
+    ),
+) -> None:
+    """Authenticate a DataLayer-writer call (POST /attestations).
+
+    If ``ORCHARD_ORACLE_WRITER_TOKEN`` is configured, require a matching
+    ``X-Orchard-Writer-Token`` header (constant-time compare). If it is
+    NOT configured, accept only loopback callers — the writer runs on the
+    oracle host by default, so this closes the LAN forge hole out of the
+    box without requiring any config.
+    """
+    token = settings().writer_token
+    if token:
+        if not (
+            x_orchard_writer_token
+            and _hmac.compare_digest(x_orchard_writer_token, token)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid or missing writer token",
+            )
+        return
+    if not client_is_loopback(request):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "POST /attestations from a non-local host requires "
+                "ORCHARD_ORACLE_WRITER_TOKEN to be configured and sent as the "
+                "X-Orchard-Writer-Token header"
+            ),
+        )
 
 
 def _parse_bearer(authorization: str | None) -> str | None:

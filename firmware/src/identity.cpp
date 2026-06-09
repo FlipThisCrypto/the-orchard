@@ -3,6 +3,7 @@
 
 #include <Ed25519.h>
 #include <Preferences.h>
+#include <bootloader_random.h>
 #include <esp_random.h>
 #include <mbedtls/md.h>
 
@@ -84,33 +85,51 @@ void begin() {
   Preferences prefs;
   prefs.begin(ORCHARD_NVS_NAMESPACE, /*readOnly=*/false);
 
-  // --- node id ---
+  // Read whatever identity already exists. getBytes() both loads the
+  // value AND tells us (via the returned length) whether it was present,
+  // so a single call per key decides "do we need to generate this".
   uint8_t node_id_buf[kNodeIdBytes] = {0};
-  size_t read = prefs.getBytes(kNvsKeyNodeId, node_id_buf, kNodeIdBytes);
-  if (read != kNodeIdBytes) {
+  const bool need_node =
+      prefs.getBytes(kNvsKeyNodeId, node_id_buf, kNodeIdBytes) != kNodeIdBytes;
+  const bool need_secret =
+      prefs.getBytes(kNvsKeySecret, signing_secret_, kSigningSecretLen)
+          != kSigningSecretLen;
+  const bool need_ed =
+      prefs.getBytes(kNvsKeyEdSeed, ed_seed_, sizeof(ed_seed_))
+          != sizeof(ed_seed_);
+
+  // H5 hardening: persistent device keys MUST come from the hardware RNG.
+  // esp_random() only returns true entropy once the RF subsystem (WiFi/BT)
+  // is running — which is LATER than this first-boot identity init. Enable
+  // the bootloader entropy source (valid before RF) for the duration of
+  // key generation, then disable it again before sensors / WiFi come up.
+  const bool generating = need_node || need_secret || need_ed;
+  if (generating) bootloader_random_enable();
+
+  if (need_node) {
     random_bytes(node_id_buf, kNodeIdBytes);
     prefs.putBytes(kNvsKeyNodeId, node_id_buf, kNodeIdBytes);
     Serial.println("[identity] generated new node id");
   }
   node_id_hex_ = to_hex(node_id_buf, kNodeIdBytes);
 
-  // --- signing secret (legacy HMAC) ---
-  read = prefs.getBytes(kNvsKeySecret, signing_secret_, kSigningSecretLen);
-  if (read != kSigningSecretLen) {
+  if (need_secret) {
     random_bytes(signing_secret_, kSigningSecretLen);
     prefs.putBytes(kNvsKeySecret, signing_secret_, kSigningSecretLen);
     Serial.println("[identity] generated new signing secret");
   }
 
-  // --- ed25519 device key (ADR-0003) ---
-  // The 32-byte seed IS the private key (RFC 8032); the public key is
-  // derived deterministically, so we only persist the seed.
-  read = prefs.getBytes(kNvsKeyEdSeed, ed_seed_, sizeof(ed_seed_));
-  if (read != sizeof(ed_seed_)) {
+  // ed25519 device key (ADR-0003): the 32-byte seed IS the private key
+  // (RFC 8032); the public key derives deterministically, so we only
+  // persist the seed.
+  if (need_ed) {
     random_bytes(ed_seed_, sizeof(ed_seed_));
     prefs.putBytes(kNvsKeyEdSeed, ed_seed_, sizeof(ed_seed_));
     Serial.println("[identity] generated new ed25519 key");
   }
+
+  if (generating) bootloader_random_disable();
+
   Ed25519::derivePublicKey(ed_pub_, ed_seed_);
   ed_pubkey_hex_ = to_hex_lower(ed_pub_, sizeof(ed_pub_));
 

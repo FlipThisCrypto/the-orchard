@@ -42,3 +42,8 @@ class OracleClient:
 
     def get_uptime(self, node_id: str, season: int) -> dict | None:
         return self._get(f"/uptime/{node_id}/{season}")
+
+    def get_node(self, node_id: str) -> dict | None:
+        """Single node record (incl. wallet_address). None on 404.
+        Used by the payout to resolve each Tree's recipient wallet."""
+        return self._get(f"/nodes/{node_id}")

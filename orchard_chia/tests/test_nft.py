@@ -251,3 +251,20 @@ def test_indexer_error_on_bad_json():
         return b"<html>oops</html>"
     with pytest.raises(verify.IndexerError):
         verify.list_passes_by_address("xch1anything", _opener=bad_opener)
+
+
+def test_list_passes_rejects_wrong_collection_id():
+    """M7: even if an item is returned with the right owner, a non-genesis
+    collection_id must be excluded (defensive against indexer drift)."""
+    addr = "xch1m3rvtj86wzzfjyk5mc7wzpr7h4zkaknm4wte7kg6afleu4f2tfxsr7nk3n"
+    fake = {"items": [{
+        "id": "ab" * 32,
+        "encoded_id": "nft1fake",
+        "name": "Fake Pass",
+        "edition_number": 1,
+        "owner_address_encoded_id": addr,
+        "collection_id": "col1notthegenesiscollectionatall",
+    }]}
+    out = verify.list_passes_by_address(
+        addr, _opener=lambda _u: json.dumps(fake).encode("utf-8"))
+    assert out == []

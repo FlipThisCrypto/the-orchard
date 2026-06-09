@@ -35,8 +35,22 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from datetime import datetime, timezone
 from hashlib import sha256
+
+_HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def _require_signing_key(signing_key_hex: str) -> bytes:
+    """Guard: a signing key must be exactly 64 hex chars (32 bytes).
+
+    Without this, an empty or malformed key would silently HMAC under a
+    short/empty key — a signature an attacker could reproduce. Fail loud
+    instead (the payout verifier relies on this being a real secret)."""
+    if not isinstance(signing_key_hex, str) or not _HEX64.match(signing_key_hex):
+        raise ValueError("signing_key_hex must be 64 hex characters (32 bytes)")
+    return bytes.fromhex(signing_key_hex)
 
 
 def build_attestation_payload(
@@ -74,12 +88,9 @@ def sign_payload(payload: dict, signing_key_hex: str) -> dict:
     """Return ``payload`` plus an ``oracle_sig`` HMAC-SHA256 over the
     canonical bytes. Caller may then hex-encode and ship to DataLayer.
     """
+    key = _require_signing_key(signing_key_hex)
     canonical = _canonical_bytes(payload)
-    sig = hmac.new(
-        bytes.fromhex(signing_key_hex),
-        canonical,
-        sha256,
-    ).hexdigest()
+    sig = hmac.new(key, canonical, sha256).hexdigest()
     return {**payload, "oracle_sig": sig.upper()}
 
 
@@ -87,13 +98,10 @@ def verify_signature(signed_payload: dict, signing_key_hex: str) -> bool:
     """Constant-time check that ``oracle_sig`` is the HMAC over the rest
     of the fields. Used by future Keeper-class validators.
     """
+    key = _require_signing_key(signing_key_hex)
     provided = signed_payload.get("oracle_sig") or ""
     canonical = _canonical_bytes(signed_payload)
-    expected = hmac.new(
-        bytes.fromhex(signing_key_hex),
-        canonical,
-        sha256,
-    ).hexdigest()
+    expected = hmac.new(key, canonical, sha256).hexdigest()
     return hmac.compare_digest(expected.lower(), provided.lower())
 
 
