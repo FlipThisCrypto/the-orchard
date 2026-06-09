@@ -112,6 +112,18 @@ def test_every_vector_metric_is_integer_typed():
 
 
 # --- leaves / roots -------------------------------------------------------- #
+def test_reading_canonical_bytes_match_vectors():
+    # The exact signed message — the firmware's hand-built canonical serializer
+    # must reproduce these byte-for-byte. Also assert the canonical invariants.
+    for stored, expected in zip(VEC["readings_signed"], VEC["reading_canonical"]):
+        body = {k: v for k, v in stored.items() if k != "sig"}
+        got = schema.canonical_bytes(body).decode("utf-8")
+        assert got == expected
+        assert " " not in got  # no whitespace in canonical form
+        # top-level keys appear in sorted order
+        assert got.index('"block_anchor"') < got.index('"metrics"') < got.index('"node_id"') < got.index('"ts_ms"')
+
+
 def test_reading_leaves_match_vectors():
     ordered = schema._sorted_readings(VEC["readings_signed"])
     assert [schema.reading_leaf(r).hex() for r in ordered] == VEC["reading_leaves"]

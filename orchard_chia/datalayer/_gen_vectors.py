@@ -122,6 +122,13 @@ def build() -> dict:
         "device": {"seed": DEVICE_SEED, "pubkey": device_pub},
         "oracle": {"seed": ORACLE_SEED, "pubkey": oracle_pub},
         "readings_signed": signed,
+        # The EXACT bytes each device signs (canonical reading minus `sig`).
+        # The firmware's hand-built canonical serializer must reproduce these
+        # strings byte-for-byte, or its ed25519 signatures won't verify.
+        "reading_canonical": [
+            schema.canonical_bytes({k: v for k, v in r.items() if k != "sig"}).decode("utf-8")
+            for r in signed
+        ],
         "reading_leaves": [schema.reading_leaf(r).hex() for r in schema._sorted_readings(signed)],
         "hour_root": hr,
         "season_root": sr,

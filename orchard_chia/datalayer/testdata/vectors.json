@@ -123,6 +123,11 @@
       "sig": "b9fa9cd54423ec60f6fa530cf3cece9907b27fd32309c1409130c1e3405046898085469bd01dd62554d855c1eb68ff3e8e2255fed96cf6a460bfe0a8e6f95702"
     }
   ],
+  "reading_canonical": [
+    "{\"block_anchor\":\"a1b2c3d4e5f60718\",\"metrics\":{\"gas_adc_raw\":1234,\"gas_mv\":994,\"gps_fix\":true,\"gps_sats\":7,\"humidity_milli_pct\":48200,\"pressure_pa\":101260,\"temperature_mc\":21400},\"node_id\":\"5B9BB022649FA93D4091DA4BA40714B9\",\"ts_ms\":1749480000123}",
+    "{\"block_anchor\":\"a1b2c3d4e5f60718\",\"metrics\":{\"gas_adc_raw\":1240,\"gas_mv\":999,\"gps_fix\":true,\"gps_sats\":8,\"humidity_milli_pct\":48000,\"pressure_pa\":101270,\"temperature_mc\":21500},\"node_id\":\"5B9BB022649FA93D4091DA4BA40714B9\",\"ts_ms\":1749480060456}",
+    "{\"block_anchor\":\"b2c3d4e5f6071829\",\"metrics\":{\"gas_adc_raw\":1229,\"gas_mv\":990,\"gps_fix\":true,\"gps_sats\":8,\"humidity_milli_pct\":47800,\"pressure_pa\":101250,\"temperature_mc\":21600},\"node_id\":\"5B9BB022649FA93D4091DA4BA40714B9\",\"ts_ms\":1749480120789}"
+  ],
   "reading_leaves": [
     "533f0833760f34ad7e3b603980f7d41985418f2521d3d11b4339cb1df82abe39",
     "b0154cc88bb0af8e146d441ad698d254bb85001b6e7e76d5751bb725f5fdefbc",

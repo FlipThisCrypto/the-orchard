@@ -71,6 +71,7 @@ void cmd_hw_info_(const String& /*args*/) {
   doc["chip"]    = ESP.getChipModel();
   doc["board"]   = ORCHARD_BOARD_HINT;
   doc["node_id"] = identity::node_id_hex();
+  doc["pubkey"]  = identity::ed25519_pubkey_hex();  // ADR-0003 provenance key
 
   JsonArray arr = doc["sensors"].to<JsonArray>();
   for (const auto& s : sensors) {
@@ -126,6 +127,11 @@ void dispatch_(const String& line) {
     Serial.println(
         identity::to_hex(identity::signing_secret(),
                          identity::kSigningSecretLen));
+  } else if (cmd == "PUBKEY") {
+    // ed25519 public key (ADR-0003). The wizard captures this at
+    // registration and the oracle publishes it in node:<id>.pubkey.
+    Serial.print("OK ");
+    Serial.println(identity::ed25519_pubkey_hex());
   } else if (cmd == "HW_INFO") {
     cmd_hw_info_(args);
   } else if (cmd == "WIFI_SET") {
