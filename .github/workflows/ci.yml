@@ -49,8 +49,13 @@ jobs:
       - name: Ruff (errors only)
         run: ruff check --select E9,F oracle dashboard orchard_chia
 
+      # `python -m pytest` (not bare `pytest`) so the repo root lands on
+      # sys.path — oracle imports its sibling component orchard_chia
+      # (pass_verify -> orchard_chia.nft.verify), and the components are
+      # deliberately not an installable package. Same invocation the
+      # README documents for local runs.
       - name: Pytest
-        run: pytest -v
+        run: python -m pytest -v
 
   # The README sells the hash-pinned lockfiles as the production-safe
   # install. This job makes sure that promise stays true — it fails if
