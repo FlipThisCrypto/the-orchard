@@ -1,0 +1,127 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The Orchard — CI
+# Runs on every push to main and every PR:
+#   1. python-tests     — ruff (errors only) + the full pytest suite
+#   2. lockfile-check   — proves the documented --require-hashes install still works
+#   3. firmware-build   — compiles all three Tree envs
+#   4. panel-build      — compiles the panel firmware
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            oracle/requirements.txt
+            dashboard/requirements.txt
+            orchard_chia/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r oracle/requirements.txt \
+                      -r dashboard/requirements.txt \
+                      -r orchard_chia/requirements.txt \
+                      ruff
+
+      # Start with errors-only (syntax errors + pyflakes) so CI is green
+      # on day one. Tighten by adding rules to a [tool.ruff] section in
+      # pyproject.toml later.
+      - name: Ruff (errors only)
+        run: ruff check --select E9,F oracle dashboard orchard_chia
+
+      - name: Pytest
+        run: pytest -v
+
+  # The README sells the hash-pinned lockfiles as the production-safe
+  # install. This job makes sure that promise stays true — it fails if
+  # a requirements.txt edit lands without regenerating the lockfiles.
+  lockfile-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install from lockfiles with hash verification
+        run: |
+          python -m venv .lockcheck
+          .lockcheck/bin/pip install --upgrade pip
+          .lockcheck/bin/pip install \
+            --require-hashes -r oracle/requirements.lock \
+            --require-hashes -r dashboard/requirements.lock \
+            --require-hashes -r orchard_chia/requirements.lock
+
+  firmware-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [freenove_esp32_wroom, freenove_esp32s3, freenove_esp32s3_uart]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/.pio
+          key: pio-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build ${{ matrix.env }}
+        run: pio run -d firmware -e ${{ matrix.env }}
+
+  panel-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            panel/.pio
+          key: pio-${{ runner.os }}-panel-${{ hashFiles('panel/platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      # panel/src/secrets.h is gitignored; provide a stub so CI compiles.
+      - name: Stub secrets.h
+        run: cp panel/src/secrets.h.example panel/src/secrets.h
+
+      - name: Build panel
+        run: pio run -d panel

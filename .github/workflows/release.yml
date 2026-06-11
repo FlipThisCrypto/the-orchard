@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The Orchard — Firmware release
+#
+# Trigger: push a tag like v0.4.8
+#   git tag v0.4.8 && git push origin v0.4.8
+#
+# Builds every Tree env and attaches the binaries to a GitHub Release
+# named after the tag. Once this is live, delete the committed .bin
+# files from flasher/ and point flasher/manifest.json at the release
+# asset URLs, e.g.:
+#   https://github.com/FlipThisCrypto/the-orchard/releases/download/v0.4.8/orchard-freenove_esp32s3_uart-v0.4.8.bin
+# That stops every firmware release from permanently growing git history.
+name: Release firmware
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed to create the release + upload assets
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [freenove_esp32_wroom, freenove_esp32s3, freenove_esp32s3_uart]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/.pio
+          key: pio-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build ${{ matrix.env }}
+        run: pio run -d firmware -e ${{ matrix.env }}
+
+      - name: Rename artifact
+        run: |
+          mkdir -p out
+          cp firmware/.pio/build/${{ matrix.env }}/firmware.bin \
+             out/orchard-${{ matrix.env }}-${{ github.ref_name }}.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fw-${{ matrix.env }}
+          path: out/*.bin
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: bins
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd bins
+          sha256sum *.bin > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bins/*.bin
+            bins/SHA256SUMS.txt
+          generate_release_notes: true
