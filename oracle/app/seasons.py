@@ -17,7 +17,7 @@ UTC. Uptime math is ``count(distinct hour buckets) within season window``.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from .config import settings
 

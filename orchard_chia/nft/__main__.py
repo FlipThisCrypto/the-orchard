@@ -47,7 +47,7 @@ NFT_DIR = REPO_ROOT / "nft"
 
 
 def _wallet_rpc_from_config() -> WalletRpc:
-    cfg = base_config.load()
+    base_config.load()  # fail fast, with a helpful error, if config.yaml is absent
     # The base config has full_node + datalayer creds; for wallet we
     # need a separate section (added in config.example.yaml).
     import yaml

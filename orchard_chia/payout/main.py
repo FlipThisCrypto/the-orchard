@@ -164,7 +164,7 @@ def _format_table(plan: list[dict]) -> str:
 def _confirm_interactive(total_recipients: int, total_juice: float) -> bool:
     print()
     print(f"About to send {total_juice:.3f} $JUICE to {total_recipients} wallet(s).")
-    print(f"Type   PAY   to confirm, anything else to abort:")
+    print("Type   PAY   to confirm, anything else to abort:")
     typed = input("> ").strip()
     return typed == "PAY"
 

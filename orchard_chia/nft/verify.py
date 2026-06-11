@@ -34,7 +34,7 @@ from .generate import (
     ORCHARD_GENESIS_COLLECTION_ID,
     ORCHARD_GENESIS_COLLECTION_BECH32_ID,
 )
-from ..wallet.rpc import WalletRpc, WalletRpcError
+from ..wallet.rpc import WalletRpc
 
 
 # MintGarden public REST API. Read-only, no auth.

@@ -11,7 +11,6 @@ operator's CA cert path via ``verify=<ca_path>`` instead.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 import requests

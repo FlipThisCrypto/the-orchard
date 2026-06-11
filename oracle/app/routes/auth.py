@@ -31,7 +31,6 @@ A token blocklist is a Phase 11 hardening.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field

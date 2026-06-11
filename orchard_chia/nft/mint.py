@@ -20,7 +20,6 @@ from pathlib import Path
 
 import yaml
 
-from ..datalayer.config import _expand
 from ..wallet.rpc import WalletRpc, WalletRpcError
 
 

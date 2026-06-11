@@ -845,7 +845,7 @@ def test_network_stats_does_not_expose_per_tree_data(client: TestClient):
     the privacy contract of the endpoint."""
     addr = "xch1m3rvtj86wzzfjyk5mc7wzpr7h4zkaknm4wte7kg6afleu4f2tfxsr7nk3n"
     nid = "CD" * 16
-    rr = client.post("/register", json={
+    client.post("/register", json={
         "node_id": nid, "signing_key_hex": "22" * 32,
         "wallet_address": addr,
     })
