@@ -146,11 +146,14 @@ pip install --require-hashes -r oracle/requirements.lock \
             --require-hashes -r dashboard/requirements.lock \
             --require-hashes -r orchard_chia/requirements.lock
 
-# To regenerate the lockfiles after a deliberate dep bump:
-#   pip install pip-tools
-#   pip-compile --generate-hashes -o oracle/requirements.lock     oracle/requirements.txt
-#   pip-compile --generate-hashes -o dashboard/requirements.lock  dashboard/requirements.txt
-#   pip-compile --generate-hashes -o orchard_chia/requirements.lock orchard_chia/requirements.txt
+# To regenerate the lockfiles after a deliberate dep bump. Universal
+# locks: one file is valid on Windows + Linux + macOS, Python 3.11+
+# (pip-compile only locked for the OS it ran on, which broke Linux
+# installs of uvicorn[standard] — uvloop was never pinned):
+#   pip install uv
+#   uv pip compile --universal --generate-hashes --python-version 3.11 -o oracle/requirements.lock       oracle/requirements.txt
+#   uv pip compile --universal --generate-hashes --python-version 3.11 -o dashboard/requirements.lock    dashboard/requirements.txt
+#   uv pip compile --universal --generate-hashes --python-version 3.11 -o orchard_chia/requirements.lock orchard_chia/requirements.txt
 
 # 3. Flash a Tree (in a separate shell, from firmware/)
 cd firmware
