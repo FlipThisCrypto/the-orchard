@@ -57,7 +57,7 @@ firmware/
 
 HMAC-SHA256 with a shared 32-byte secret. The Tree generates the secret on first boot and shows it to the dashboard over USB-serial during registration; the dashboard then registers `(node_id, hmac_secret)` with the oracle, which from that point onward can verify any submission.
 
-> **Why not ed25519 yet?** ed25519 requires an extra crypto lib and ~25KB more flash. HMAC uses `mbedtls/md.h` already in ESP-IDF. The oracle is the v1 trust boundary per [ADR-0001](../docs/decisions/0001-v1-architecture.md), so the asymmetric-key step buys us nothing in v1. v2 swaps the signing scheme behind the same `identity::sign(...)` interface — drivers are unaffected.
+> **Asymmetric device keys (ADR-0007):** each Tree also carries a secp256r1 (P-256) keypair — generated on first boot, scalar in NVS, public key exported via `PUBKEY`/`HW_INFO`. Signing is RFC 6979 deterministic ECDSA over sha256 via mbedTLS, which is bundled with ESP-IDF — no extra crypto library (unlike the briefly-adopted ed25519, which CLVM also cannot verify). HMAC remains the v1 transport auth to the oracle; the P-256 signature is what makes readings third-party-verifiable ([ADR-0003](../docs/decisions/0003-datalayer-verifiable-dataset.md)) and on-chain-verifiable via `secp256r1_verify` ([ADR-0008](../docs/decisions/0008-serverless-target-architecture.md)).
 
 ## Build / flash
 

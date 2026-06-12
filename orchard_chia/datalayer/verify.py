@@ -138,7 +138,7 @@ def verify_bundle(
         checks.append(Check(
             "Oracle season signature verified",
             schema.verify_attest(attest, oracle_pub),
-            f"ed25519 by oracle {oracle_pub[:8]}…",
+            f"secp256r1 by oracle {oracle_pub[:8]}…",
         ))
 
     return Report(

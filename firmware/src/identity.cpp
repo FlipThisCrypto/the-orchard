@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "identity.h"
 
-#include <Ed25519.h>
 #include <Preferences.h>
 #include <bootloader_random.h>
 #include <esp_random.h>
+#include <mbedtls/bignum.h>
+#include <mbedtls/ecdsa.h>
+#include <mbedtls/ecp.h>
 #include <mbedtls/md.h>
 
 #include "config.h"
@@ -16,7 +18,10 @@ namespace {
 constexpr size_t kNodeIdBytes = 16;
 constexpr const char* kNvsKeyNodeId  = "node_id";
 constexpr const char* kNvsKeySecret  = "sign_key";
-constexpr const char* kNvsKeyEdSeed  = "ed_seed";
+constexpr const char* kNvsKeyP256    = "p256_key";
+// Pre-ADR-0007 ed25519 seed; wiped if present (devices re-provision, the
+// fleet doesn't exist yet — exactly why the curve switch happens NOW).
+constexpr const char* kNvsKeyEdSeedLegacy = "ed_seed";
 constexpr const char* kNvsKeyAPPw    = "ap_pw";
 
 // Printable alphabet for AP passwords. Skips characters that are
@@ -26,10 +31,10 @@ constexpr const char* kAPPwAlphabet =
 constexpr size_t kAPPwAlphabetLen = 56;
 
 uint8_t signing_secret_[kSigningSecretLen] = {0};
-uint8_t ed_seed_[kEd25519PubLen] = {0};   // 32-byte ed25519 private seed
-uint8_t ed_pub_[kEd25519PubLen] = {0};    // derived public key
+uint8_t p256_d_[kP256PrivLen] = {0};      // P-256 private scalar (big-endian)
+uint8_t p256_pub_[kP256PubLen] = {0};     // compressed SEC1 public point
 String node_id_hex_;
-String ed_pubkey_hex_;
+String p256_pubkey_hex_;
 String ap_password_;
 
 void random_bytes(uint8_t* out, size_t len) {
@@ -41,6 +46,45 @@ void random_bytes(uint8_t* out, size_t len) {
     const size_t chunk = (len - i >= 4) ? 4 : (len - i);
     memcpy(out + i, &r, chunk);
   }
+}
+
+// mbedTLS f_rng adapter over random_bytes(). Used for keygen and for
+// ECDSA blinding; the signature nonce itself is RFC 6979 (no RNG).
+int mbedtls_rng_cb(void* /*ctx*/, unsigned char* out, size_t len) {
+  random_bytes(out, len);
+  return 0;
+}
+
+// Derive + cache the compressed public key from the stored scalar.
+// Returns true on success.
+bool p256_load_pubkey() {
+  mbedtls_ecp_group grp;
+  mbedtls_mpi d;
+  mbedtls_ecp_point Q;
+  mbedtls_ecp_group_init(&grp);
+  mbedtls_mpi_init(&d);
+  mbedtls_ecp_point_init(&Q);
+
+  int rc = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+  if (rc == 0) rc = mbedtls_mpi_read_binary(&d, p256_d_, sizeof(p256_d_));
+  // f_rng enables coordinate randomization (side-channel blinding).
+  if (rc == 0) rc = mbedtls_ecp_mul(&grp, &Q, &d, &grp.G, mbedtls_rng_cb, nullptr);
+  size_t olen = 0;
+  if (rc == 0) {
+    rc = mbedtls_ecp_point_write_binary(&grp, &Q, MBEDTLS_ECP_PF_COMPRESSED,
+                                        &olen, p256_pub_, sizeof(p256_pub_));
+  }
+
+  mbedtls_ecp_point_free(&Q);
+  mbedtls_mpi_free(&d);
+  mbedtls_ecp_group_free(&grp);
+
+  if (rc != 0 || olen != kP256PubLen) {
+    Serial.printf("[identity] p256 pubkey derivation failed: -0x%04x\n",
+                  static_cast<unsigned>(-rc));
+    return false;
+  }
+  return true;
 }
 
 String generate_ap_password(size_t len) {
@@ -94,16 +138,16 @@ void begin() {
   const bool need_secret =
       prefs.getBytes(kNvsKeySecret, signing_secret_, kSigningSecretLen)
           != kSigningSecretLen;
-  const bool need_ed =
-      prefs.getBytes(kNvsKeyEdSeed, ed_seed_, sizeof(ed_seed_))
-          != sizeof(ed_seed_);
+  const bool need_p256 =
+      prefs.getBytes(kNvsKeyP256, p256_d_, sizeof(p256_d_))
+          != sizeof(p256_d_);
 
   // H5 hardening: persistent device keys MUST come from the hardware RNG.
   // esp_random() only returns true entropy once the RF subsystem (WiFi/BT)
   // is running — which is LATER than this first-boot identity init. Enable
   // the bootloader entropy source (valid before RF) for the duration of
   // key generation, then disable it again before sensors / WiFi come up.
-  const bool generating = need_node || need_secret || need_ed;
+  const bool generating = need_node || need_secret || need_p256;
   if (generating) bootloader_random_enable();
 
   if (need_node) {
@@ -119,24 +163,47 @@ void begin() {
     Serial.println("[identity] generated new signing secret");
   }
 
-  // ed25519 device key (ADR-0003): the 32-byte seed IS the private key
-  // (RFC 8032); the public key derives deterministically, so we only
-  // persist the seed.
-  if (need_ed) {
-    random_bytes(ed_seed_, sizeof(ed_seed_));
-    prefs.putBytes(kNvsKeyEdSeed, ed_seed_, sizeof(ed_seed_));
-    Serial.println("[identity] generated new ed25519 key");
+  // secp256r1 device key (ADR-0007): generate a keypair so the scalar is
+  // guaranteed in [1, n-1] (a raw random 32-byte value isn't, always);
+  // only the scalar is persisted — the public key re-derives on boot.
+  if (need_p256) {
+    mbedtls_ecp_group grp;
+    mbedtls_mpi d;
+    mbedtls_ecp_point Q;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_mpi_init(&d);
+    mbedtls_ecp_point_init(&Q);
+    int rc = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+    if (rc == 0) rc = mbedtls_ecp_gen_keypair(&grp, &d, &Q, mbedtls_rng_cb, nullptr);
+    if (rc == 0) rc = mbedtls_mpi_write_binary(&d, p256_d_, sizeof(p256_d_));
+    mbedtls_ecp_point_free(&Q);
+    mbedtls_mpi_free(&d);
+    mbedtls_ecp_group_free(&grp);
+    if (rc == 0) {
+      prefs.putBytes(kNvsKeyP256, p256_d_, sizeof(p256_d_));
+      Serial.println("[identity] generated new secp256r1 key");
+    } else {
+      Serial.printf("[identity] p256 keygen FAILED: -0x%04x\n",
+                    static_cast<unsigned>(-rc));
+    }
   }
 
   if (generating) bootloader_random_disable();
 
-  Ed25519::derivePublicKey(ed_pub_, ed_seed_);
-  ed_pubkey_hex_ = to_hex_lower(ed_pub_, sizeof(ed_pub_));
+  // One-time cleanup of the pre-ADR-0007 ed25519 seed, if this board had one.
+  if (prefs.isKey(kNvsKeyEdSeedLegacy)) {
+    prefs.remove(kNvsKeyEdSeedLegacy);
+    Serial.println("[identity] removed legacy ed25519 seed (ADR-0007)");
+  }
+
+  if (p256_load_pubkey()) {
+    p256_pubkey_hex_ = to_hex_lower(p256_pub_, sizeof(p256_pub_));
+  }
 
   prefs.end();
 
   Serial.printf("[identity] node_id=%s\n", node_id_hex_.c_str());
-  Serial.printf("[identity] ed25519_pub=%s\n", ed_pubkey_hex_.c_str());
+  Serial.printf("[identity] p256_pub=%s\n", p256_pubkey_hex_.c_str());
 }
 
 const String& node_id_hex() {
@@ -189,14 +256,57 @@ void hmac_sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
                   out);
 }
 
-const String& ed25519_pubkey_hex() {
-  return ed_pubkey_hex_;
+const String& p256_pubkey_hex() {
+  return p256_pubkey_hex_;
 }
 
-void ed25519_sign(const uint8_t* data, size_t len, uint8_t out[kEd25519SigLen]) {
-  // rweather/Crypto Ed25519 is RFC-8032 compliant, so signatures verify
-  // against the Python (cryptography) reference and the golden vectors.
-  Ed25519::sign(out, ed_seed_, ed_pub_, data, len);
+void p256_sign(const uint8_t* data, size_t len, uint8_t out[kP256SigLen]) {
+  memset(out, 0, kP256SigLen);
+
+  // sha256 digest of the exact payload bytes (SPEC §4). mbedtls_md() is
+  // stable across the mbedTLS 2.x/3.x API split, unlike mbedtls_sha256*.
+  uint8_t hash[32];
+  const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (mbedtls_md(md, data, len, hash) != 0) return;
+
+  mbedtls_ecp_group grp;
+  mbedtls_mpi d, r, s, half_n;
+  mbedtls_ecp_group_init(&grp);
+  mbedtls_mpi_init(&d);
+  mbedtls_mpi_init(&r);
+  mbedtls_mpi_init(&s);
+  mbedtls_mpi_init(&half_n);
+
+  int rc = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+  if (rc == 0) rc = mbedtls_mpi_read_binary(&d, p256_d_, sizeof(p256_d_));
+  // RFC 6979 deterministic nonce — byte-identical to the Python reference
+  // and the golden vectors. f_rng is only the side-channel blinding source.
+  if (rc == 0) {
+    rc = mbedtls_ecdsa_sign_det_ext(&grp, &r, &s, &d, hash, sizeof(hash),
+                                    MBEDTLS_MD_SHA256, mbedtls_rng_cb, nullptr);
+  }
+  if (rc == 0) {
+    // Low-S normalization (SPEC §4): s = min(s, n - s). Keeps every
+    // verifier happy, including strict ones, and stays deterministic.
+    rc = mbedtls_mpi_copy(&half_n, &grp.N);
+    if (rc == 0) rc = mbedtls_mpi_shift_r(&half_n, 1);
+    if (rc == 0 && mbedtls_mpi_cmp_mpi(&s, &half_n) > 0) {
+      rc = mbedtls_mpi_sub_mpi(&s, &grp.N, &s);
+    }
+  }
+  if (rc == 0) rc = mbedtls_mpi_write_binary(&r, out, 32);
+  if (rc == 0) rc = mbedtls_mpi_write_binary(&s, out + 32, 32);
+  if (rc != 0) {
+    memset(out, 0, kP256SigLen);
+    Serial.printf("[identity] p256_sign failed: -0x%04x\n",
+                  static_cast<unsigned>(-rc));
+  }
+
+  mbedtls_mpi_free(&half_n);
+  mbedtls_mpi_free(&s);
+  mbedtls_mpi_free(&r);
+  mbedtls_mpi_free(&d);
+  mbedtls_ecp_group_free(&grp);
 }
 
 }  // namespace orchard::identity

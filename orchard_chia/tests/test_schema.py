@@ -4,9 +4,9 @@
 Hermetic. Validates against the committed golden vectors so the implementation
 can never silently drift from the cross-language contract the firmware and the
 public verifier also test against. Covers: canonicalization, key encoding,
-ed25519 device + oracle signatures (deterministic), reading leaves / hour root /
-season root, the verified-uptime → score math, record builders, and value
-round-trips.
+secp256r1 device + oracle signatures (RFC 6979 deterministic, ADR-0007),
+reading leaves / hour root / season root, the verified-uptime → score math,
+record builders, and value round-trips.
 """
 from __future__ import annotations
 
@@ -54,14 +54,31 @@ def test_node_id_normalized_in_keys():
     assert schema.readings_key(NODE.lower(), 5, 13) == VEC["keys"]["readings"]
 
 
-# --- ed25519 keys & signatures --------------------------------------------- #
+# --- secp256r1 keys & signatures (ADR-0007) -------------------------------- #
 def test_pubkey_derivation_is_deterministic():
     assert schema.pubkey_for_seed(DEVICE_SEED) == DEVICE_PUB
     assert schema.pubkey_for_seed(ORACLE_SEED) == ORACLE_PUB
 
 
+def test_key_and_sig_encodings_match_spec():
+    # SPEC §4: pubkey = 33-byte compressed SEC1 (02/03 prefix); sig = 64-byte
+    # r||s with low-S normalization. These shapes are what CLVM's
+    # secp256r1_verify consumes — drift here breaks on-chain verifiability.
+    for pub in (DEVICE_PUB, ORACLE_PUB):
+        raw = bytes.fromhex(pub)
+        assert len(raw) == 33
+        assert raw[0] in (0x02, 0x03)
+    n = schema._P256_N
+    for stored in VEC["readings_signed"]:
+        sig = bytes.fromhex(stored["sig"])
+        assert len(sig) == 64
+        s = int.from_bytes(sig[32:], "big")
+        assert 0 < s <= n // 2  # low-S
+
+
 def test_device_signing_reproduces_vectors():
-    # ed25519 is deterministic: re-signing each body yields the stored sig.
+    # RFC 6979 deterministic ECDSA: re-signing each body yields the stored
+    # sig byte-for-byte (same contract the firmware's mbedTLS impl pins).
     for stored in VEC["readings_signed"]:
         body = {k: v for k, v in stored.items() if k != "sig"}
         assert schema.sign_reading(body, DEVICE_SEED)["sig"] == stored["sig"]

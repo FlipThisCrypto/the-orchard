@@ -1,10 +1,14 @@
 # ADR-0003: DataLayer as a publicly verifiable environmental dataset
 
-- **Status:** Accepted
+- **Status:** Accepted; curve amended by ADR-0007 (2026-06-12): every
+  "ed25519" below is now **secp256r1** (P-256, RFC 6979, r||s low-S) —
+  CLVM cannot verify ed25519, and the serverless target (ADR-0008)
+  requires on-chain verification of device signatures
 - **Date:** 2026-06-09
 - **Deciders:** Richard Aubrey (FlipThisCrypto)
 - **Supersedes:** ADR-0001 §7 ("DataLayer scope: daily uptime attestations only")
-- **Related:** ADR-0002 (Grove federation), [`docs/datalayer/SPEC.md`](../datalayer/SPEC.md) (concrete wire format)
+- **Related:** ADR-0002 (Grove federation), ADR-0007 (device curve),
+  [`docs/datalayer/SPEC.md`](../datalayer/SPEC.md) (concrete wire format)
 
 ## Context
 

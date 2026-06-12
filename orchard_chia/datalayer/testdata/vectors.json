@@ -70,11 +70,11 @@
   },
   "device": {
     "seed": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
-    "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"
+    "pubkey": "02515c3d6eb9e396b904d3feca7f54fdcd0cc1e997bf375dca515ad0a6c3b4035f"
   },
   "oracle": {
     "seed": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
-    "pubkey": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0"
+    "pubkey": "031f140146bfb1b251f84f4ddbe0d4cdcfd77afd984a9520e35794021f8312bb9e"
   },
   "readings_signed": [
     {
@@ -90,7 +90,7 @@
         "gps_fix": true,
         "gps_sats": 7
       },
-      "sig": "1e265e3285f63645e448dc33d295aa28a1403c498bda61886df495d1cf340eeb72e8dc6b0dd50efb2d02e89b4fe44a23681ed493d2c0e468498913be2cbdd206"
+      "sig": "7056d6a93e41bdb46f7774681cc9d0e32e0f2dc68094c084fc4f2298b170c6d7713b24b6528740220e74dcc5a03590995e4d393937312c6cdc138f9f9ed61715"
     },
     {
       "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
@@ -105,7 +105,7 @@
         "gps_fix": true,
         "gps_sats": 8
       },
-      "sig": "c716ee9e851a7361cc38d2451040a548e803e259131bf044f57146c216fe54c2bb157c7ec2ddaf9f59874fe01a98ba28ea0a47e540dc1d65974bfa757bb13e03"
+      "sig": "042671159c64f74de0340d0cd388eb65d90368dab21a1d8ebacd2240dac584be6da3bfc4f2a962d38894c4039c5265a72abeb0a531d6191bf374af09addddc5a"
     },
     {
       "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
@@ -120,7 +120,7 @@
         "gps_fix": true,
         "gps_sats": 8
       },
-      "sig": "b9fa9cd54423ec60f6fa530cf3cece9907b27fd32309c1409130c1e3405046898085469bd01dd62554d855c1eb68ff3e8e2255fed96cf6a460bfe0a8e6f95702"
+      "sig": "a4c934b766e05fc5979f650c3c227683d3e4997cb2b22ea0578aed42c1c61dda4bb9e12db235001da8a9d4c6dda1b9b137541ac0ffab006affa414bfdb4a6853"
     }
   ],
   "reading_canonical": [
@@ -129,12 +129,12 @@
     "{\"block_anchor\":\"b2c3d4e5f6071829\",\"metrics\":{\"gas_adc_raw\":1229,\"gas_mv\":990,\"gps_fix\":true,\"gps_sats\":8,\"humidity_milli_pct\":47800,\"pressure_pa\":101250,\"temperature_mc\":21600},\"node_id\":\"5B9BB022649FA93D4091DA4BA40714B9\",\"ts_ms\":1749480120789}"
   ],
   "reading_leaves": [
-    "533f0833760f34ad7e3b603980f7d41985418f2521d3d11b4339cb1df82abe39",
-    "b0154cc88bb0af8e146d441ad698d254bb85001b6e7e76d5751bb725f5fdefbc",
-    "d295803c6435329bfa9e94dd034a4e04258f06aa74925a0fbe10122c98786c0f"
+    "d61c1a9ee8b4c292d52823c12d8eb1767d6cc5195d0f7f32bbad48767eb25ed9",
+    "4f0598c7daec14b2fe49277dda2fb65df1045438a98119fba20c3eda55ab39a2",
+    "ae3d37b4ddca4bb64d6ab0cc67ee5f560101bfa2e1657dd9c0df4f1334b20976"
   ],
-  "hour_root": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65",
-  "season_root": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65",
+  "hour_root": "653cf831765e8a6a91d7714cfb5a0252ecf9fa3e2ac0270b345d96e9ba5aa559",
+  "season_root": "653cf831765e8a6a91d7714cfb5a0252ecf9fa3e2ac0270b345d96e9ba5aa559",
   "verified_hours": 1,
   "season_score": 4,
   "records": {
@@ -178,16 +178,16 @@
       },
       "geohash_precision": 5,
       "signer": {
-        "device_sig": "ed25519",
-        "season_sig": "ed25519",
-        "season_pubkey": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0"
+        "device_sig": "secp256r1",
+        "season_sig": "secp256r1",
+        "season_pubkey": "031f140146bfb1b251f84f4ddbe0d4cdcfd77afd984a9520e35794021f8312bb9e"
       },
       "writer_version": "0.1.0",
       "created_at": "2026-06-09T00:00:00Z"
     },
     "node": {
       "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
-      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "pubkey": "02515c3d6eb9e396b904d3feca7f54fdcd0cc1e997bf375dca515ad0a6c3b4035f",
       "board": "freenove-esp32s3-uart",
       "fw": "0.4.7",
       "sensors": [
@@ -230,7 +230,7 @@
             "gps_fix": true,
             "gps_sats": 7
           },
-          "sig": "1e265e3285f63645e448dc33d295aa28a1403c498bda61886df495d1cf340eeb72e8dc6b0dd50efb2d02e89b4fe44a23681ed493d2c0e468498913be2cbdd206"
+          "sig": "7056d6a93e41bdb46f7774681cc9d0e32e0f2dc68094c084fc4f2298b170c6d7713b24b6528740220e74dcc5a03590995e4d393937312c6cdc138f9f9ed61715"
         },
         {
           "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
@@ -245,7 +245,7 @@
             "gps_fix": true,
             "gps_sats": 8
           },
-          "sig": "c716ee9e851a7361cc38d2451040a548e803e259131bf044f57146c216fe54c2bb157c7ec2ddaf9f59874fe01a98ba28ea0a47e540dc1d65974bfa757bb13e03"
+          "sig": "042671159c64f74de0340d0cd388eb65d90368dab21a1d8ebacd2240dac584be6da3bfc4f2a962d38894c4039c5265a72abeb0a531d6191bf374af09addddc5a"
         },
         {
           "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
@@ -260,10 +260,10 @@
             "gps_fix": true,
             "gps_sats": 8
           },
-          "sig": "b9fa9cd54423ec60f6fa530cf3cece9907b27fd32309c1409130c1e3405046898085469bd01dd62554d855c1eb68ff3e8e2255fed96cf6a460bfe0a8e6f95702"
+          "sig": "a4c934b766e05fc5979f650c3c227683d3e4997cb2b22ea0578aed42c1c61dda4bb9e12db235001da8a9d4c6dda1b9b137541ac0ffab006affa414bfdb4a6853"
         }
       ],
-      "hour_root": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65"
+      "hour_root": "653cf831765e8a6a91d7714cfb5a0252ecf9fa3e2ac0270b345d96e9ba5aa559"
     },
     "attest": {
       "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
@@ -275,10 +275,10 @@
       "season_score": 4,
       "reading_count": 3,
       "block_height_at_write": 8794728,
-      "data_hash": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65",
-      "season_root": "fe4cddc36fc7a10cf447a1aa32fc766d620f02b6c820fdcf1b537d26b9706e65",
+      "data_hash": "653cf831765e8a6a91d7714cfb5a0252ecf9fa3e2ac0270b345d96e9ba5aa559",
+      "season_root": "653cf831765e8a6a91d7714cfb5a0252ecf9fa3e2ac0270b345d96e9ba5aa559",
       "signed_at": "2026-06-01T00:05:00Z",
-      "oracle_sig": "4c6eab88499e2189f6f8847bf2f49b1fa292bce057ba09264f57aa7184fb95c18c51272413c88a8684208d76c6f17fbb4384343af0478fc0c3e70d524fc26100"
+      "oracle_sig": "0d48ef3b483b4d3ac0f7602e80fc25787aa0e3ac2e6c56cd61289e104e8f44126c124a4279624a1606813218d15e4591dc7cf0f05e154e95e32b7318d7e96cb2"
     },
     "latest": {
       "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
@@ -299,7 +299,7 @@
           "gps_fix": true,
           "gps_sats": 8
         },
-        "sig": "b9fa9cd54423ec60f6fa530cf3cece9907b27fd32309c1409130c1e3405046898085469bd01dd62554d855c1eb68ff3e8e2255fed96cf6a460bfe0a8e6f95702"
+        "sig": "a4c934b766e05fc5979f650c3c227683d3e4997cb2b22ea0578aed42c1c61dda4bb9e12db235001da8a9d4c6dda1b9b137541ac0ffab006affa414bfdb4a6853"
       },
       "updated_at": "2026-05-31T13:02:01Z"
     }

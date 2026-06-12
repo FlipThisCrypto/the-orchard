@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-12 — Device curve switched ed25519 → secp256r1 before any device shipped (ADR-0007)
+
+- **The catch, in time:** CLVM has no ed25519 operator — its signature ops
+  are BLS, secp256k1, secp256r1. The serverless target (ADR-0008: Tree
+  singletons verified on-chain) would have been permanently impossible on an
+  ed25519 fleet. Caught while PR #1 was still open, so the fix was a rework,
+  not a fleet re-key. Lesson: **check the on-chain VM's verb set before
+  freezing device crypto.**
+- **Determinism preserved across the rewrite:** the golden-vector contract
+  ("re-sign ⇒ identical bytes") survives because RFC 6979 makes ECDSA
+  deterministic — mbedTLS (`mbedtls_ecdsa_sign_det_ext`) and Python
+  (`ecdsa.sign_digest_deterministic`) emit byte-identical signatures for the
+  same scalar + digest. Low-S normalization applied on both sides.
+- **Firmware got LIGHTER:** the rweather/Crypto dependency is gone — mbedTLS
+  ships in ESP-IDF with `MBEDTLS_ECDSA_DETERMINISTIC` already enabled on
+  esp32 and esp32s3 targets (checked the bundled sdkconfig.h before writing
+  any code — saved a fallback implementation).
+- **Bonus:** P-256 is what ATECC608-class secure elements speak natively, so
+  the future hardware-key Tree revision needs zero protocol change.
+
+---
+
 ## 2026-06-02 (cont.) — "Sensor data not showing" triaged: dashboard is healthy, breakage is device-side; DS18B20 made non-blocking (0.4.7)
 
 Operator report: *"GPS no longer showing in the dashboard with the newest

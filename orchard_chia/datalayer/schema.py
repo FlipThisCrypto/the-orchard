@@ -9,7 +9,8 @@ Implements ``docs/datalayer/SPEC.md`` — the five-namespace store:
     attest:<NODE_ID>:<SEASON>
     latest:<NODE_ID>
 
-Pure functions plus a thin ed25519 wrapper (``cryptography``). No I/O, no
+Pure functions plus a thin secp256r1/ECDSA wrapper (ADR-0007: ``ecdsa`` for
+RFC 6979 deterministic signing, ``cryptography`` for verification). No I/O, no
 network. Canonicalization matches ``orchard_chia.datalayer.attest`` byte-for-
 byte (``sort_keys=True, separators=(",", ":")``, UTF-8), so the existing
 HMAC-era code and this module agree on bytes.
@@ -21,13 +22,15 @@ fixture both sides test against.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-    Ed25519PrivateKey,
-    Ed25519PublicKey,
-)
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+from ecdsa import NIST256p, SigningKey
+from ecdsa.util import sigencode_string
 
 from . import merkle
 
@@ -98,18 +101,36 @@ def parse_value(value_hex_str: str | None) -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
-# ed25519 — device & oracle signatures                                        #
+# secp256r1 (P-256) — device & oracle signatures (ADR-0007)                   #
 # --------------------------------------------------------------------------- #
+# Encodings (SPEC §4): pubkey = 33-byte compressed SEC1, lowercase hex.
+# Signature = fixed 64-byte r||s (two 32-byte big-endian ints), low-S
+# normalized, lowercase hex. Signed digest = sha256(canonical bytes).
+#
+# Signing is RFC 6979 *deterministic* ECDSA: re-signing a body always
+# reproduces the committed vector, and the firmware (mbedTLS deterministic
+# ECDSA, same RFC) emits byte-identical signatures for identical inputs —
+# that is the cross-language contract the golden vectors pin. CLVM's
+# `secp256r1_verify` consumes exactly (pubkey33, digest32, sig64), which is
+# what makes Tree signatures on-chain verifiable (ADR-0008).
+
+_P256_N = NIST256p.order  # group order n, for low-S normalization
+
+
 def generate_seed() -> str:
-    """Fresh ed25519 private seed (32 bytes), hex. The device does this in NVS
-    on first boot; the oracle does it once for the Season signer."""
-    return Ed25519PrivateKey.generate().private_bytes_raw().hex()
+    """Fresh secp256r1 private scalar (32 bytes big-endian), hex. The device
+    does this in NVS on first boot; the oracle does it once for the Season
+    signer. (Named "seed" for continuity; for ECDSA it IS the private key.)"""
+    sk = ec.generate_private_key(ec.SECP256R1())
+    return sk.private_numbers().private_value.to_bytes(32, "big").hex()
 
 
 def pubkey_for_seed(seed_hex: str) -> str:
-    """Public key (32 bytes, hex) for a private seed."""
-    sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed_hex))
-    return sk.public_key().public_bytes_raw().hex()
+    """Compressed SEC1 public key (33 bytes, hex) for a private scalar."""
+    sk = ec.derive_private_key(int(seed_hex, 16), ec.SECP256R1())
+    return sk.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint
+    ).hex()
 
 
 def reject_floats(obj: object, path: str = "$") -> None:
@@ -135,21 +156,37 @@ def reject_floats(obj: object, path: str = "$") -> None:
 
 def _sign(body: dict, seed_hex: str) -> str:
     reject_floats(body)  # determinism guard — never sign a float
-    sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed_hex))
-    return sk.sign(canonical_bytes(body)).hex()
+    digest = hashlib.sha256(canonical_bytes(body)).digest()
+    sk = SigningKey.from_secret_exponent(int(seed_hex, 16), curve=NIST256p)
+    raw = sk.sign_digest_deterministic(
+        digest, hashfunc=hashlib.sha256, sigencode=sigencode_string
+    )
+    r = int.from_bytes(raw[:32], "big")
+    s = int.from_bytes(raw[32:], "big")
+    if s > _P256_N // 2:  # low-S: every verifier accepts it, strict ones require it
+        s = _P256_N - s
+    return (r.to_bytes(32, "big") + s.to_bytes(32, "big")).hex()
 
 
 def _verify(body: dict, sig_hex: str, pubkey_hex: str) -> bool:
     try:
-        pk = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey_hex))
-        pk.verify(bytes.fromhex(sig_hex), canonical_bytes(body))
+        sig = bytes.fromhex(sig_hex)
+        if len(sig) != 64:
+            return False
+        pk = ec.EllipticCurvePublicKey.from_encoded_point(
+            ec.SECP256R1(), bytes.fromhex(pubkey_hex)
+        )
+        der = encode_dss_signature(
+            int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big")
+        )
+        pk.verify(der, canonical_bytes(body), ec.ECDSA(hashes.SHA256()))
         return True
     except (InvalidSignature, ValueError):
         return False
 
 
 def sign_reading(reading_without_sig: dict, seed_hex: str) -> dict:
-    """Return the reading plus an ed25519 ``sig`` over its canonical bytes."""
+    """Return the reading plus a secp256r1 ``sig`` over its canonical bytes."""
     return {**reading_without_sig, "sig": _sign(reading_without_sig, seed_hex)}
 
 
@@ -163,7 +200,7 @@ def verify_reading(reading_with_sig: dict, pubkey_hex: str) -> bool:
 
 
 def sign_attest(attest_payload: dict, seed_hex: str) -> dict:
-    """Add the oracle's ed25519 ``oracle_sig`` over the attest payload."""
+    """Add the oracle's secp256r1 ``oracle_sig`` over the attest payload."""
     body = {k: v for k, v in attest_payload.items() if k != "oracle_sig"}
     return {**attest_payload, "oracle_sig": _sign(body, seed_hex)}
 
@@ -240,7 +277,7 @@ def build_meta(
     geohash_precision: int = 5,
     operator_pass_nft: str | None = None,
     units: dict | None = None,
-    season_sig: str = "ed25519",
+    season_sig: str = "secp256r1",
 ) -> dict:
     return {
         "orchard_schema": SCHEMA_VERSION,
@@ -252,7 +289,7 @@ def build_meta(
         # it must be published, not just the scheme name (the verifier reads it
         # from here in both offline and live mode).
         "signer": {
-            "device_sig": "ed25519",
+            "device_sig": "secp256r1",
             "season_sig": season_sig,
             "season_pubkey": season_pubkey,
         },

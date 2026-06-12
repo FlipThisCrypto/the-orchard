@@ -87,7 +87,7 @@ record permanent; `latest:` is the only routinely-overwritten key.
     "gps_sats":           {"display": "sats",  "pow10":  0}
   },
   "geohash_precision": 5,
-  "signer": { "device_sig": "ed25519", "season_sig": "ed25519", "season_pubkey": "<oracle ed25519 pubkey, 64 hex>" },
+  "signer": { "device_sig": "secp256r1", "season_sig": "secp256r1", "season_pubkey": "<oracle compressed SEC1 pubkey, 66 hex>" },
   "writer_version": "<semver>",
   "created_at": "2026-06-09T00:00:00Z"
 }
@@ -98,7 +98,7 @@ record permanent; `latest:` is the only routinely-overwritten key.
 ```json
 {
   "node_id": "5B9BB022649FA93D4091DA4BA40714B9",
-  "pubkey": "<ed25519 public key, 64 hex>",
+  "pubkey": "<secp256r1 compressed SEC1 public key, 66 hex>",
   "board": "freenove-esp32s3-uart",
   "fw": "0.4.7",
   "sensors": [
@@ -137,7 +137,7 @@ against it. `geohash` precision matches `meta:schema.geohash_precision`.
         "gps_fix": true,
         "gps_sats": 7
       },
-      "sig": "<ed25519 over canonical(reading-without-sig), hex>"
+      "sig": "<secp256r1 r||s over sha256(canonical(reading-without-sig)), 128 hex>"
     }
   ],
   "hour_root": "<sha256 hex — Merkle root over this hour's leaves>"
@@ -190,7 +190,7 @@ Backward-compatible superset of today's record. New fields **bold**:
 ```
 
 `data_hash` is retained (don't break the payout `reader.py`) but now equals
-`season_root`. `oracle_sig` migrates HMAC → ed25519 (pubkey in
+`season_root`. `oracle_sig` migrates HMAC → secp256r1 (pubkey in
 `meta:schema.signer`). See §3 for `verified_hours` / `season_score`.
 
 ### 2.5 `latest:<NODE_ID>` (live pointer)
@@ -245,12 +245,21 @@ score. Tier/identity multipliers that depend on private state belong in a
 
 ## 4. Signing
 
-### 4.1 Device signature (ed25519)
+### 4.1 Device signature (secp256r1 — ADR-0007)
 
 1. Build the reading object **without** `sig`.
-2. `msg = canonical(reading_without_sig)` (§0).
-3. `sig = ed25519_sign(device_sk, msg)`; store lowercase hex in `sig`.
-4. Verify: `ed25519_verify(node.pubkey, sig, canonical(reading_without_sig))`.
+2. `msg = canonical(reading_without_sig)` (§0); `digest = sha256(msg)`.
+3. `sig = ecdsa_p256_sign(device_sk, digest)` — **RFC 6979 deterministic**
+   nonce, encoded as fixed **64-byte `r||s`** (two 32-byte big-endian
+   integers), **low-S normalized** (`s ≤ n/2`); store lowercase hex in `sig`.
+4. Verify: standard P-256 ECDSA of `(node.pubkey, digest, sig)` — including
+   on-chain: CLVM's `secp256r1_verify` consumes exactly
+   `(pubkey33, digest32, sig64)`.
+
+Encodings: `pubkey` is the **33-byte compressed SEC1** point, lowercase hex
+(66 chars); `sig` is 128 hex chars. Determinism note: RFC 6979 means the same
+key + same bytes ⇒ the same signature, in firmware (mbedTLS) and Python
+(`ecdsa`) alike — the golden vectors pin this byte-for-byte.
 
 Private key generated on first boot, stored in NVS, never transmitted. Public
 key exported via `HW_INFO` and sent to the oracle at registration → written to
@@ -269,9 +278,10 @@ key exported via `HW_INFO` and sent to the oracle at registration → written to
 ### 4.3 Oracle / Season signature
 
 `oracle_sig` covers `canonical(attest_payload_without_oracle_sig)` (today's
-rule). Scheme moves HMAC → ed25519, publicly verifiable against
-`meta:schema.signer.season_sig` + a published oracle pubkey. (Open question in
-ADR-0003: ed25519 vs. BLS vs. drop-and-rely-on-device-sigs.)
+rule). Scheme moves HMAC → secp256r1 (same §4.1 encodings — one curve
+everywhere), publicly verifiable against `meta:schema.signer.season_sig` + a
+published oracle pubkey. (ADR-0003's open question — ed25519 vs. BLS vs.
+drop — was settled by ADR-0007: secp256r1, for CLVM verifiability.)
 
 ---
 
@@ -326,8 +336,8 @@ services:
 1. **Inclusion / permanence** — `get_proof` for the `readings:` key; verify
    against the store's on-chain root. Show root + `block_height` + Spacescan
    link to the store singleton's coin.
-2. **Device provenance** — fetch `node:<NODE_ID>.pubkey`; `ed25519_verify` the
-   reading's `sig` over `canonical(reading_without_sig)`.
+2. **Device provenance** — fetch `node:<NODE_ID>.pubkey`; P-256-ECDSA-verify
+   the reading's `sig` over `sha256(canonical(reading_without_sig))`.
 3. **Membership** — recompute `leaf_hash`, walk the Merkle path to `hour_root`,
    then to `attest:<NODE_ID>:<SEASON>.season_root`.
 4. **Anti-backdate** — confirm `block_anchor` matches a real header with
@@ -426,8 +436,8 @@ The schema is the interface every other component reads or writes through:
 | `attest:<…>` | writer (Season close) | **payout**, Atlas, verify CLI |
 | `latest:<NODE_ID>` | writer (each cycle) | Atlas (live) |
 
-Upstream, the **device** produces the ed25519 keypair, the signed readings, and
-the pubkey that seed `node:`/`readings:`. Downstream, **rewards** are computed
+Upstream, the **device** produces the secp256r1 keypair, the signed readings,
+and the pubkey that seed `node:`/`readings:`. Downstream, **rewards** are computed
 by recomputing `season_score` from `readings:` — so even payouts obey the tenet.
 
 ---
@@ -437,8 +447,8 @@ by recomputing `season_score` from `readings:` — so even payouts obey the tene
 **Reference implementation (done — this is the contract everything else conforms to):**
 - [x] Merkle module — `orchard_chia/datalayer/merkle.py`.
 - [x] Schema: keys, record builders (`meta`/`node`/`readings`/`attest`/`latest`),
-      ed25519 device + Season signing, roots, `verified_hours`/`season_score` —
-      `orchard_chia/datalayer/schema.py`.
+      secp256r1 device + Season signing (RFC 6979), roots,
+      `verified_hours`/`season_score` — `orchard_chia/datalayer/schema.py`.
 - [x] Golden cross-language vectors — `orchard_chia/datalayer/testdata/vectors.json`
       (regenerate via `python -m orchard_chia.datalayer._gen_vectors`).
 - [x] Tests: Merkle KATs + proofs, sign/verify round-trips, score recompute,
@@ -447,10 +457,11 @@ by recomputing `season_score` from `readings:` — so even payouts obey the tene
 - [x] **Signed reading core is integer fixed-point** (§0 / §2.3 table); floats
       rejected in code by `schema.reject_floats()`; vectors regenerated.
 
-**Frozen decisions (2026-06-09):** reading format = integer fixed-point only ·
-hourly `readings:` batches · overwritable `latest:` · append-only history ·
-recomputable `season_score` · **Season signature = ed25519** (BLS deferred, not
-dropped) · **block anchor = oracle `/beacon`** for v1, direct RPC later.
+**Frozen decisions (2026-06-09, curve amended 2026-06-12 by ADR-0007):**
+reading format = integer fixed-point only · hourly `readings:` batches ·
+overwritable `latest:` · append-only history · recomputable `season_score` ·
+**device + Season signature = secp256r1, RFC 6979, r||s low-S** (BLS deferred,
+not dropped) · **block anchor = oracle `/beacon`** for v1, direct RPC later.
 
 **Remaining (build order):**
 - [x] `orchard-verify` CLI — Phase 1 offline verifier
@@ -459,7 +470,7 @@ dropped) · **block anchor = oracle `/beacon`** for v1, direct RPC later.
       VALID; tampering → INVALID; `live` is an interface-frozen stub.
 - [ ] `orchard-verify live` — wire on-chain `get_proof` (inclusion) + block-anchor
       lookup (the two checks offline mode can't do).
-- [ ] Firmware: ed25519 keygen in NVS, sign each reading, `HW_INFO` exports
+- [ ] Firmware: secp256r1 keygen in NVS, sign each reading, `HW_INFO` exports
       pubkey, fetch `/beacon` for `block_anchor`.
 - [ ] Oracle: store device pubkey at registration; `/beacon` endpoint; persist
       per-reading `sig` + `block_anchor`.

@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generate the golden cross-language test vectors for the publish schema.
 
-Deterministic: fixed ed25519 seeds + fixed reading bodies, and ed25519 signing
-is itself deterministic (RFC 8032), so re-running produces byte-identical
-output. The result, ``testdata/vectors.json``, is the contract the firmware
-(C++) and the public verifier (JS/Python) must reproduce.
+Deterministic: fixed secp256r1 private scalars + fixed reading bodies, and
+signing is RFC 6979 deterministic ECDSA (ADR-0007) with low-S normalization,
+so re-running produces byte-identical output — and the firmware's mbedTLS
+deterministic ECDSA produces the *same bytes* for the same inputs. The result,
+``testdata/vectors.json``, is the contract the firmware (C++) and the public
+verifier (JS/Python) must reproduce.
 
 Run from the repo root:
 
@@ -124,7 +126,7 @@ def build() -> dict:
         "readings_signed": signed,
         # The EXACT bytes each device signs (canonical reading minus `sig`).
         # The firmware's hand-built canonical serializer must reproduce these
-        # strings byte-for-byte, or its ed25519 signatures won't verify.
+        # strings byte-for-byte, or its secp256r1 signatures won't verify.
         "reading_canonical": [
             schema.canonical_bytes({k: v for k, v in r.items() if k != "sig"}).decode("utf-8")
             for r in signed
