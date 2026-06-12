@@ -244,6 +244,12 @@ def register(
             existing.label = req.label
         if req.fw_version is not None:
             existing.fw_version = req.fw_version
+        # NVS-wipe recovery: a wiped Tree restarts its seq counter near
+        # zero, and /readings would then 409 everything it sends.
+        # Re-registration is already the recovery ritual for a wiped
+        # Tree — and is itself protected (wallet session + same signing
+        # key) — so resetting the watermark here is safe.
+        existing.last_seq = 0
         db.commit()
         db.refresh(existing)
         return RegisterResponse(

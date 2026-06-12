@@ -46,6 +46,16 @@ class Node(Base):
     label: Mapped[str | None] = mapped_column(String(128), nullable=True)
     fw_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    # Replay protection: highest `seq` value accepted from this Tree.
+    # The firmware persists a monotonic counter in NVS and includes it
+    # in every signed body; /readings rejects anything <= this value
+    # when settings().require_seq is on (tracked passively when off, so
+    # flipping the flag never strands an up-to-date fleet). Reset to 0
+    # on re-registration (the NVS-wipe recovery path).
+    # Existing DBs (until Alembic, HANDOVER T4):
+    #   sqlite3 oracle.db "ALTER TABLE nodes ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0;"
+    last_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     # Phase 6.5: Orchard Pass NFT bound to this Tree.
     #
     # `pass_nft_id` is the bech32 nft1... identifier of an Orchard Pass

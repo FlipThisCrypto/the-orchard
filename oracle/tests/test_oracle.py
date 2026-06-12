@@ -1298,3 +1298,107 @@ def test_attestations_require_writer_token(writer_token_client: TestClient):
     # Correct token -> 201.
     assert c.post("/attestations", json=body,
                   headers={"X-Orchard-Writer-Token": "testsecret"}).status_code == 201
+
+
+# ---------------- T3: seq replay protection (docs/replay-protection.md) ----
+#
+# `seq` is a strictly-increasing counter inside the HMAC-covered body.
+# Enforcement is staged behind ORCHARD_ORACLE_REQUIRE_SEQ (default off,
+# mirroring the require_wallet_session rollout): flip it only after the
+# fleet runs seq-capable firmware. While off, last_seq is still tracked
+# passively so the flip never strands an up-to-date Tree.
+
+@pytest.fixture()
+def seq_client(monkeypatch):
+    monkeypatch.setenv("ORCHARD_ORACLE_REQUIRE_WALLET_SESSION", "false")
+    monkeypatch.setenv("ORCHARD_ORACLE_REQUIRE_SEQ", "true")
+    reset_settings_for_tests()
+    reset_for_tests()
+
+    test_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    TestSession = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(test_engine)
+
+    def override_get_db():
+        db = TestSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        c.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+        yield c
+    app.dependency_overrides.clear()
+
+
+def _post_seq_reading(c: TestClient, body_obj: dict):
+    body = json.dumps(body_obj).encode("utf-8")
+    return c.post(
+        "/readings",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Orchard-Node": NODE_ID,
+            "X-Orchard-Sig": _sign(body),
+        },
+    )
+
+
+def test_seq_missing_or_invalid_rejected_when_required(seq_client: TestClient):
+    # No seq at all -> 400 (old firmware).
+    assert _post_seq_reading(seq_client, {"sensors": {}}).status_code == 400
+    # Zero / negative / non-int seq -> 400.
+    assert _post_seq_reading(seq_client, {"seq": 0, "sensors": {}}).status_code == 400
+    assert _post_seq_reading(seq_client, {"seq": -3, "sensors": {}}).status_code == 400
+    assert _post_seq_reading(seq_client, {"seq": True, "sensors": {}}).status_code == 400
+
+
+def test_seq_replay_and_out_of_order_rejected(seq_client: TestClient):
+    first = _post_seq_reading(seq_client, {"seq": 1, "sensors": {}})
+    assert first.status_code == 202
+
+    # The EXACT same signed body again is caught by the sig-dedup layer
+    # first: idempotent 202 with duplicate=True, same row id, no credit.
+    replay = _post_seq_reading(seq_client, {"seq": 1, "sensors": {}})
+    assert replay.status_code == 202
+    assert replay.json().get("duplicate") is True
+    assert replay.json()["id"] == first.json()["id"]
+
+    # A DIFFERENT body carrying a stale seq is the captured-and-held
+    # replay case -> 409, nothing stored.
+    stale = _post_seq_reading(seq_client, {"seq": 1, "sensors": {"x": 1}})
+    assert stale.status_code == 409
+
+    # Strictly increasing continues to work (gaps are fine — the
+    # firmware's reservation blocks skip numbers after a crash).
+    assert _post_seq_reading(seq_client, {"seq": 2, "sensors": {}}).status_code == 202
+    assert _post_seq_reading(seq_client, {"seq": 300, "sensors": {}}).status_code == 202
+    assert _post_seq_reading(seq_client, {"seq": 299, "sensors": {"y": 2}}).status_code == 409
+
+
+def test_seq_resets_on_reregistration(seq_client: TestClient):
+    assert _post_seq_reading(seq_client, {"seq": 50, "sensors": {}}).status_code == 202
+
+    # NVS-wipe recovery: re-register (same signing key) resets last_seq,
+    # so the restarted counter is accepted again.
+    r = seq_client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    assert r.status_code == 201 and r.json()["new"] is False
+
+    assert _post_seq_reading(seq_client, {"seq": 1, "sensors": {}}).status_code == 202
+
+
+def test_seq_not_enforced_when_flag_off(client: TestClient):
+    # Default posture: seq optional and unordered; nothing rejected.
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    assert _post_seq_reading(client, {"seq": 7, "sensors": {}}).status_code == 202
+    # Out-of-order accepted while the flag is off (passive tracking only).
+    assert _post_seq_reading(client, {"seq": 3, "sensors": {}}).status_code == 202
+    # And no-seq bodies stay accepted (today's fleet).
+    assert _post_seq_reading(client, {"sensors": {}}).status_code == 202

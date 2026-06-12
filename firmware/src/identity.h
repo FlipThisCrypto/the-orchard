@@ -39,6 +39,16 @@ constexpr size_t kSigningSecretLen = 32;
 // `out` must be 32 bytes.
 void hmac_sha256(const uint8_t* data, size_t len, uint8_t out[32]);
 
+// Monotonically increasing sequence number, persisted to NVS.
+// Survives reboots and crashes (reservation-block scheme: NVS is
+// written once per kSeqReserve calls, and on boot the counter resumes
+// from the persisted watermark — possibly skipping numbers, never
+// repeating one). Include in every signed payload; the oracle rejects
+// any submission whose seq is not strictly greater than the last
+// accepted one, which kills replay attacks. (And per ADR-0008, this
+// counter is the ancestor of the on-chain heartbeat counter.)
+uint32_t next_seq();
+
 // --- secp256r1 (P-256) device key (ADR-0003 + ADR-0007) ----------------
 constexpr size_t kP256PrivLen = 32;  // raw private scalar, big-endian
 constexpr size_t kP256PubLen  = 33;  // compressed SEC1 point
