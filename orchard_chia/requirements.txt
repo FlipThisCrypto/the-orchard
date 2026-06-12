@@ -11,6 +11,16 @@ urllib3>=2.7.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 pyyaml>=6.0
+# ADR-0007 device/season signatures (datalayer/schema.py): `cryptography`
+# verifies secp256r1 ECDSA; `ecdsa` provides RFC 6979 *deterministic*
+# signing (cryptography has no RFC 6979 API). Signing happens only on
+# our own boxes with our own keys, so pure-python `ecdsa` is acceptable.
+cryptography>=42.0.0
+ecdsa>=0.19.0
+# Chia consensus VM (clvm_rs bindings) — the ADR-0007 cross-check runs
+# `secp256r1_verify` against our signatures (tests/test_clvm_secp.py),
+# and the future orchard-verify on-chain mode will need it anyway.
+chia_rs>=0.42.0
 
 # Dev / tests.
 pytest>=8.0.0

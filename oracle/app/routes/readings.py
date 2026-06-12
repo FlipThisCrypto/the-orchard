@@ -23,8 +23,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import auth, models, seasons
+from .. import auth, models, seasons, sessions
 from ..db import get_db
+from ..session_deps import maybe_session
 
 router = APIRouter()
 
@@ -77,6 +78,29 @@ async def post_reading(
         code = status.HTTP_404_NOT_FOUND if "unregistered" in msg else status.HTTP_401_UNAUTHORIZED
         raise HTTPException(status_code=code, detail=msg)
 
+    # Anti-replay: an exact replay re-sends the identical body, so the
+    # HMAC signature is identical. Drop duplicates WITHOUT inserting or
+    # bumping uptime — otherwise a captured reading could be replayed to
+    # inflate Season uptime (and therefore $JUICE). This also makes a
+    # client's network-retry of the same POST idempotent.
+    sig_hex_upper = x_orchard_sig.upper() if x_orchard_sig else ""
+    if sig_hex_upper:
+        dup = db.execute(
+            select(models.Reading.id, models.Reading.received_at)
+            .where(
+                models.Reading.node_id == node.node_id,
+                models.Reading.sig_hex == sig_hex_upper,
+            )
+            .limit(1)
+        ).first()
+        if dup is not None:
+            return {
+                "id": dup[0],
+                "received_at": dup[1].isoformat() if dup[1] else None,
+                "season": seasons.current_season(),
+                "duplicate": True,
+            }
+
     try:
         payload = json.loads(body_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -95,7 +119,7 @@ async def post_reading(
         gps_lon=gps.get("lon") if isinstance(gps, dict) else None,
         gps_fix=gps.get("fix") if isinstance(gps, dict) else None,
         payload_json=body_bytes.decode("utf-8"),
-        sig_hex=x_orchard_sig.upper() if x_orchard_sig else "",
+        sig_hex=sig_hex_upper,
     )
     db.add(reading)
 
@@ -113,15 +137,42 @@ async def post_reading(
             "season": seasons.current_season()}
 
 
+def _scrub_payload_gps(payload: dict) -> dict:
+    """Strip precise lat/lon from a reading payload (keep fix/sats).
+    Returns a copy; leaves non-dict / GPS-less payloads untouched."""
+    if not isinstance(payload, dict):
+        return payload
+    sensors = payload.get("sensors")
+    if not isinstance(sensors, dict):
+        return payload
+    gps = sensors.get("gps")
+    if not isinstance(gps, dict):
+        return payload
+    clean_gps = {k: v for k, v in gps.items() if k not in ("lat", "lon")}
+    return {**payload, "sensors": {**sensors, "gps": clean_gps}}
+
+
 @router.get("/readings/{node_id}", response_model=list[ReadingResponse])
 def list_readings(
     node_id: str,
     limit: int = Query(default=50, ge=1, le=500),
     db: Session = Depends(get_db),
+    sess: sessions.Session | None = Depends(maybe_session),
 ) -> list[ReadingResponse]:
     node_id = node_id.upper()
-    if db.get(models.Node, node_id) is None:
+    node = db.get(models.Node, node_id)
+    if node is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown node_id")
+
+    # Precise GPS locates the operator's home, so it is operator-private:
+    # return coords only to the owner (session wallet == node wallet), or
+    # for legacy/unowned nodes with no wallet bound. Everyone else —
+    # including a LAN peer hitting the oracle directly — gets fix/sats but
+    # not lat/lon. (Uptime + attestations stay public by design; they're
+    # the verifiable data, and they carry no location.)
+    owner = node.wallet_address is None or (
+        sess is not None and sess.address == node.wallet_address
+    )
 
     rows = (
         db.execute(
@@ -139,6 +190,8 @@ def list_readings(
             payload = json.loads(r.payload_json)
         except Exception:
             payload = {}
+        if not owner:
+            payload = _scrub_payload_gps(payload)
         out.append(
             ReadingResponse(
                 id=r.id,
@@ -146,8 +199,8 @@ def list_readings(
                 received_at=r.received_at,
                 tree_ts_ms=r.tree_ts_ms,
                 fw_version=r.fw_version,
-                gps_lat=r.gps_lat,
-                gps_lon=r.gps_lon,
+                gps_lat=r.gps_lat if owner else None,
+                gps_lon=r.gps_lon if owner else None,
                 gps_fix=r.gps_fix,
                 payload=payload,
             )

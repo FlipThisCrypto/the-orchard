@@ -611,7 +611,9 @@ def test_verify_rejects_pk_address_mismatch(auth_client: TestClient):
         "nonce":      nonce,
     })
     assert r.status_code == 401
-    assert "pk-binding check failed" in r.json()["detail"]
+    # Generic message (hardening: don't be a verification oracle); the
+    # precise pk-binding reason is logged server-side, not returned.
+    assert "verification failed" in r.json()["detail"].lower()
 
 
 def test_verify_rejects_unknown_nonce(auth_client: TestClient):
@@ -1172,3 +1174,127 @@ def test_delete_node_non_owner_returns_404(auth_client):
     assert r.status_code == 404
     # Confirm node still exists (wasn't accidentally deleted).
     assert auth_client.get(f"/nodes/{NID}").status_code == 200
+
+
+# ---------------- 2026-06-09 security hardening ----------------
+
+def test_reading_replay_is_deduped(client: TestClient):
+    """H2: an exact replay of a signed reading is dropped — same id
+    returned, no second row, no uptime double-count."""
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    payload = {"node_id": NODE_ID, "ts_ms": 555, "sensors": {}}
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    h = {"Content-Type": "application/json", "X-Orchard-Node": NODE_ID, "X-Orchard-Sig": _sign(body)}
+
+    r1 = client.post("/readings", content=body, headers=h)
+    assert r1.status_code == 202
+    first_id = r1.json()["id"]
+
+    r2 = client.post("/readings", content=body, headers=h)  # identical => replay
+    assert r2.status_code == 202
+    assert r2.json().get("duplicate") is True
+    assert r2.json()["id"] == first_id
+
+    assert len(client.get(f"/readings/{NODE_ID}").json()) == 1
+    season = client.get("/").json()["current_season"]
+    assert client.get(f"/uptime/{NODE_ID}/{season}").json()["hours_online"] == 1
+
+
+def test_readings_gps_hidden_from_non_owner(auth_client):
+    """M1: precise GPS on a wallet-bound node is returned only to the
+    owner's session — anonymous/LAN callers get fix/sats but not coords."""
+    import oracle.app.sessions as sm
+    from oracle.app import models
+    from sqlalchemy import update
+
+    _, addr = _test_keypair()
+    auth_client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    with auth_client.Session() as s:
+        s.execute(update(models.Node).where(
+            models.Node.node_id == NODE_ID).values(wallet_address=addr))
+        s.commit()
+
+    payload = {"node_id": NODE_ID, "ts_ms": 99,
+               "sensors": {"gps": {"fix": True, "lat": 38.0046, "lon": -85.7374, "satellites": 7}}}
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    pr = auth_client.post("/readings", content=body, headers={
+        "Content-Type": "application/json", "X-Orchard-Node": NODE_ID, "X-Orchard-Sig": _sign(body)})
+    assert pr.status_code == 202, pr.text
+
+    # Anonymous: coords scrubbed, fix/sats kept.
+    row = auth_client.get(f"/readings/{NODE_ID}").json()[0]
+    assert row["gps_lat"] is None and row["gps_lon"] is None
+    assert row["gps_fix"] is True
+    gps = row["payload"]["sensors"]["gps"]
+    assert "lat" not in gps and "lon" not in gps
+    assert gps["fix"] is True and gps["satellites"] == 7
+
+    # Owner session: coords visible.
+    token, _ = sm.issue(addr)
+    row2 = auth_client.get(
+        f"/readings/{NODE_ID}", headers={"Authorization": f"Bearer {token}"}).json()[0]
+    assert row2["gps_lat"] == pytest.approx(38.0046)
+    assert row2["payload"]["sensors"]["gps"]["lat"] == pytest.approx(38.0046)
+
+
+def test_fixed_window_limiter():
+    """M2: the rate limiter blocks over the limit and resets per window."""
+    from oracle.app.ratelimit import FixedWindowLimiter
+
+    t = {"now": 100.0}
+    lm = FixedWindowLimiter(limit=3, window_s=60, clock=lambda: t["now"])
+    assert [lm.allow("ip") for _ in range(3)] == [True, True, True]
+    assert lm.allow("ip") is False        # 4th in-window blocked
+    assert lm.allow("other") is True      # independent key
+    t["now"] = 161.0                       # window elapsed
+    assert lm.allow("ip") is True
+    assert FixedWindowLimiter(limit=0).allow("x") is True  # 0 disables
+
+
+@pytest.fixture()
+def writer_token_client(monkeypatch):
+    """Client with ORCHARD_ORACLE_WRITER_TOKEN configured, to exercise
+    the H1 /attestations auth gate."""
+    monkeypatch.setenv("ORCHARD_ORACLE_REQUIRE_WALLET_SESSION", "false")
+    monkeypatch.setenv("ORCHARD_ORACLE_WRITER_TOKEN", "testsecret")
+    monkeypatch.setenv("ORCHARD_ORACLE_DB_URL", "sqlite:///:memory:")
+    reset_settings_for_tests()
+    reset_for_tests()
+
+    test_engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False},
+        poolclass=StaticPool, future=True)
+    TestSession = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(test_engine)
+
+    def override_get_db():
+        db = TestSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+def test_attestations_require_writer_token(writer_token_client: TestClient):
+    """H1: with a writer token configured, /attestations POST requires a
+    matching X-Orchard-Writer-Token — even from loopback."""
+    c = writer_token_client
+    c.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    body = {
+        "node_id": NODE_ID, "season_number": 2, "hours_online": 24,
+        "data_hash": "a" * 64, "oracle_sig": "b" * 64,
+        "dl_tx_id": "0x" + "c" * 64, "dl_key_hex": "61747465737400000",
+    }
+    # No token -> 401.
+    assert c.post("/attestations", json=body).status_code == 401
+    # Wrong token -> 401.
+    assert c.post("/attestations", json=body,
+                  headers={"X-Orchard-Writer-Token": "nope"}).status_code == 401
+    # Correct token -> 201.
+    assert c.post("/attestations", json=body,
+                  headers={"X-Orchard-Writer-Token": "testsecret"}).status_code == 201

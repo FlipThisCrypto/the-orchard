@@ -139,6 +139,26 @@ def test_watermark_persists_across_open(tmp_path):
         assert wm2.get_paid_amount("AAA", 1) == 42
 
 
+def test_watermark_set_tx_updates_provisional_row(tmp_path):
+    """M3: a provisional (tx_id=None) mark made before broadcasting is
+    later confirmed with the real tx_id via set_tx."""
+    db = tmp_path / "wm.db"
+    with watermark.Watermark(db) as wm:
+        wm.record_payment(node_id="AAA", season=1,
+                          wallet_address="xch1a", paid_mojos=42, tx_id=None)
+        assert wm.is_paid("AAA", 1) is True          # marked before send
+        wm.set_tx("AAA", 1, "0xconfirmed")
+        assert wm.all_paid()[0]["tx_id"] == "0xconfirmed"
+
+
+def test_wallet_rpc_refuses_non_loopback_host():
+    """L6: verify=False must not be used against a non-loopback host."""
+    from orchard_chia.wallet.rpc import WalletRpc, WalletRpcError
+    rpc = WalletRpc(host="10.0.0.9", port=9256, cert_path="", key_path="")
+    with pytest.raises(WalletRpcError, match="non-loopback"):
+        rpc.get_wallets()
+
+
 # ----------------- reader._decode_key -----------------
 
 def test_decode_key_round_trip():

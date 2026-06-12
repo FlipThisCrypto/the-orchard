@@ -55,7 +55,22 @@ class Settings(BaseSettings):
     # Test-mode bypass for the BLS signature step. The pubkey -> address
     # binding check still runs (so a wrong-pk submission fails). Use
     # ONLY in tests/CI. Defaults False so production fails closed.
+    # Hardening: honored ONLY for loopback callers (see routes/auth.py),
+    # so a mis-set env var can't downgrade auth for remote clients.
     auth_test_mode: bool = False
+
+    # Security hardening (2026-06-09 audit).
+    # Shared secret the DataLayer writer presents on POST /attestations
+    # as the X-Orchard-Writer-Token header. Empty default: when unset,
+    # /attestations writes are accepted only from loopback (the writer
+    # runs on the oracle host). Set this to a long random string if the
+    # writer runs on a different machine than the oracle.
+    writer_token: str = ""
+    # Per-IP rate limits (requests/minute) on sensitive endpoints.
+    # Loopback (the operator's own dashboard + local writer) is ALWAYS
+    # exempt; these bound remote LAN callers only. 0 disables a limit.
+    auth_rate_limit_per_min: int = 30
+    readings_rate_limit_per_min: int = 600
 
     # Phase 6.6 register hardening: /register requires a verified
     # wallet session by default. Closes the "anyone can claim someone

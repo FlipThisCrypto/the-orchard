@@ -9,6 +9,7 @@ from __future__ import annotations
 from flask import Blueprint, abort, render_template
 
 from .. import oracle_client
+from ..config import settings
 
 bp = Blueprint("tree", __name__)
 
@@ -39,8 +40,11 @@ def tree_page(node_id: str):
     node = oracle_client.get_node(node_id.upper())
     if node is None:
         abort(404)
+    # Don't expose the operator's DataLayer store id on the public tree
+    # page — it's a per-operator identifier. Owners see it in private mode.
+    store_id = "" if settings().public_mode else _read_datalayer_store_id()
     return render_template(
         "tree.html",
         node=node,
-        datalayer_store_id=_read_datalayer_store_id(),
+        datalayer_store_id=store_id,
     )

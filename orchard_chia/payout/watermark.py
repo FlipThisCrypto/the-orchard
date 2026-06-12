@@ -117,3 +117,17 @@ class Watermark:
             ),
         )
         self._conn.commit()
+
+    def set_tx(self, node_id: str, season: int, tx_id: str | None) -> None:
+        """Attach/replace the tx_id on an already-recorded payment.
+
+        The payout marks a ``(node, season)`` provisionally (tx_id=None)
+        *before* broadcasting the spend — so a crash after the tx is sent
+        can't double-pay on the next run — then calls this to record the
+        confirmed tx_id once ``cat_spend`` returns.
+        """
+        self._conn.execute(
+            "UPDATE paid_attestations SET tx_id=? WHERE node_id=? AND season=?",
+            (tx_id, node_id.upper(), int(season)),
+        )
+        self._conn.commit()

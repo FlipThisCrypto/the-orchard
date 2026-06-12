@@ -105,6 +105,15 @@ def wallet_holds_pass(rpc: WalletRpc, *, nft_wallet_id: int,
     Raises WalletRpcError if the wallet daemon is unreachable; caller
     should treat that as "could not verify" and decide policy (deny vs
     allow-when-uncheckable) at the call site.
+
+    SECURITY (M7): this local-wallet path matches on the NFT metadata's
+    self-declared ``collection.id``, which an attacker can set on an NFT
+    they mint themselves — so it is a convenience self-check, NOT a
+    spoof-resistant gate. The authoritative ownership gate (oracle
+    /register + reward eligibility) is the indexer path
+    (``list_passes_by_address``), where collection membership is resolved
+    from the on-chain creator DID by MintGarden. Binding this path to
+    ``ORCHARD_GENESIS_CREATOR_DID`` on chain is a follow-up.
     """
     for nft in _iter_owned_nfts(rpc, nft_wallet_id):
         nft_cid = _nft_collection_id(nft)
@@ -209,8 +218,16 @@ def list_passes_by_address(
     out: list[dict] = []
     for it in items:
         owner = it.get("owner_address_encoded_id")
-        if owner and owner == address:
-            out.append(_normalize_indexer_item(it))
+        if not (owner and owner == address):
+            continue
+        # Defensive (M7): the collection endpoint should only return
+        # genuine members, but re-check the collection id so a future API
+        # change or a confused response can't slip a non-genesis NFT past
+        # the gate this backs (oracle /register + reward eligibility).
+        item_cid = it.get("collection_id")
+        if item_cid and item_cid != collection_bech32_id:
+            continue
+        out.append(_normalize_indexer_item(it))
     # Sort by edition_number for stable display.
     out.sort(key=lambda r: (r.get("edition_number") or 0,
                             r.get("name") or ""))

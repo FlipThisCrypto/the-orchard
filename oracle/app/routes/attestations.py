@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..db import get_db
+from ..session_deps import require_writer
 
 router = APIRouter()
 
@@ -75,6 +76,7 @@ def _to_public(a: models.Attestation) -> AttestationPublic:
 def record_attestation(
     rec: AttestationRecord,
     db: Session = Depends(get_db),
+    _writer: None = Depends(require_writer),
 ) -> AttestationPublic:
     """Writer reports a successful DataLayer batch_update.
 
@@ -83,9 +85,10 @@ def record_attestation(
     timestamps instead of erroring. The writer's natural retry path
     therefore Just Works without poisoning the table with duplicates.
 
-    No auth in v1 — the writer runs from the same machine as the
-    oracle (localhost binding by default after the security pass).
-    Phase 11 will harden this for the public-network case.
+    Auth (2026-06-09 hardening): gated by ``require_writer`` — a writer
+    token when configured, else loopback-only. This stops any LAN host
+    from forging/overwriting the "on-chain" records the dashboard
+    presents as verified.
     """
     # Normalize node_id casing — matches the convention used elsewhere
     # in the oracle so a lower-case writer call doesn't fragment rows.

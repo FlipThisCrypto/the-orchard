@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from functools import wraps
+from urllib.parse import urlparse
 
 from flask import Blueprint, abort, jsonify, request
 
@@ -15,6 +16,31 @@ from .. import oracle_client, tree_serial
 from ..config import settings
 
 bp = Blueprint("api", __name__)
+
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+@bp.before_request
+def _csrf_guard():
+    """CSRF defense for state-changing /api calls.
+
+    Browsers always send an Origin (and usually a Referer) on cross-origin
+    requests; when present it must match this dashboard's own host.
+    Requests with neither header are non-browser clients (curl, operator
+    scripts) — not a CSRF vector — and are allowed. This matters because
+    the serial + register routes reconfigure a connected Tree, and the
+    dashboard's localhost bind is not a CSRF boundary (a malicious local
+    page or DNS-rebinding can still reach 127.0.0.1)."""
+    if request.method not in _UNSAFE_METHODS:
+        return None
+    for header in ("Origin", "Referer"):
+        raw = request.headers.get(header)
+        if raw:
+            netloc = urlparse(raw).netloc
+            if netloc and netloc != request.host:
+                abort(403, description="cross-origin request rejected")
+            return None  # the first header present is authoritative
+    return None  # neither header => non-browser caller, allow
 
 
 def _ok(data) -> tuple:
@@ -84,9 +110,13 @@ def auth_config():
     else (chain id, method names) is hardcoded into the JS because
     CHIP-22 is the Chia spec.
     """
+    # In public mode there are no operator actions to authenticate, so
+    # don't expose the operator's WalletConnect project id — the browser
+    # just sees "not configured" and hides the Connect button.
+    project_id = "" if settings().public_mode else (settings().wc_project_id or "")
     return _ok({
-        "wc_project_id": settings().wc_project_id or "",
-        "wc_configured": bool(settings().wc_project_id),
+        "wc_project_id": project_id,
+        "wc_configured": bool(project_id),
         "metadata": {
             "name":        "Orchard View",
             "description": "Operator dashboard for The Orchard (Chia DePIN)",

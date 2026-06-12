@@ -655,3 +655,67 @@ def test_base_template_includes_connect_slot(client):
     html = r.get_data(as_text=True)
     assert 'id="connect-slot"' in html
     assert "connect.js" in html
+
+
+# ---------------- 2026-06-09 security hardening ----------------
+
+def test_set_wifi_rejects_serial_injection(monkeypatch):
+    """H3: a newline in the SSID or password would inject a second
+    firmware command — must be rejected, clean values must pass."""
+    monkeypatch.setattr(tree_serial, "_send_and_read_line", lambda *a, **k: "OK")
+    with pytest.raises(tree_serial.TreeError):
+        tree_serial.set_wifi("COM4", "MySSID", "pw\nORACLE_SET http://evil/readings")
+    with pytest.raises(tree_serial.TreeError):
+        tree_serial.set_wifi("COM4", "ssid\r\nREBOOT", "pw")
+    tree_serial.set_wifi("COM4", "MySSID", "cleanpass")  # no raise
+
+
+def test_set_oracle_url_rejects_injection_and_bad_scheme(monkeypatch):
+    """H3: oracle URL must be a clean http(s) URL — no injected commands,
+    no non-http schemes."""
+    monkeypatch.setattr(tree_serial, "_send_and_read_line", lambda *a, **k: "OK")
+    with pytest.raises(tree_serial.TreeError):
+        tree_serial.set_oracle_url("COM4", "http://ok\nWIFI_CLEAR")
+    with pytest.raises(tree_serial.TreeError):
+        tree_serial.set_oracle_url("COM4", "ftp://nope")
+    tree_serial.set_oracle_url("COM4", "http://192.168.0.5:8000/readings")  # no raise
+
+
+def test_csrf_cross_origin_post_rejected(client):
+    """H4: a state-changing POST from another origin is rejected."""
+    r = client.post(
+        "/api/serial/identify", json={"port": "COM4"},
+        headers={"Origin": "http://evil.example"})
+    assert r.status_code == 403
+
+
+def test_csrf_same_origin_post_allowed(client):
+    """H4: a same-origin POST passes the guard (then 400s on missing
+    field — proving the guard let it through, not a 403)."""
+    r = client.post(
+        "/api/serial/identify", json={},
+        headers={"Origin": "http://localhost"})
+    assert r.status_code == 400  # not 403
+
+
+def test_security_headers_present(client):
+    """L1: clickjacking + sniffing + referrer headers on responses."""
+    r = client.get("/api/auth/config")
+    assert r.status_code == 200
+    assert r.headers.get("X-Frame-Options") == "DENY"
+    assert r.headers.get("X-Content-Type-Options") == "nosniff"
+    assert "frame-ancestors 'none'" in (r.headers.get("Content-Security-Policy") or "")
+
+
+def test_public_mode_auth_config_hides_wc_project_id(monkeypatch):
+    """L5: public mode must not expose the operator's WalletConnect
+    project id even when one is configured."""
+    monkeypatch.setenv("ORCHARD_VIEW_PUBLIC_MODE", "1")
+    monkeypatch.setenv("ORCHARD_VIEW_WC_PROJECT_ID", "secretprojid")
+    dash_config.reset_settings_for_tests()
+    app = create_app()
+    with app.test_client() as c:
+        body = c.get("/api/auth/config").get_json()
+        assert body["wc_project_id"] == ""
+        assert body["wc_configured"] is False
+    dash_config.reset_settings_for_tests()

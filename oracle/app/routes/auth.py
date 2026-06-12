@@ -31,15 +31,17 @@ A token blocklist is a Phase 11 hardening.
 """
 from __future__ import annotations
 
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from .. import sessions, wallet_auth
 from ..config import settings
-from ..session_deps import require_session
+from ..session_deps import client_is_loopback, require_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+log = logging.getLogger("orchard.oracle.auth")
 
 
 # ---------- request / response shapes -------------------------------
@@ -106,7 +108,7 @@ def challenge() -> ChallengeResponse:
 
 
 @router.post("/verify", response_model=VerifyResponse)
-def verify(req: VerifyRequest) -> VerifyResponse:
+def verify(req: VerifyRequest, request: Request) -> VerifyResponse:
     """Verify a signed challenge and issue a session token."""
     # 1) consume the nonce (atomic with the existence check). Replay
     #    of the same nonce is impossible because the second consume()
@@ -124,17 +126,24 @@ def verify(req: VerifyRequest) -> VerifyResponse:
     #    sig to log in. test_mode lets the test suite exercise the
     #    flow without a real wallet; production requires
     #    settings().auth_test_mode = False (the default).
+    # test_mode (skip BLS) is honored ONLY for loopback callers, so a
+    # mis-set ORCHARD_ORACLE_AUTH_TEST_MODE can't silently downgrade auth
+    # for a remote client on a 0.0.0.0-bound oracle.
+    effective_test_mode = settings().auth_test_mode and client_is_loopback(request)
     result = wallet_auth.verify_chia_signed_message(
         address=req.address,
         public_key_hex=req.public_key,
         signature_hex=req.signature,
         message=_message_for_nonce(req.nonce),
-        test_mode=settings().auth_test_mode,
+        test_mode=effective_test_mode,
     )
     if not result.ok:
+        # Log the precise reason server-side; return a generic message so
+        # the endpoint isn't a free verification oracle for an attacker.
+        log.info("auth/verify failed for %s: %s", req.address, result.reason)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"signature verification failed: {result.reason}",
+            detail="signature verification failed",
         )
 
     token, sess = sessions.issue(req.address)

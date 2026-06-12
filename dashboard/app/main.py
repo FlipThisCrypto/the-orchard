@@ -32,6 +32,19 @@ def create_app() -> Flask:
     def _inject_settings():
         return {"settings": settings()}
 
+    @app.after_request
+    def _security_headers(resp):
+        # Clickjacking + sniffing + referrer hardening on every response.
+        # frame-ancestors 'none' is the high-value, zero-breakage piece;
+        # a strict script-src CSP is intentionally NOT set here because it
+        # needs browser verification of the WalletConnect/esm.sh origins
+        # (tracked as a follow-up, see docs/SECURITY_AUDIT_2026-06-09.md L1).
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        resp.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+        return resp
+
     return app
 
 

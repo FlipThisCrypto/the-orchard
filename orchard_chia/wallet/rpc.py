@@ -23,6 +23,12 @@ class WalletRpcError(RuntimeError):
     """Raised for any non-2xx wallet RPC response or transport failure."""
 
 
+# verify=False (no server-cert verification) is only safe on localhost.
+# Over a network it allows a MITM to impersonate the wallet daemon and
+# observe/suppress spends — refuse it for non-loopback hosts.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
 class WalletRpc:
     def __init__(self, host: str, port: int, cert_path: str, key_path: str,
                  fingerprint: int = 0):
@@ -35,6 +41,14 @@ class WalletRpc:
         return f"https://{self._host}:{self._port}/{route.lstrip('/')}"
 
     def _post(self, route: str, body: dict, timeout: int = 60) -> dict:
+        if self._host not in _LOOPBACK_HOSTS:
+            raise WalletRpcError(
+                f"refusing verify=False against non-loopback host "
+                f"{self._host!r}: wallet RPC over a network needs real TLS "
+                f"verification (a MITM could observe or suppress $JUICE "
+                f"spends). Only localhost mTLS may run with cert "
+                f"verification disabled."
+            )
         try:
             r = requests.post(
                 self._url(route),

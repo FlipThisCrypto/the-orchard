@@ -10,6 +10,7 @@ Mirrors the command set in firmware/src/net/serial_console.{h,cpp}.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 
@@ -19,6 +20,14 @@ import serial.tools.list_ports
 from .config import settings
 
 DEFAULT_BAUD = 115200
+
+# Control characters (especially newline/CR) must never reach a value
+# that gets interpolated into a line-oriented serial command — the
+# device console dispatches one command per newline, so a value like
+# "pw\nORACLE_SET http://evil" would inject a SECOND firmware command.
+_CTRL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+# Allowed shape for an oracle URL pushed to a Tree (no spaces/control chars).
+_HTTP_URL = re.compile(r"^https?://[^\s]+$")
 
 
 @dataclass
@@ -30,6 +39,16 @@ class PortInfo:
 
 class TreeError(RuntimeError):
     """Anything that goes wrong talking to a Tree."""
+
+
+def _reject_ctrl(value: str, field: str) -> None:
+    """Block serial-command injection: refuse control chars in a value
+    that becomes part of a console command line."""
+    if value and _CTRL_CHARS.search(value):
+        raise TreeError(
+            f"{field} contains control characters — newlines/control "
+            f"characters are not allowed (serial-injection guard)"
+        )
 
 
 def list_ports() -> list[PortInfo]:
@@ -181,6 +200,10 @@ def get_hw_info(port: str) -> dict | None:
 
 
 def set_wifi(port: str, ssid: str, password: str) -> None:
+    # Serial-injection guard: a newline in the SSID or password would
+    # start a second firmware command on the device console.
+    _reject_ctrl(ssid, "ssid")
+    _reject_ctrl(password, "password")
     if " " in ssid:
         # The simple v1 command parser splits on the first space; SSIDs
         # with spaces aren't supported until we add a quoted form.
@@ -200,6 +223,12 @@ def set_wifi(port: str, ssid: str, password: str) -> None:
 
 
 def set_oracle_url(port: str, url: str) -> None:
+    # Serial-injection guard + scheme allowlist: the URL is the device's
+    # data sink, so a newline (extra command) or a non-http scheme must
+    # be rejected before it reaches the console.
+    _reject_ctrl(url, "url")
+    if not _HTTP_URL.match(url or ""):
+        raise TreeError("oracle url must be an http(s):// URL with no spaces")
     line = _send_and_read_line(port, f"ORACLE_SET {url}")
     if not line.startswith("OK"):
         raise TreeError(f"ORACLE_SET: {line}")

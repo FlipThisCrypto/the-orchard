@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from orchard_chia.datalayer import attest
 
 
@@ -108,3 +110,15 @@ def test_parse_datalayer_value_handles_garbage():
     assert attest.parse_datalayer_value("not-hex") is None
     # Hex but not valid UTF-8 / JSON → returns None.
     assert attest.parse_datalayer_value("00" * 8) is None
+
+
+def test_sign_and_verify_reject_malformed_key():
+    """M4/L3: a signing key must be 64 hex chars — refuse to HMAC under a
+    short/empty/non-hex key (which would be guessable/forgeable)."""
+    p = _payload()
+    for bad in ("", "tooshort", "zz" * 32, "a" * 63):
+        with pytest.raises(ValueError):
+            attest.sign_payload(p, bad)
+    signed = attest.sign_payload(p, KEY)
+    with pytest.raises(ValueError):
+        attest.verify_signature(signed, "")

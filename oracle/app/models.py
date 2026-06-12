@@ -87,7 +87,9 @@ class Reading(Base):
     gps_fix: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
-    sig_hex: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Indexed: POST /readings looks up (node_id, sig_hex) to drop exact
+    # replays (anti-replay / idempotent retries) — see routes/readings.py.
+    sig_hex: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
     node: Mapped["Node"] = relationship(back_populates="readings")
 

@@ -6,15 +6,20 @@
 //   GET  /health   -> small JSON with node_id, fw version, uptime
 //   POST /ota      -> binary firmware upload (Update API), then reboot
 //
-// The dashboard pushes new firmware here. There is intentionally no
-// authentication on /ota in v1 — the dashboard talks to it on the LAN
-// only. Do NOT expose this port to the open internet.
+// SECURITY (2026-06-09 hardening): /ota uploads are REJECTED unless the
+// device was "armed" via the OTA_ARM serial command within a short
+// window. Arming needs local USB-serial access, so a remote LAN host can
+// no longer push arbitrary firmware (which would be full device takeover
+// + key theft). /health stays open (status only).
 
 #pragma once
+
+#include <cstdint>
 
 namespace orchard::net {
 
 void ota_begin();
 void ota_loop();  // call from main loop()
+void ota_arm(uint32_t window_ms);  // open the OTA upload window (OTA_ARM cmd)
 
 }  // namespace orchard::net

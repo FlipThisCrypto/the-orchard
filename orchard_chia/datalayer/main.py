@@ -14,6 +14,7 @@ persistent watermark — re-runs are cheap and safe.
 """
 from __future__ import annotations
 
+import os
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -52,6 +53,12 @@ def _report_to_oracle(
     logged but don't abort — the DataLayer write already succeeded;
     re-running the writer will catch up the oracle's view."""
     base = oracle_url.rstrip("/")
+    # Present the writer token if configured (the oracle requires it for
+    # non-loopback callers; loopback works without one). Keep it out of
+    # config.yaml — read from the environment alongside the oracle's own
+    # ORCHARD_ORACLE_WRITER_TOKEN.
+    writer_token = os.environ.get("ORCHARD_ORACLE_WRITER_TOKEN", "").strip()
+    headers = {"X-Orchard-Writer-Token": writer_token} if writer_token else None
     for p in pending:
         body = {
             "node_id":               p.node_id,
@@ -65,7 +72,7 @@ def _report_to_oracle(
             "written_to_datalayer_at": written_at.isoformat(),
         }
         try:
-            r = requests.post(f"{base}/attestations", json=body, timeout=10)
+            r = requests.post(f"{base}/attestations", json=body, timeout=10, headers=headers)
         except requests.RequestException as e:
             print(f"  WARN: oracle /attestations POST failed: {e}", file=sys.stderr)
             continue

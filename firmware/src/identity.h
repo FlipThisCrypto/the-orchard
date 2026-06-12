@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Per-Tree identity: a stable node_id and a signing secret, persisted to
-// NVS on first boot.
+// Per-Tree identity: a stable node_id, a legacy HMAC secret, and a
+// secp256r1 (P-256) keypair — all persisted to NVS on first boot.
 //
-// v1 signing scheme: HMAC-SHA256 with a 32-byte secret shared between
-// the Tree and the oracle (registered at provisioning time, never
-// transmitted over the network in plaintext after registration).
+// Legacy signing (kept): HMAC-SHA256 with a 32-byte secret shared with the
+// oracle at provisioning time.
 //
-// v2 (future): swap to ed25519. The interface below stays the same.
+// ADR-0003/ADR-0007 signing: secp256r1 ECDSA over sha256, RFC 6979
+// deterministic (mbedTLS, bundled — no extra library). The device signs
+// each reading with a private key it never transmits; the PUBLIC key is
+// exported (HW_INFO / PUBKEY) and published in the node:<id> DataLayer
+// record, so anyone can verify a reading's provenance without trusting
+// the oracle — including a CLVM puzzle via `secp256r1_verify` (ADR-0008).
+// The canonical message format the device must sign is pinned in
+// docs/datalayer/SPEC.md §2.3 + orchard_chia/datalayer/testdata/vectors.json
+// ("reading_canonical").
 
 #pragma once
 
@@ -31,6 +38,27 @@ constexpr size_t kSigningSecretLen = 32;
 // Compute HMAC-SHA256 over `data` using the device signing secret.
 // `out` must be 32 bytes.
 void hmac_sha256(const uint8_t* data, size_t len, uint8_t out[32]);
+
+// --- secp256r1 (P-256) device key (ADR-0003 + ADR-0007) ----------------
+constexpr size_t kP256PrivLen = 32;  // raw private scalar, big-endian
+constexpr size_t kP256PubLen  = 33;  // compressed SEC1 point
+constexpr size_t kP256SigLen  = 64;  // r||s, two 32-byte big-endian ints
+
+// Lowercase-hex compressed SEC1 public key (66 hex chars). Published in
+// the node:<id> DataLayer record; verifiers check each reading against it.
+// Lowercase to match the schema's hex convention (SPEC §0).
+const String& p256_pubkey_hex();
+
+// Sign sha256(`data`) with the device's P-256 key: RFC 6979 deterministic
+// ECDSA, low-S normalized, written to `out` as 64-byte r||s (SPEC §4 —
+// the exact form CLVM's `secp256r1_verify` consumes). The caller
+// hex-encodes (lowercase) into the reading's `sig`. On internal failure
+// `out` is zeroed (an all-zero sig never verifies).
+void p256_sign(const uint8_t* data, size_t len, uint8_t out[kP256SigLen]);
+
+// Hex-encode a buffer, LOWERCASE (no separators). For sig/pubkey hex,
+// which the schema requires lowercase.
+String to_hex_lower(const uint8_t* buf, size_t len);
 
 // Soft-AP password for the WiFi provisioning fallback.
 //

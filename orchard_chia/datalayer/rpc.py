@@ -25,6 +25,11 @@ class ChiaRpcError(RuntimeError):
     """Raised for any non-2xx Chia RPC response or transport failure."""
 
 
+# verify=False is only safe on localhost; refuse it over a network where
+# a MITM could impersonate the full node / DataLayer service.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
 @dataclass
 class _Endpoint:
     host: str
@@ -43,6 +48,12 @@ class FullNodeRpc:
         self._ep = _Endpoint(host, port, cert_path, key_path)
 
     def _post(self, route: str, body: dict) -> dict:
+        if self._ep.host not in _LOOPBACK_HOSTS:
+            raise ChiaRpcError(
+                f"refusing verify=False against non-loopback host "
+                f"{self._ep.host!r}: Chia RPC over a network needs real TLS "
+                f"verification. Only localhost mTLS may disable it."
+            )
         try:
             r = requests.post(
                 self._ep.url(route),
@@ -77,6 +88,12 @@ class DataLayerRpc:
         self._ep = _Endpoint(host, port, cert_path, key_path)
 
     def _post(self, route: str, body: dict) -> dict:
+        if self._ep.host not in _LOOPBACK_HOSTS:
+            raise ChiaRpcError(
+                f"refusing verify=False against non-loopback host "
+                f"{self._ep.host!r}: Chia RPC over a network needs real TLS "
+                f"verification. Only localhost mTLS may disable it."
+            )
         try:
             r = requests.post(
                 self._ep.url(route),

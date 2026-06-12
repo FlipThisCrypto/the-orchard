@@ -7,6 +7,7 @@
 #include "config.h"
 #include "identity.h"
 #include "oracle.h"
+#include "ota.h"
 #include "sensors/gps_neo.h"
 #include "sensors/sensor.h"
 #include "version.h"
@@ -71,6 +72,7 @@ void cmd_hw_info_(const String& /*args*/) {
   doc["chip"]    = ESP.getChipModel();
   doc["board"]   = ORCHARD_BOARD_HINT;
   doc["node_id"] = identity::node_id_hex();
+  doc["pubkey"]  = identity::p256_pubkey_hex();  // ADR-0003/0007 provenance key
 
   JsonArray arr = doc["sensors"].to<JsonArray>();
   for (const auto& s : sensors) {
@@ -126,6 +128,12 @@ void dispatch_(const String& line) {
     Serial.println(
         identity::to_hex(identity::signing_secret(),
                          identity::kSigningSecretLen));
+  } else if (cmd == "PUBKEY") {
+    // secp256r1 public key (ADR-0003/0007), compressed SEC1 hex. The
+    // wizard captures this at registration and the oracle publishes it
+    // in node:<id>.pubkey.
+    Serial.print("OK ");
+    Serial.println(identity::p256_pubkey_hex());
   } else if (cmd == "HW_INFO") {
     cmd_hw_info_(args);
   } else if (cmd == "WIFI_SET") {
@@ -170,6 +178,12 @@ void dispatch_(const String& line) {
     Serial.println("OK gps_raw_start");
     orchard::sensors::gps_dump_raw(3000);
     Serial.println("OK gps_raw_end");
+  } else if (cmd == "OTA_ARM") {
+    // Open a 2-minute window during which POST /ota will accept a
+    // firmware upload. Requires this local serial command, so a remote
+    // LAN host can't flash the device (C1 hardening).
+    orchard::net::ota_arm(120000);
+    Serial.println("OK ota armed 120s");
   } else if (cmd == "REBOOT") {
     Serial.println("OK rebooting");
     Serial.flush();
