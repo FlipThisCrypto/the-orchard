@@ -5,12 +5,20 @@
 # Trigger: push a tag like v0.4.8
 #   git tag v0.4.8 && git push origin v0.4.8
 #
-# Builds every Tree env and attaches the binaries to a GitHub Release
-# named after the tag. Once this is live, delete the committed .bin
-# files from flasher/ and point flasher/manifest.json at the release
-# asset URLs, e.g.:
-#   https://github.com/FlipThisCrypto/the-orchard/releases/download/v0.4.8/orchard-freenove_esp32s3_uart-v0.4.8.bin
-# That stops every firmware release from permanently growing git history.
+# Builds every Tree env and attaches TWO images per env to a GitHub
+# Release named after the tag:
+#   * orchard-<env>-<tag>.bin      — app-only image (offset 0x10000),
+#                                    for OTA updates (signed OTA: T7).
+#   * orchard-<env>-web-<tag>.bin  — MERGED full-flash image (bootloader
+#                                    + partitions + boot_app0 + app at
+#                                    offset 0), for the ESP Web Tools
+#                                    flasher and fresh USB installs.
+# flasher/manifest.json points at the *-web-* asset URLs (esp-web-tools
+# needs a full image at offset 0 — an app-only bin would not boot). The
+# merge recipe replicates flasher/README.md's documented, board-validated
+# offsets/flash settings exactly. Committed .bin files are gone from the
+# repo; the Releases are the only firmware host, so git history no longer
+# grows ~2MB per version.
 name: Release firmware
 
 on:
@@ -26,7 +34,23 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        env: [freenove_esp32_wroom, freenove_esp32s3, freenove_esp32s3_uart]
+        # Per-env chip/offset/flash-size for the merge step. esp32's
+        # bootloader sits at 0x1000; esp32s3's at 0x0 — the one material
+        # difference (flasher/README.md §ESP32-S3). --flash-mode/-freq
+        # "keep" preserves exactly what each env baked into bootloader.bin.
+        include:
+          - env: freenove_esp32_wroom
+            chip: esp32
+            boot_offset: "0x1000"
+            flash_size: 4MB
+          - env: freenove_esp32s3
+            chip: esp32s3
+            boot_offset: "0x0"
+            flash_size: 8MB
+          - env: freenove_esp32s3_uart
+            chip: esp32s3
+            boot_offset: "0x0"
+            flash_size: 8MB
     steps:
       - uses: actions/checkout@v4
 
@@ -42,17 +66,34 @@ jobs:
             firmware/.pio
           key: pio-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('firmware/platformio.ini') }}
 
-      - name: Install PlatformIO
-        run: pip install platformio
+      - name: Install PlatformIO + esptool
+        # esptool is pinned (and installed explicitly): PlatformIO bundles
+        # its own runtime esptool in its core dir, NOT a pip package, so
+        # `python -m esptool` for the merge step needs its own install.
+        run: pip install platformio "esptool==5.3.0"
 
       - name: Build ${{ matrix.env }}
         run: pio run -d firmware -e ${{ matrix.env }}
 
-      - name: Rename artifact
+      - name: Package artifacts (app-only + merged web image)
         run: |
+          set -euo pipefail
           mkdir -p out
-          cp firmware/.pio/build/${{ matrix.env }}/firmware.bin \
-             out/orchard-${{ matrix.env }}-${{ github.ref_name }}.bin
+          BUILD=firmware/.pio/build/${{ matrix.env }}
+          TAG=${{ github.ref_name }}
+
+          # App-only image (OTA).
+          cp "$BUILD/firmware.bin" "out/orchard-${{ matrix.env }}-$TAG.bin"
+
+          # Merged full-flash image (web flasher / fresh USB install).
+          BOOT_APP0=$(ls ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin)
+          python -m esptool --chip ${{ matrix.chip }} merge_bin \
+            --output "out/orchard-${{ matrix.env }}-web-$TAG.bin" \
+            --flash-mode keep --flash-freq keep --flash-size ${{ matrix.flash_size }} \
+            ${{ matrix.boot_offset }} "$BUILD/bootloader.bin" \
+            0x8000  "$BUILD/partitions.bin" \
+            0xe000  "$BOOT_APP0" \
+            0x10000 "$BUILD/firmware.bin"
 
       - uses: actions/upload-artifact@v4
         with:
