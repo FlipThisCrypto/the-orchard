@@ -212,12 +212,35 @@ If you want to know where this is heading over the next few years: see [docs/VIS
 
 ## Status & roadmap
 
-This project is in active development. Current phase:
+Proof of concept — all v1 components exist end-to-end and the test suite is
+green; the work now is hardening for testers and the move toward a serverless
+architecture (see below).
 
 - [x] Phase 1 — Repo skeleton, license, docs scaffold, vision documented
-- [ ] Phase 2 — Tree firmware v1 (ESP32-S3, modular, signed POSTs, OTA)
-- [ ] Phase 3 — Oracle service (FastAPI + SQLite)
-- [ ] Phase 4 — Orchard View (local Flask dashboard)
-- [ ] Phase 5 — Season attestation writer (DataLayer)
-- [ ] Phase 6 — Orchard Pass NFT collection mint
-- [ ] Phase 7 — Season harvest ($JUICE payout)
+- [x] Phase 2 — Tree firmware v1 (ESP32 WROOM + S3, modular sensors, signed POSTs, OTA)
+- [x] Phase 3 — Oracle service (FastAPI + SQLite)
+- [x] Phase 4 — Orchard View (local Flask dashboard)
+- [x] Phase 5 — Season attestation writer (DataLayer, ADR-0003)
+- [x] Phase 6 — Orchard Pass NFT collection mint
+- [x] Phase 7 — Season harvest ($JUICE payout, manual dry-run-by-default)
+
+**In flight (hardening + decentralization):** device keys moved to secp256r1
+([ADR-0007](docs/decisions/0007-secp256r1-device-keys.md)) so signatures are
+on-chain-verifiable; `seq` replay protection landed behind a staged flag;
+signed OTA, claim-code provisioning, and flash/NVS encryption are the
+tester-readiness gate. The full task list lives in
+[docs/HANDOVER_2026-06-11.md](docs/HANDOVER_2026-06-11.md).
+
+### Architecture direction
+
+v1 ships with a **central oracle** the project runs — Trees just sign readings
+and POST them; operators need zero extra hardware
+([ADR-0004](docs/decisions/0004-central-oracle-v1.md)). That oracle is an
+explicit **transitional bridge**: the North Star
+([ADR-0008](docs/decisions/0008-serverless-target-architecture.md)) is a
+serverless Orchard where each Tree is an on-chain singleton proving uptime via
+timelocked heartbeat spends, rewards are claimed from on-chain epoch vaults,
+and all clients are static pages — no server to run, nothing to keep alive.
+The bridge prioritizes exactly the work that carries over (device keys, the
+seq→heartbeat counter, signed OTA), and is designed to be deleted, not
+maintained.
