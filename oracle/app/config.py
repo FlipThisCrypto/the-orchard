@@ -83,6 +83,15 @@ class Settings(BaseSettings):
     # goes away.
     require_wallet_session: bool = True
 
+    # Replay protection (docs/replay-protection.md, HANDOVER T3).
+    # When True, POST /readings requires a strictly-increasing `seq`
+    # inside the signed body and 409s anything stale. Default False —
+    # staged rollout mirroring require_wallet_session: ship the oracle,
+    # reflash/OTA the fleet with seq-capable firmware, THEN flip this.
+    # (last_seq is tracked passively even while False, so the flip is
+    # seamless for Trees already sending seq.)
+    require_seq: bool = False
+
     model_config = SettingsConfigDict(
         env_prefix="ORCHARD_ORACLE_",
         env_file=str(_ENV_PATH),

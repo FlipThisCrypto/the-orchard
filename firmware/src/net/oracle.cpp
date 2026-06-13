@@ -52,6 +52,9 @@ bool oracle_post_reading(JsonDocument& payload) {
   payload["node_id"] = identity::node_id_hex();
   payload["fw"]      = orchard::kFirmwareVersion;
   payload["ts_ms"]   = (uint32_t)millis();  // monotonic; oracle gets UTC via gps.utc
+  payload["seq"]     = identity::next_seq();  // replay protection — inside the
+                                              // HMAC'd body, so it can't be
+                                              // bumped on a captured packet
 
   String body;
   serializeJson(payload, body);

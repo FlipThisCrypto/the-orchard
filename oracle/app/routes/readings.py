@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import auth, models, seasons, sessions
+from ..config import settings
 from ..db import get_db
 from ..session_deps import maybe_session
 
@@ -105,6 +106,37 @@ async def post_reading(
         payload = json.loads(body_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"invalid JSON: {e}")
+
+    # ---- Replay protection (docs/replay-protection.md, T3) ----------
+    # `seq` lives inside the HMAC-covered body, so it can't be forged
+    # or bumped on a captured packet. Strictly increasing per Tree.
+    # Exact duplicates never reach here (the sig-dedup above returns
+    # them as idempotent 202s), so a 409 here means a *distinct* stale
+    # or out-of-order body — i.e. a captured-and-held replay.
+    # Note for the Postgres/multi-worker future (T4): turn this into a
+    # guarded `UPDATE nodes SET last_seq=:seq WHERE node_id=:id AND
+    # last_seq<:seq` and reject on 0 rows.
+    seq = payload.get("seq") if isinstance(payload, dict) else None
+    seq_valid = isinstance(seq, int) and not isinstance(seq, bool) and seq > 0
+    if settings().require_seq:
+        if not seq_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="missing or invalid 'seq' (firmware too old? reflash)",
+            )
+        if seq <= node.last_seq:
+            # Signature was VALID; the content is just stale -> 409,
+            # no uptime credit, no stored row.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"replayed or out-of-order seq {seq} (last accepted {node.last_seq})",
+            )
+        node.last_seq = seq
+    elif seq_valid and seq > node.last_seq:
+        # Flag off: track passively so enabling require_seq later never
+        # strands a fleet that's already sending seq.
+        node.last_seq = seq
+    # ------------------------------------------------------------------
 
     now = datetime.now(timezone.utc)
     sensors_obj = payload.get("sensors", {}) if isinstance(payload, dict) else {}

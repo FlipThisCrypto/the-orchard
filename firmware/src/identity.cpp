@@ -23,6 +23,8 @@ constexpr const char* kNvsKeyP256    = "p256_key";
 // fleet doesn't exist yet — exactly why the curve switch happens NOW).
 constexpr const char* kNvsKeyEdSeedLegacy = "ed_seed";
 constexpr const char* kNvsKeyAPPw    = "ap_pw";
+constexpr const char* kNvsKeySeq     = "seq_wm";   // persisted seq watermark
+constexpr uint32_t kSeqReserve       = 256;        // NVS write amortization
 
 // Printable alphabet for AP passwords. Skips characters that are
 // hard to read or hard to type on a phone:  0 O o 1 l I.
@@ -33,6 +35,8 @@ constexpr size_t kAPPwAlphabetLen = 56;
 uint8_t signing_secret_[kSigningSecretLen] = {0};
 uint8_t p256_d_[kP256PrivLen] = {0};      // P-256 private scalar (big-endian)
 uint8_t p256_pub_[kP256PubLen] = {0};     // compressed SEC1 public point
+uint32_t seq_counter_   = 0;   // live counter (RAM)
+uint32_t seq_watermark_ = 0;   // highest value guaranteed unused after a crash
 String node_id_hex_;
 String p256_pubkey_hex_;
 String ap_password_;
@@ -254,6 +258,38 @@ void hmac_sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
                   signing_secret_, kSigningSecretLen,
                   data, len,
                   out);
+}
+
+uint32_t next_seq() {
+  // Lazy init on first call: resume from the persisted watermark.
+  // Everything below the watermark may already have been used before
+  // the last reboot/crash, so we start AT the watermark.
+  if (seq_watermark_ == 0) {
+    Preferences prefs;
+    prefs.begin(ORCHARD_NVS_NAMESPACE, /*readOnly=*/false);
+    seq_watermark_ = prefs.getUInt(kNvsKeySeq, 0);
+    if (seq_watermark_ == 0) {
+      // First boot ever: claim the first block.
+      seq_watermark_ = kSeqReserve;
+      prefs.putUInt(kNvsKeySeq, seq_watermark_);
+    }
+    prefs.end();
+    seq_counter_ = seq_watermark_ - kSeqReserve;
+  }
+
+  ++seq_counter_;
+
+  // Crossing the reservation boundary: persist the next block before
+  // handing out a number from it.
+  if (seq_counter_ >= seq_watermark_) {
+    seq_watermark_ = seq_counter_ + kSeqReserve;
+    Preferences prefs;
+    prefs.begin(ORCHARD_NVS_NAMESPACE, /*readOnly=*/false);
+    prefs.putUInt(kNvsKeySeq, seq_watermark_);
+    prefs.end();
+  }
+
+  return seq_counter_;
 }
 
 const String& p256_pubkey_hex() {
