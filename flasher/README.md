@@ -14,15 +14,21 @@ ESPHome, Tasmota, Adafruit's WipperSnapper, and Espressif's own [esp-launchpad](
 flasher/
 ├── README.md                              (this file)
 ├── index.html                             # the install page
-├── manifest.json                          # esp-web-tools build descriptor
-├── wroom32u/
-│   └── orchard-wroom32u-0.4.7.bin         # classic ESP32 (WROOM-32U)
-└── freenove-s3-uart/
-    └── orchard-s3-uart-0.4.7.bin          # ESP32-S3 w/ CH343 UART bridge
-                                           # both are merged blobs (bootloader
-                                           # + partitions + boot_app0 + app),
-                                           # ready to flash at offset 0x0.
+└── manifest.json                          # esp-web-tools build descriptor
 ```
+
+Firmware blobs are **no longer committed here.** `manifest.json` points at the
+merged `*-web-*.bin` assets on the matching
+[GitHub Release](https://github.com/FlipThisCrypto/the-orchard/releases) (built
+by `.github/workflows/release.yml` on each `v*` tag). This stopped the repo from
+growing ~2 MB per firmware version. Those `*-web-*.bin` are full-flash blobs
+(bootloader + partitions + boot_app0 + app), ready to flash at offset `0x0`; the
+plain `*.bin` assets are app-only images for OTA. GitHub release assets are
+served with permissive CORS, so esp-web-tools loads them cross-origin fine.
+
+**Bumping the flashed version:** after tagging a release, update the two
+`builds[].parts[].path` URLs and the `version` field in `manifest.json` to the
+new tag (the merge recipe itself lives in the release workflow now).
 
 esp-web-tools reads the connected chip's family and automatically picks
 the matching `builds[]` entry from `manifest.json` (ESP32 → WROOM image,
@@ -55,6 +61,11 @@ python -m http.server 8088
 Web Serial requires `localhost` or `https://`, so `http://localhost:8088` works but `http://192.168.x.x:8088` from a phone wouldn't.
 
 ## Build a fresh firmware blob
+
+> **This is now automated.** `.github/workflows/release.yml` runs exactly the
+> merge below for all envs on every `v*` tag and uploads the `*-web-*.bin`
+> assets the manifest points at. The manual steps here are for local testing
+> or reproducing/auditing a release artifact.
 
 After any firmware change, rebuild + re-merge:
 
