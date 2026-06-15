@@ -206,7 +206,7 @@ If you want to know where this is heading over the next few years: see [docs/VIS
 
 ## License
 
-[Apache License 2.0](LICENSE). Includes an explicit patent grant — important for an infrastructure project.
+[Apache License 2.0](LICENSE) — the single, canonical license for this project. Includes an explicit patent grant — important for an infrastructure project. See [docs/LICENSING.md](docs/LICENSING.md) (an earlier draft license is retained, superseded and non-binding, under `docs/historical/`).
 
 ---
 
