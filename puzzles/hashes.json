@@ -3,5 +3,10 @@
     "clvm_hex": "ff02ffff03ffff09ffff0bff0580ff0280ffff010bffff01ff088080ff0180",
     "sha256": "4eb2e56bce8f7e930b35b5649539d5d9d35edff758c4178beb391830805ff528",
     "treehash": "caf9f00763b55cfc71db469957fc5c21a4da350c4d5d36ab0a929de987b8eade"
+  },
+  "tree_heartbeat": {
+    "clvm_hex": "ff02ffff01ff02ffff03ffff02ffff01ff841c3a8f00ff02ff05ff0b80ffff04ff05ffff04ffff0bff17ff2fff5fff81bf80ffff04ff82017fff8080808080ffff01ff0880ffff01ff04ffff04ff08ffff04ff0bff808080ffff04ffff04ff0cffff04ff81bfffff01ff01808080ffff04ffff04ff0affff04ffff0bff0effff10ff17ffff010180ff2fff5f80ff808080ff8080808080ff0180ffff04ffff01ffff5033ff3c826862ff018080",
+    "sha256": "94e02e8b3606305ada542c47e282c38997c92c36932f8f0b270b5465c73123fd",
+    "treehash": "4546b9f56f4f501e4e3374ca0e6d45b36f4039d64fea412fcd29f0d78b7b63b2"
   }
 }

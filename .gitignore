@@ -26,6 +26,11 @@ env/
 .env.*
 !.env.example
 
+# --- ChiaLisp / clvm ---
+# clvm_tools' compiler writes a <name>.sym symbol table to the CWD on compile
+# (e.g. puzzles/build.py). It's a build artifact, not source.
+*.sym
+
 # --- PlatformIO / Arduino / ESP32 ---
 firmware/.pio/
 firmware/.vscode/
