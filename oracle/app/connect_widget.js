@@ -69,12 +69,29 @@
     return { ok: r.ok, status: r.status, body: await r.json().catch(function () { return {}; }) };
   }
   async function config() {
-    if (!cfg) { try { cfg = await (await fetch(ORACLE + "/claim/config")).json(); } catch (e) { cfg = {}; } }
+    // Cache a SUCCESSFUL config; a failed fetch is re-tried on the next call
+    // (a transient/CORS failure shouldn't poison the widget for the session).
+    if (cfg && !cfg._unreachable) return cfg;
+    try {
+      cfg = await (await fetch(ORACLE + "/claim/config")).json();
+    } catch (e) {
+      // A thrown fetch here is almost always CORS/origin, not a server
+      // misconfig: this script is running on a page whose origin the oracle
+      // doesn't allow (e.g. a bare *.pages.dev preview URL instead of the
+      // real *.theorchard.network domain). Flag it so ensure() can say so
+      // rather than blaming the oracle's WalletConnect project id.
+      cfg = { _unreachable: true };
+    }
     return cfg;
   }
   async function ensure() {
     if (signClient && wcModal) return;
     var c = await config();
+    if (c._unreachable) {
+      throw new Error("Couldn't reach the oracle to start WalletConnect. " +
+        "Open this on an https://*.theorchard.network page — a bare " +
+        "*.pages.dev preview URL isn't allowed to talk to the oracle.");
+    }
     if (!c.wc_configured) {
       throw new Error("WalletConnect isn't configured on the oracle (set ORCHARD_ORACLE_WC_PROJECT_ID).");
     }
