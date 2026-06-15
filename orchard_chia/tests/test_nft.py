@@ -268,3 +268,39 @@ def test_list_passes_rejects_wrong_collection_id():
     out = verify.list_passes_by_address(
         addr, _opener=lambda _u: json.dumps(fake).encode("utf-8"))
     assert out == []
+
+
+# ---- MintGarden pagination (must never silently truncate the Pass list) ----
+
+def _page(n, cursor=None):
+    body = {"items": [{"id": f"{i:064x}", "name": f"NFT{i}"} for i in range(n)]}
+    if cursor is not None:
+        body["next"] = cursor
+    return json.dumps(body).encode("utf-8")
+
+
+def test_fetch_walks_all_pages_via_cursor():
+    size = verify.INDEXER_PAGE_SIZE
+
+    def opener(url: str) -> bytes:
+        if "page=" not in url:
+            return _page(size, cursor="CURSOR2")      # full page + cursor
+        assert "page=CURSOR2" in url
+        return _page(3)                                # short final page
+
+    items = verify._fetch_mintgarden_collection_items(_opener=opener)
+    assert len(items) == size + 3
+
+
+def test_full_page_without_cursor_raises_not_truncates():
+    # A full page with no recognized cursor must fail loud, not drop the rest.
+    def opener(_url: str) -> bytes:
+        return _page(verify.INDEXER_PAGE_SIZE)  # full page, no 'next'
+    with pytest.raises(verify.IndexerError):
+        verify._fetch_mintgarden_collection_items(_opener=opener)
+
+
+def test_single_short_page_is_complete():
+    def opener(_url: str) -> bytes:
+        return _page(4)  # well under page_size -> done, no error
+    assert len(verify._fetch_mintgarden_collection_items(_opener=opener)) == 4
