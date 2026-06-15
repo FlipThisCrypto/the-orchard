@@ -138,3 +138,12 @@ class DataLayerRpc:
         except ChiaRpcError:
             return []
         return data.get("keys", [])
+
+    def get_root(self, store_id: str) -> dict:
+        """The store's current root: ``{hash, confirmed, timestamp, ...}``.
+
+        ``confirmed`` flips True once the root-update spend lands on chain —
+        which is how the writer tells a batch_update has actually been mined
+        (T16 confirmation monitoring), not just accepted into the mempool.
+        """
+        return self._post("get_root", {"id": store_id})
