@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orchard View — live Trees</title>
+
+  <!-- Shared cross-subdomain wallet widget (SSO). Renders a Connect
+       button into [data-orchard-connect] and exposes window.OrchardConnect.
+       The dashboard is read-only and works without connecting; the button
+       is here for brand/session consistency across *.theorchard.network. -->
+  <script src="https://oracle.theorchard.network/connect.js" defer></script>
+
+  <style>
+    :root {
+      --bg:#06070f; --bg-card:#0e1124; --bg-card-2:#161a35;
+      --fg:#f4e9c5; --fg-muted:#8a96b0;
+      --citrus:#ffae33; --citrus-glow:#ffd23a; --leaf:#52e89e;
+      --cyber:#48fff0; --magenta:#ff5fb2;
+      --border:#1a1e3a; --border-hot:#2a3057;
+      --ok:#52e89e; --warn:#ffae33; --bad:#ff6b6b; --grey:#5a6480;
+      --holo:linear-gradient(110deg,#48fff0 0%,#52e89e 30%,#ffd23a 55%,#ff5fb2 80%,#48fff0 100%);
+    }
+    * { box-sizing:border-box; }
+    html,body { margin:0; padding:0; }
+    body {
+      background:var(--bg); color:var(--fg);
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+      line-height:1.55; min-height:100vh; display:flex; flex-direction:column;
+      background-image:
+        radial-gradient(ellipse 60% 40% at 50% 0%, rgba(72,255,240,.06), transparent 70%),
+        radial-gradient(ellipse 70% 50% at 50% 100%, rgba(82,232,158,.05), transparent 70%);
+    }
+    a { color:var(--leaf); text-decoration:none; }
+    a:hover { color:var(--cyber); }
+
+    header {
+      display:flex; align-items:center; gap:14px; padding:14px 22px;
+      border-bottom:1px solid var(--border); position:relative;
+      background:linear-gradient(180deg, rgba(14,17,36,.95), rgba(6,7,15,.85));
+    }
+    header::after {
+      content:""; position:absolute; left:0; right:0; bottom:-1px; height:1px;
+      background:var(--holo); background-size:200% 100%; opacity:.45;
+      animation:holo 14s linear infinite;
+    }
+    header img { width:38px; height:38px; border-radius:50%;
+      box-shadow:0 0 0 1px rgba(72,255,240,.35), 0 0 14px rgba(72,255,240,.25); }
+    .brand-mark { font-weight:700; font-size:17px; letter-spacing:.6px;
+      background:var(--holo); background-size:200% 100%;
+      -webkit-background-clip:text; background-clip:text; color:transparent;
+      animation:holo 9s linear infinite; }
+    .brand-sub { color:var(--fg-muted); font-size:10.5px; letter-spacing:2.5px; text-transform:uppercase; }
+    header nav { margin-left:auto; display:flex; align-items:center; gap:18px; }
+    header nav a { font-size:13.5px; color:var(--fg-muted); }
+    header nav a:hover { color:var(--cyber); }
+
+    main { flex:1; max-width:860px; margin:30px auto; padding:0 22px; width:100%; }
+    h1 { margin:0 0 6px; font-size:26px; letter-spacing:.4px;
+      background:var(--holo); background-size:200% 100%;
+      -webkit-background-clip:text; background-clip:text; color:transparent;
+      animation:holo 11s linear infinite; }
+    .lede { color:var(--fg-muted); font-size:15px; margin:0 0 22px; }
+
+    /* network stat chips */
+    .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:0 0 26px; }
+    .stat { background:linear-gradient(180deg, rgba(22,26,53,.6), rgba(14,17,36,.85));
+      border:1px solid var(--border); border-radius:11px; padding:14px 16px; }
+    .stat .l { font-size:11px; color:var(--fg-muted); letter-spacing:1px; text-transform:uppercase; }
+    .stat .v { font-size:24px; font-weight:700; margin-top:3px; }
+    .stat .v small { font-size:12px; color:var(--fg-muted); font-weight:400; }
+
+    .card {
+      background:linear-gradient(180deg, rgba(22,26,53,.6), rgba(14,17,36,.85));
+      border:1px solid var(--border); border-radius:12px;
+      padding:18px 20px; margin:16px 0; position:relative;
+    }
+    .card::before { content:""; position:absolute; left:12px; right:12px; top:-1px; height:1px;
+      background:var(--holo); background-size:200% 100%; opacity:.5; animation:holo 13s linear infinite; }
+    .card h3 { margin:0 0 12px; font-size:13px; color:var(--citrus);
+      letter-spacing:1px; text-transform:uppercase; }
+
+    /* tree list */
+    .tree-row { display:flex; align-items:center; gap:14px; padding:14px 16px;
+      border:1px solid var(--border); border-radius:11px; margin:10px 0;
+      background:rgba(14,17,36,.5); transition:border-color .15s, transform .1s; }
+    .tree-row:hover { border-color:var(--border-hot); transform:translateY(-1px); }
+    .tree-row .leaf { font-size:20px; }
+    .tree-row .body { flex:1; min-width:0; }
+    .tree-row .name { font-weight:600; font-size:15px; }
+    .tree-row .meta { color:var(--fg-muted); font-size:12.5px; margin-top:2px; }
+    .tree-row .mono { font-family:ui-monospace,Consolas,monospace; }
+
+    .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:20px;
+      border:1px solid var(--border-hot); color:var(--fg-muted); white-space:nowrap; }
+    .badge.ok { color:var(--leaf); border-color:rgba(82,232,158,.4); background:rgba(82,232,158,.08); }
+    .badge.warn { color:var(--warn); border-color:rgba(255,174,51,.4); }
+
+    .dot { width:9px; height:9px; border-radius:50%; display:inline-block; background:var(--grey); }
+    .dot.ok { background:var(--ok); box-shadow:0 0 8px rgba(82,232,158,.6); }
+    .dot.bad { background:var(--bad); }
+    .dot.grey { background:var(--grey); }
+
+    /* status header on tree page */
+    .status { display:flex; align-items:center; gap:14px; }
+    .status .lbl { font-size:17px; font-weight:600; }
+    .status .sub { color:var(--fg-muted); font-size:13px; }
+    .btn { font:inherit; font-size:12.5px; padding:6px 12px; border-radius:7px;
+      border:1px solid var(--border-hot); background:transparent; color:var(--fg); cursor:pointer; }
+    .btn:hover { background:var(--bg-card-2); }
+
+    /* sensor grid + fields */
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+    .field { display:flex; justify-content:space-between; gap:12px; padding:4px 0;
+      border-bottom:1px dashed rgba(255,255,255,.06); font-size:13.5px; }
+    .field:last-child { border-bottom:0; }
+    .field .k { color:var(--fg-muted); }
+    .field .v { text-align:right; }
+    .v.mono, .mono { font-family:ui-monospace,Consolas,monospace; }
+    .muted { color:var(--fg-muted); }
+
+    table.readings { width:100%; border-collapse:collapse; font-size:12.5px; }
+    table.readings th, table.readings td { text-align:left; padding:7px 8px;
+      border-bottom:1px solid var(--border); }
+    table.readings th { color:var(--fg-muted); font-weight:600; letter-spacing:.5px; }
+
+    details.raw { margin:8px 0; }
+    details.raw summary { cursor:pointer; color:var(--fg-muted); font-size:13px; }
+    details.raw pre { background:var(--bg-card-2); border:1px solid var(--border);
+      border-radius:8px; padding:12px; overflow:auto; font-size:12px; color:var(--cyber); }
+
+    .notice { border:1px dashed var(--border-hot); border-radius:9px; padding:12px 14px;
+      color:var(--fg-muted); font-size:13px; background:rgba(255,174,51,.05); }
+
+    .orchard-connect-btn { font:inherit; font-size:13px; padding:6px 14px; border-radius:7px;
+      border:1px solid var(--leaf); background:transparent; color:var(--leaf); cursor:pointer; }
+    .orchard-connect-btn:hover { background:rgba(82,232,158,.1); }
+    .orchard-connected { font-size:12.5px; color:var(--leaf); }
+
+    footer { padding:16px 22px; color:var(--fg-muted); font-size:12.5px;
+      border-top:1px solid var(--border); text-align:center; }
+    footer .tagline { display:block; margin-top:4px; font-size:10.5px; letter-spacing:3px;
+      text-transform:uppercase; color:var(--cyber); opacity:.7; }
+
+    @keyframes holo { 0%{background-position:0% 50%} 100%{background-position:200% 50%} }
+    @media (max-width:640px) {
+      header { padding:10px 14px; } .brand-sub { display:none; }
+      main { padding:0 14px; margin:18px auto; } h1 { font-size:22px; }
+      header nav { gap:12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="https://defiant-black-skink.myfilebase.com/ipfs/QmUWhqeByfKrVAa5Ev3MRymFmhMSoTMnzDwE3Gjd4Cvray" alt="The Orchard">
+    <div>
+      <div class="brand-mark">ORCHARD VIEW</div>
+      <div class="brand-sub">Live Trees</div>
+    </div>
+    <nav>
+      <a href="https://theorchard.network">Home</a>
+      <a href="/">All Trees</a>
+      <span data-orchard-connect></span>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ===================== HOME (Tree list) ===================== -->
+    <section id="home" hidden>
+      <h1>Live Trees</h1>
+      <p class="lede">Every Tree reporting to the Orchard oracle, with its
+        latest signed status. Click a Tree to watch it live.</p>
+      <div class="stats" id="stats"></div>
+      <div id="tree-list"><p class="muted">Loading Trees…</p></div>
+    </section>
+
+    <!-- ===================== TREE (live view) ===================== -->
+    <section id="tree" hidden>
+      <p style="margin:0 0 10px"><a href="/">← All Trees</a></p>
+      <h1 id="tree-title">Tree</h1>
+      <p class="lede" id="tree-subtitle"></p>
+
+      <div class="card status">
+        <span class="dot grey" id="alive-dot"></span>
+        <div style="flex:1">
+          <div class="lbl" id="alive-label">Waiting for first reading…</div>
+          <div class="sub" id="last-age">Last reading: —</div>
+          <div class="sub" id="uptime-line">Uptime this Season: —</div>
+        </div>
+        <button class="btn" id="temp-toggle" title="Toggle temperature unit">°C</button>
+      </div>
+
+      <div class="card" id="credentials-card" hidden>
+        <h3>Orchard Pass</h3>
+        <div id="credentials-body"></div>
+      </div>
+
+      <div class="card" id="onchain-card" hidden>
+        <h3>On chain</h3>
+        <div id="onchain-body"></div>
+      </div>
+
+      <div id="readings-notice"></div>
+
+      <div class="grid" id="sensor-grid" style="margin-top:16px">
+        <div class="card"><span class="muted">Waiting for first reading…</span></div>
+      </div>
+
+      <div class="card">
+        <h3>Recent readings</h3>
+        <table class="readings">
+          <thead><tr><th>received (UTC)</th><th>MQ-135 raw</th><th>GPS fix</th><th>lat</th><th>lon</th></tr></thead>
+          <tbody id="readings-body"><tr><td colspan="5" class="muted">no readings yet</td></tr></tbody>
+        </table>
+      </div>
+
+      <details class="raw">
+        <summary>Latest reading (raw JSON)</summary>
+        <pre id="readings-raw" class="mono">—</pre>
+      </details>
+    </section>
+
+    <section id="error" hidden>
+      <div class="card"><span class="muted" id="error-msg"></span></div>
+    </section>
+  </main>
+
+  <footer>
+    Open-source environmental DePIN on Chia ·
+    <a href="https://github.com/FlipThisCrypto/the-orchard" target="_blank" rel="noopener">GitHub</a> ·
+    <a href="https://theorchard.network/claim">Claim a Tree</a>
+    <span class="tagline">You plant. The network grows.</span>
+  </footer>
+
+  <script>
+  (() => {
+    "use strict";
+    // The page talks ONLY to its own same-origin /api (the Pages Function),
+    // which fetches the oracle server-side and scrubs wallet + coarsens GPS
+    // before anything reaches this browser. No raw oracle data crosses here.
+
+    // ----- tiny helpers (ported from Orchard View app.js) -----
+    const $ = (s, r = document) => r.querySelector(s);
+    function esc(s) {
+      if (s == null) return "";
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+    }
+    async function jget(url) {
+      const r = await fetch(url, { method: "GET" });
+      return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) };
+    }
+    function relAge(iso) {
+      if (!iso) return "—";
+      let s = String(iso);
+      if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) s += "Z";
+      const t = Date.parse(s);
+      if (isNaN(t)) return iso;
+      const a = Math.max(0, Math.floor((Date.now() - t) / 1000));
+      if (a < 5) return "just now";
+      if (a < 60) return a + "s ago";
+      if (a < 3600) return Math.floor(a / 60) + "m ago";
+      if (a < 86400) return Math.floor(a / 3600) + "h ago";
+      return Math.floor(a / 86400) + "d ago";
+    }
+    function field(k, v, mono) {
+      const t = (v === null || v === undefined || v === "") ? "—" : v;
+      return `<div class="field"><div class="k">${esc(k)}</div>` +
+             `<div class="v${mono ? " mono" : ""}">${esc(t)}</div></div>`;
+    }
+    const shortId = id => id ? (id.length > 12 ? id.slice(0, 8) + "…" : id) : "—";
+
+    // ----- temperature unit (per-browser) -----
+    const TK = "orchard.tempUnit";
+    const tUnit = () => { try { return localStorage.getItem(TK) === "f" ? "f" : "c"; } catch { return "c"; } };
+    const setUnit = u => { try { localStorage.setItem(TK, u); } catch {} };
+    function fmtTemp(c, d = 1) {
+      if (c == null) return "—";
+      const u = tUnit(); const v = u === "f" ? c * 9 / 5 + 32 : c;
+      return `${v.toFixed(d)} °${u.toUpperCase()}`;
+    }
+    const fmtLat = v => (v == null || !Number.isFinite(+v)) ? "—" : `${Math.abs(+v).toFixed(3)}°${+v >= 0 ? "N" : "S"}`;
+    const fmtLon = v => (v == null || !Number.isFinite(+v)) ? "—" : `${Math.abs(+v).toFixed(3)}°${+v >= 0 ? "E" : "W"}`;
+
+    // ----- sensor tiles (ported) -----
+    const SENSOR_TILES = {
+      mq135: { title: "MQ-135 — air quality", fields: [
+        ["adc_raw", v => v?.toFixed?.(1) ?? v],
+        ["voltage_v", v => v?.toFixed?.(3) ?? v],
+        ["baseline", v => v?.toFixed?.(1) ?? v, "adc_baseline"],
+        ["deviation", v => v?.toFixed?.(2) ?? v, "adc_dev"],
+      ]},
+      bme280: { title: "BME280 — temp / humidity / pressure", fields: [
+        ["temperature", v => fmtTemp(v, 1), "temperature_c"],
+        ["humidity", v => `${v?.toFixed?.(1) ?? "—"} %`, "humidity_pct"],
+        ["pressure", v => `${v?.toFixed?.(2) ?? "—"} hPa`, "pressure_hpa"],
+        ["i2c address", v => v ? `0x${v.toString(16)}` : "—", "i2c_addr"],
+      ]},
+      ds18b20: { title: "DS18B20 — 1-Wire temperature", fields: [
+        ["temperature", v => fmtTemp(v, 2), "temperature_c"],
+        ["probes on bus", v => v, "device_count"],
+        ["rom id", v => v, "rom_id"],
+      ]},
+      gps: { title: "GPS", render: gps => {
+        // Coordinates arrive already coarsened (~111 m) from the edge.
+        let h = field("fix", gps.fix ? "yes" : "no") +
+                field("satellites", gps.satellites ?? "—");
+        if (gps.fix) {
+          const lat = Number(gps.lat), lon = Number(gps.lon);
+          h += field("lat (approx)", fmtLat(gps.lat), true) +
+               field("lon (approx)", fmtLon(gps.lon), true) +
+               field("alt_m", gps.alt_m?.toFixed?.(1) ?? gps.alt_m) +
+               field("utc", gps.utc || "—");
+          if (Number.isFinite(lat) && Number.isFinite(lon)) {
+            const url = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=12/${lat}/${lon}`;
+            h += `<div class="field"><div class="k">map</div><div class="v">` +
+                 `<a href="${esc(url)}" target="_blank" rel="noopener">OpenStreetMap (area) →</a></div></div>`;
+          }
+        } else {
+          h += field("baud", gps.baud != null ? (gps.baud === 0 ? "no lock" : gps.baud) : "—") +
+               field("bytes rx", gps.chars_processed ?? "—") +
+               field("sentences", gps.sentences_passed ?? "—");
+        }
+        return h;
+      }},
+    };
+    function renderSensorCard(name, data) {
+      const cfg = SENSOR_TILES[name];
+      const title = cfg?.title ?? name;
+      let body;
+      if (cfg?.render) body = cfg.render(data);
+      else if (cfg?.fields) body = cfg.fields.map(([label, fmt, key]) => {
+        const raw = data[key ?? label];
+        const val = (raw == null) ? undefined : (fmt ? fmt(raw) : raw);
+        return field(label, val);
+      }).join("");
+      else body = Object.entries(data).map(([k, v]) => field(k, v)).join("");
+      return `<div class="card"><h3>${esc(title)}</h3>${body}</div>`;
+    }
+    function renderSensors(sensors) {
+      const grid = $("#sensor-grid");
+      const known = Object.keys(SENSOR_TILES).filter(k => k in sensors);
+      const unknown = Object.keys(sensors).filter(k => !(k in SENSOR_TILES)).sort();
+      const order = [...known, ...unknown];
+      if (!order.length) {
+        grid.innerHTML = `<div class="card"><span class="muted">No sensors reporting yet.</span></div>`;
+        return;
+      }
+      grid.innerHTML = order.map(n => renderSensorCard(n, sensors[n])).join("");
+    }
+
+    function renderCredentials(node) {
+      const card = $("#credentials-card"), body = $("#credentials-body");
+      const nft = node?.pass_nft_id;
+      if (!nft) { card.hidden = true; return; }
+      card.hidden = false;
+      const mg = `https://mintgarden.io/nfts/${encodeURIComponent(nft)}`;
+      body.innerHTML =
+        field("pass nft", nft, true) +
+        field("verified", node.pass_verified_at ? relAge(node.pass_verified_at) : "—") +
+        `<div class="field"><div class="k">on chain</div><div class="v">` +
+        `<a href="${esc(mg)}" target="_blank" rel="noopener">View on MintGarden →</a></div></div>`;
+    }
+
+    function renderOnChain(att) {
+      const card = $("#onchain-card"), body = $("#onchain-body");
+      if (!att) { card.hidden = true; return; }
+      card.hidden = false;
+      const tx = String(att.dl_tx_id || "");
+      const txClean = tx.startsWith("0x") ? tx.slice(2) : tx;
+      const txDisp = tx ? `${tx.slice(0, 10)}…${tx.slice(-6)}` : "—";
+      const url = txClean ? `https://www.spacescan.io/coin/0x${txClean}` : null;
+      body.innerHTML =
+        field("last attested", `Season ${att.season_number}`) +
+        field("hours online", `${att.hours_online} / 24`) +
+        field("signed at", att.written_to_datalayer_at ? relAge(att.written_to_datalayer_at) : "—") +
+        (url ? `<div class="field"><div class="k">tx</div><div class="v mono">` +
+               `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(txDisp)} →</a></div></div>`
+             : field("tx", txDisp));
+    }
+
+    // ----- HOME -----
+    async function showHome() {
+      $("#home").hidden = false;
+      const [stats, nodes] = await Promise.all([
+        jget("/api/network/stats"),
+        jget("/api/nodes"),
+      ]);
+      if (stats.ok) {
+        const s = stats.body;
+        $("#stats").innerHTML = [
+          ["Trees", s.trees_registered],
+          ["Active 24h", s.trees_active_24h],
+          ["Readings", s.readings_total],
+          ["Season", s.current_season],
+        ].map(([l, v]) => `<div class="stat"><div class="l">${esc(l)}</div>` +
+          `<div class="v">${esc(v ?? "—")}</div></div>`).join("");
+      }
+      const list = $("#tree-list");
+      if (!nodes.ok || !Array.isArray(nodes.body)) {
+        list.innerHTML = `<p class="muted">Couldn't reach the oracle.</p>`;
+        return;
+      }
+      if (!nodes.body.length) {
+        list.innerHTML = `<p class="muted">No Trees registered yet. ` +
+          `<a href="https://theorchard.network/claim">Plant the first one →</a></p>`;
+        return;
+      }
+      list.innerHTML = nodes.body.map(n => {
+        const alive = n.last_seen_at &&
+          (Date.now() - Date.parse(n.last_seen_at + (/[zZ]$/.test(n.last_seen_at) ? "" : "Z"))) < 180000;
+        const dot = alive ? "ok" : (n.last_seen_at ? "bad" : "grey");
+        const pass = n.pass_nft_id ? `<span class="badge ok">Pass ✓</span>` : `<span class="badge">no Pass</span>`;
+        const seen = n.last_seen_at ? relAge(n.last_seen_at) : "never";
+        return `<a class="tree-row" href="/?tree=${encodeURIComponent(n.node_id)}">` +
+          `<span class="dot ${dot}"></span>` +
+          `<div class="body"><div class="name">${esc(n.label || "Tree " + shortId(n.node_id))}</div>` +
+          `<div class="meta"><span class="mono">${esc(shortId(n.node_id))}</span> · ` +
+          `fw ${esc(n.fw_version || "?")} · seen ${esc(seen)}</div></div>` +
+          pass + `</a>`;
+      }).join("");
+    }
+
+    // ----- TREE -----
+    let NODE_ID = null, pollTimer = null, lastData = null;
+
+    function renderTree(d) {
+      const dot = $("#alive-dot"), lbl = $("#alive-label");
+      if (d.alive) { dot.className = "dot ok"; lbl.textContent = "Alive"; }
+      else if (d.latest || d.last_received_at) { dot.className = "dot bad"; lbl.textContent = "Stale (no recent reading)"; }
+      else { dot.className = "dot grey"; lbl.textContent = "Waiting for first reading…"; }
+
+      $("#last-age").textContent = "Last reading: " + (d.last_received_at ? relAge(d.last_received_at) : "—");
+      if (d.uptime) $("#uptime-line").textContent = `Uptime this Season: ${d.uptime.hours_online} / 24 hours`;
+
+      const node = d.node || {};
+      $("#tree-title").textContent = node.label || "Tree " + shortId(NODE_ID);
+      $("#tree-subtitle").innerHTML = `<span class="mono" title="${esc(NODE_ID)}">${esc(NODE_ID)}</span> · fw ${esc(node.fw_version || "?")}`;
+      document.title = `${node.label || shortId(NODE_ID)} — Orchard View`;
+
+      renderCredentials(node);
+      renderOnChain(d.attestation);
+
+      // Readings blocked at the edge WAF → explain rather than show empty.
+      const notice = $("#readings-notice");
+      if (d.readings_status === "blocked") {
+        notice.innerHTML = `<div class="notice">Live sensor readings for this Tree ` +
+          `aren't published yet. Status, Pass, uptime and on-chain data above are live.</div>`;
+      } else { notice.innerHTML = ""; }
+
+      const sensors = d.latest?.payload?.sensors ?? {};
+      renderSensors(sensors);
+
+      const tb = $("#readings-body");
+      if (d.readings?.length) {
+        tb.innerHTML = d.readings.map(r => {
+          const m = r.payload?.sensors?.mq135 || {}, g = r.payload?.sensors?.gps || {};
+          return `<tr><td class="mono">${esc(r.received_at)}</td>` +
+            `<td>${esc(m.adc_raw?.toFixed?.(1) ?? "—")}</td>` +
+            `<td>${g.fix ? "✓" : "·"}</td>` +
+            `<td>${esc(g.lat?.toFixed?.(3) ?? "—")}</td>` +
+            `<td>${esc(g.lon?.toFixed?.(3) ?? "—")}</td></tr>`;
+        }).join("");
+      } else {
+        tb.innerHTML = `<tr><td colspan="5" class="muted">${
+          d.readings_status === "blocked" ? "not published yet" : "no readings yet"}</td></tr>`;
+      }
+      if (d.latest) $("#readings-raw").textContent = JSON.stringify(d.latest.payload, null, 2);
+    }
+
+    async function pollTree() {
+      const r = await jget(`/api/tree/${encodeURIComponent(NODE_ID)}/latest`);
+      if (r.status === 404) {
+        clearInterval(pollTimer);
+        $("#tree").hidden = true;
+        $("#error").hidden = false;
+        $("#error-msg").innerHTML = `Tree <span class="mono">${esc(NODE_ID)}</span> isn't registered with the oracle. <a href="/">← All Trees</a>`;
+        return;
+      }
+      if (r.ok) { lastData = r.body; renderTree(r.body); }
+    }
+
+    function showTree(id) {
+      NODE_ID = id;
+      $("#tree").hidden = false;
+      const btn = $("#temp-toggle");
+      btn.textContent = `°${tUnit().toUpperCase()}`;
+      btn.addEventListener("click", () => {
+        setUnit(tUnit() === "c" ? "f" : "c");
+        btn.textContent = `°${tUnit().toUpperCase()}`;
+        if (lastData) renderTree(lastData);
+      });
+      pollTree();
+      pollTimer = setInterval(pollTree, 5000);
+    }
+
+    // ----- route -----
+    const id = new URLSearchParams(location.search).get("tree");
+    if (id) showTree(id.trim()); else showHome();
+  })();
+  </script>
+</body>
+</html>
