@@ -1,19 +1,28 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # `puzzles/` — ChiaLisp toolchain (HANDOVER T19)
 
-The on-chain track (ADR-0008): ChiaLisp puzzles that will let Trees prove
-uptime as on-chain singleton heartbeats and let operators claim from epoch
-vaults — no oracle in the reward path. This directory is the toolchain and
-test harness those puzzles are built and verified with; the value-holding
-puzzles themselves are T20 (Tree-singleton heartbeat) and T22 (epoch vault).
+The on-chain track (ADR-0008): ChiaLisp puzzles that let Trees prove uptime as
+on-chain singleton heartbeats and let operators claim from epoch vaults — no
+oracle in the reward path. This directory is the toolchain and test harness
+those puzzles are built and verified with.
+
+- **`hashlock`** — toolchain starter (T19), not production.
+- **`tree_heartbeat`** — the Tree-singleton heartbeat inner puzzle (T20):
+  secp256r1-authorized, timelocked self-recreation that advances a monotonic
+  counter and announces each heartbeat. Behavioral tests (signed by the live
+  `schema` signer, run under the consensus VM) live in
+  `orchard_chia/tests/test_heartbeat_puzzle.py`; security model in
+  [SECURITY-NOTES.md](SECURITY-NOTES.md).
+- **epoch vault** — T22, not yet implemented (see SECURITY-NOTES.md).
 
 ```
 puzzles/
-├── src/*.clsp        # puzzle sources
-├── build.py          # compile -> pin hex + treehash into hashes.json
-├── hashes.json       # committed bytecode + sha256 + on-chain treehash (pinned)
-├── tests/            # run compiled puzzles under the consensus VM (chia_rs)
-└── requirements.txt  # clvm_tools + chia_rs (+ pytest)
+├── src/*.clsp         # puzzle sources (hashlock, tree_heartbeat)
+├── build.py           # compile -> pin hex + treehash into hashes.json
+├── hashes.json        # committed bytecode + sha256 + on-chain treehash (pinned)
+├── tests/             # run compiled puzzles under the consensus VM (chia_rs)
+├── SECURITY-NOTES.md  # per-puzzle threat model + ported claim-race analysis
+└── requirements.txt   # clvm_tools + chia_rs (+ pytest)
 ```
 
 ## Workflow

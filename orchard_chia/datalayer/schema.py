@@ -154,9 +154,15 @@ def reject_floats(obj: object, path: str = "$") -> None:
             reject_floats(v, f"{path}[{i}]")
 
 
-def _sign(body: dict, seed_hex: str) -> str:
-    reject_floats(body)  # determinism guard — never sign a float
-    digest = hashlib.sha256(canonical_bytes(body)).digest()
+def sign_digest(digest: bytes, seed_hex: str) -> str:
+    """secp256r1-sign a raw 32-byte ``digest`` (RFC 6979 deterministic, low-S
+    normalized); returns the 64-byte ``r||s`` signature as hex — the exact form
+    CLVM's ``secp256r1_verify`` consumes (SPEC §4.1).
+
+    Readings sign ``sha256(canonical_bytes(body))`` (see :func:`_sign`); on-chain
+    heartbeats (ADR-0008 / HANDOVER T20) sign a digest the puzzle itself
+    computes, so this lower-level signer is shared by both paths.
+    """
     sk = SigningKey.from_secret_exponent(int(seed_hex, 16), curve=NIST256p)
     raw = sk.sign_digest_deterministic(
         digest, hashfunc=hashlib.sha256, sigencode=sigencode_string
@@ -166,6 +172,11 @@ def _sign(body: dict, seed_hex: str) -> str:
     if s > _P256_N // 2:  # low-S: every verifier accepts it, strict ones require it
         s = _P256_N - s
     return (r.to_bytes(32, "big") + s.to_bytes(32, "big")).hex()
+
+
+def _sign(body: dict, seed_hex: str) -> str:
+    reject_floats(body)  # determinism guard — never sign a float
+    return sign_digest(hashlib.sha256(canonical_bytes(body)).digest(), seed_hex)
 
 
 def _verify(body: dict, sig_hex: str, pubkey_hex: str) -> bool:

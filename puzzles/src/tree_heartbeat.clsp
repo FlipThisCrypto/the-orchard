@@ -1,0 +1,70 @@
+; SPDX-License-Identifier: Apache-2.0
+;
+; tree_heartbeat — the Tree-singleton heartbeat INNER puzzle (HANDOVER T20,
+; ADR-0008 §1). This is the puzzle that lets a Tree prove its own uptime
+; on-chain with no oracle in the loop: every MIN_INTERVAL the Tree spends its
+; singleton coin to recreate itself, advancing a monotonic counter and
+; announcing the heartbeat. The reward path (epoch vault, T22) counts those
+; announcements; this puzzle's only job is to make each heartbeat (a) provably
+; authorized by THIS Tree and (b) impossible to issue faster than real time.
+;
+; Singleton note: this is the INNER puzzle. At deploy it is wrapped by Chia's
+; standard singleton_top_layer (which enforces the odd-amount / lineage-proof
+; uniqueness of the singleton). The identity + current state are CURRIED in, so
+; they become part of the coin's puzzle hash:
+;   TREE_PUBKEY   33-byte compressed secp256r1 pubkey (ADR-0007) — the Tree.
+;   MIN_INTERVAL  minimum seconds between heartbeats (the timelock spacing).
+;   COUNTER       heartbeats so far (monotonic state).
+;   EPOCH         current reward-epoch id (state).
+; The solution carries only per-spend data:
+;   sensor_batch_hash  sha256 of the sensor batch this heartbeat attests.
+;   next_puzzle_hash   puzzle hash of the next singleton coin — the Tree
+;                      computes it off-chain by re-currying this mod with
+;                      COUNTER+1, and SIGNS it, so the spend can only recreate
+;                      the coin the Tree authorized (no redirect by a relayer).
+;   signature          64-byte r||s secp256r1 signature over the digest below.
+;
+; The signed digest binds the whole transition — current COUNTER + EPOCH, the
+; data, and the authorized next coin — so a captured signature can't be
+; replayed into a different state or a different next coin.
+
+(mod (TREE_PUBKEY MIN_INTERVAL COUNTER EPOCH sensor_batch_hash next_puzzle_hash signature)
+
+  ; --- condition opcodes (clvm_tools doesn't predefine these names) ---------
+  (defconstant ASSERT_SECONDS_RELATIVE 80)
+  (defconstant CREATE_COIN 51)
+  (defconstant CREATE_COIN_ANNOUNCEMENT 60)
+  ; domain tag on the announced message so the epoch vault can't be tricked
+  ; into consuming some other puzzle's announcement (README convention). "hb".
+  (defconstant HB_TAG 0x6862)
+
+  ; secp256r1_verify is the CHIP-0011 operator (opcode 0x1c3a8f00); the older
+  ; clvm_tools compiler doesn't know the keyword, so invoke the raw operator
+  ; via `a`: the quoted program (<op> 2 5 11) runs against the env (pk msg sig),
+  ; i.e. (secp256r1_verify pk msg sig). It returns () on success and RAISES on a
+  ; bad signature — exactly the operator exercised in
+  ; orchard_chia/tests/test_clvm_secp.py.
+  (defun-inline secp256r1_verify (pk msg sig)
+    (a (q . (0x1c3a8f00 2 5 11)) (list pk msg sig)))
+
+  ; The heartbeat message digest the Tree signs.
+  (defun-inline heartbeat_digest ()
+    (sha256 COUNTER EPOCH sensor_batch_hash next_puzzle_hash))
+
+  ; secp256r1_verify returns () (falsey) on success and raises on failure, so a
+  ; valid signature falls through to the ELSE branch (the conditions); an
+  ; invalid one has already aborted the spend, making the (x) branch
+  ; unreachable.
+  (if (secp256r1_verify TREE_PUBKEY (heartbeat_digest) signature)
+      (x)
+      (list
+        ; can't heartbeat again until MIN_INTERVAL has elapsed — this is what
+        ; stops a Tree (or a thief of its key) from inflating its uptime count
+        ; faster than wall-clock time.
+        (list ASSERT_SECONDS_RELATIVE MIN_INTERVAL)
+        ; recreate the singleton at the Tree-authorized next coin (odd amount).
+        (list CREATE_COIN next_puzzle_hash 1)
+        ; announce this heartbeat (new counter, epoch, batch) for the vault to
+        ; count — domain-tagged so it can't be confused with other puzzles'.
+        (list CREATE_COIN_ANNOUNCEMENT
+              (sha256 HB_TAG (+ COUNTER 1) EPOCH sensor_batch_hash)))))
