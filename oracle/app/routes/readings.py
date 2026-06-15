@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .. import auth, models, seasons, sessions
@@ -113,29 +113,35 @@ async def post_reading(
     # Exact duplicates never reach here (the sig-dedup above returns
     # them as idempotent 202s), so a 409 here means a *distinct* stale
     # or out-of-order body — i.e. a captured-and-held replay.
-    # Note for the Postgres/multi-worker future (T4): turn this into a
-    # guarded `UPDATE nodes SET last_seq=:seq WHERE node_id=:id AND
-    # last_seq<:seq` and reject on 0 rows.
+    #
+    # The bump is a GUARDED UPDATE (`... WHERE last_seq < :seq`) rather
+    # than a read-compare-set, so it stays correct with multiple workers
+    # on Postgres: the row lock serializes concurrent posts and only the
+    # strictly-greater seq wins. rowcount==0 means "not greater" — a
+    # stale/duplicate seq. (On SQLite the single writer makes it moot,
+    # but the same code path works there too.)
     seq = payload.get("seq") if isinstance(payload, dict) else None
     seq_valid = isinstance(seq, int) and not isinstance(seq, bool) and seq > 0
-    if settings().require_seq:
-        if not seq_valid:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="missing or invalid 'seq' (firmware too old? reflash)",
-            )
-        if seq <= node.last_seq:
+    if settings().require_seq and not seq_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="missing or invalid 'seq' (firmware too old? reflash)",
+        )
+    if seq_valid:
+        last_accepted = node.last_seq
+        advanced = db.execute(
+            update(models.Node)
+            .where(models.Node.node_id == node.node_id, models.Node.last_seq < seq)
+            .values(last_seq=seq)
+        ).rowcount
+        if settings().require_seq and not advanced:
             # Signature was VALID; the content is just stale -> 409,
-            # no uptime credit, no stored row.
+            # no uptime credit, no stored row (the failed UPDATE and
+            # everything after roll back when we raise).
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"replayed or out-of-order seq {seq} (last accepted {node.last_seq})",
+                detail=f"replayed or out-of-order seq {seq} (last accepted {last_accepted})",
             )
-        node.last_seq = seq
-    elif seq_valid and seq > node.last_seq:
-        # Flag off: track passively so enabling require_seq later never
-        # strands a fleet that's already sending seq.
-        node.last_seq = seq
     # ------------------------------------------------------------------
 
     now = datetime.now(timezone.utc)

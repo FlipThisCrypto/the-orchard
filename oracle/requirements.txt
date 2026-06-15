@@ -14,6 +14,13 @@ PyJWT>=2.8.0
 # Imported lazily there, but require_wallet_session=true is the
 # production posture, so it's a hard runtime dep — same CI catch.
 chia_rs>=0.42.0
+# Schema migrations (oracle/migrations, alembic.ini). Real, versioned
+# migrations for the Postgres-readiness path (T4/D4); the SQLite PoC uses
+# the same baseline. For Postgres, also install a driver and point
+# ORCHARD_ORACLE_DB_URL at it, e.g.:
+#   pip install "psycopg[binary]>=3.1"
+#   ORCHARD_ORACLE_DB_URL=postgresql+psycopg://user:pass@host/orchard
+alembic>=1.13
 
 # Dev / tests (kept here for one-command install; trim to a separate
 # requirements-dev.txt later if it grows).

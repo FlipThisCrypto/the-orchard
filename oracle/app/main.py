@@ -6,7 +6,8 @@ Run with:
 or
     uvicorn oracle.app.main:app --host 0.0.0.0 --port 8000
 
-Schema is created on startup; for migrations later we'll add Alembic.
+Schema is created on startup via db.create_all(); versioned migrations
+live in oracle/migrations (Alembic) — see that dir's README.
 """
 from __future__ import annotations
 
