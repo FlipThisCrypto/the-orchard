@@ -30,6 +30,10 @@ def test_claim_page_serves_html():
     assert "/provision/claim" in r.text
     assert "/auth/challenge" in r.text
     assert "chia_signMessageByAddress" in r.text
+    # UX: code preview + a real post-claim destination (not a dead end)
+    assert "code-preview" in r.text
+    assert "Back to The Orchard" in r.text
+    assert "Tree claimed!" in r.text
 
 
 def test_claim_config_unconfigured_by_default(monkeypatch):
@@ -43,6 +47,10 @@ def test_claim_config_unconfigured_by_default(monkeypatch):
     assert j["wc_project_id"] == ""
     assert j["metadata"]["name"].startswith("The Orchard")
     assert j["metadata"]["url"].startswith("http")
+    # navigation targets the page reads (home defaults to the landing page;
+    # dashboard hidden until the operator sets it)
+    assert j["home_url"] == "https://theorchard.network"
+    assert j["dashboard_url"] == ""
     reset_settings_for_tests()
 
 

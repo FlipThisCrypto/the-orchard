@@ -44,11 +44,15 @@ def claim_config(request: Request) -> dict:
     oracle is hosted. ``wc_configured`` is False when the operator hasn't set
     ORCHARD_ORACLE_WC_PROJECT_ID — the page then renders a helpful notice
     instead of a half-working Connect button."""
-    pid = settings().wc_project_id or ""
+    s = settings()
+    pid = s.wc_project_id or ""
     base = str(request.base_url).rstrip("/")
     return {
         "wc_project_id": pid,
         "wc_configured": bool(pid),
+        # Where the page sends operators (set via oracle .env; no code change).
+        "home_url": s.home_url or "",
+        "dashboard_url": s.dashboard_url or "",
         "metadata": {
             "name": "The Orchard — Claim a Tree",
             "description": "Bind a Tree to your wallet by proving Orchard Pass ownership.",

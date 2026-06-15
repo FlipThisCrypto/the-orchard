@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # renders a "WalletConnect not configured" notice. Reuse the same value
     # as the dashboard's ORCHARD_VIEW_WC_PROJECT_ID.
     wc_project_id: str = ""
+    # Where the claim page sends operators. home_url is the "Back to The
+    # Orchard" button + the post-claim auto-redirect target (the landing page).
+    # dashboard_url is the "View your Tree" button shown after a successful
+    # claim — leave empty to hide that button until the hosted dashboard exists.
+    home_url: str = "https://theorchard.network"
+    dashboard_url: str = ""
     # Test-mode bypass for the BLS signature step. The pubkey -> address
     # binding check still runs (so a wrong-pk submission fails). Use
     # ONLY in tests/CI. Defaults False so production fails closed.
