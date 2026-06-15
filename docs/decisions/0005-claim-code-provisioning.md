@@ -1,8 +1,10 @@
 # ADR-0005: Remote claim-code provisioning
 
-- **Status:** **Proposed** (2026-06-15) — design for owner review. Defines
-  first-boot firmware behavior, which is expensive to change after devices
-  ship, so it is captured here BEFORE implementation (HANDOVER T9).
+- **Status:** **Accepted** (2026-06-15) — adopted with the defaults in
+  "Resolved decisions" below. They are deliberately revisable before the first
+  tester batch ships; flag any you want changed and the implementation follows.
+  Defines first-boot firmware behavior, expensive to change after devices ship,
+  so it is captured here before implementation (HANDOVER T9).
 - **Date:** 2026-06-15
 - **Deciders:** Richard Aubrey (FlipThisCrypto)
 - **Related:** ADR-0004 (central oracle — why local register no longer
@@ -85,19 +87,27 @@ A **claim-code** flow. Three actors: the Tree, the operator's browser
 - **Transport:** the oracle is TLS-only (Cloudflare tunnel, ADR-0004), so codes
   and sessions aren't on the wire in clear.
 
-## Open questions (for owner sign-off before implementation)
+## Resolved decisions (defaults — revisable before the first tester batch)
 
-1. **Code length/alphabet** — 8 Crockford chars, or longer? Display grouping
-   (e.g. `XXXX-XXXX`)?
-2. **Captive portal in v1?** Serial-only first (simplest), portal as a
-   fast-follow? Or both from the start?
-3. **Pass requirement at claim time** — must the wallet already hold an Orchard
-   Pass to claim, or can binding precede Pass mint?
-4. **Binding to DID vs wallet address** — T9 says "node_id ↔ DID/Pass";
-   confirm whether we bind to a DID or the xch address (current `/register`
-   binds the address).
-5. **Does activation push the oracle URL / WiFi-independent config**, or is the
-   Tree pre-pointed at `oracle.theorchard.network` at flash time?
+1. **Code format:** 8 Crockford-base32 characters (no `0/O/1/I/L`), displayed
+   grouped as `XXXX-XXXX`. ≈40 bits; with 24h expiry + per-IP rate limiting,
+   brute force is impractical. Lengthen later if we want more margin.
+2. **Captive portal:** serial-only for the first tester batch (smallest
+   first-boot firmware surface to get right); the captive-portal display is a
+   fast-follow once the serial path is proven.
+3. **Pass at claim time:** required — the claiming wallet must already hold an
+   Orchard Pass (reuses the existing `/register` Pass-NFT gate). Keeps "one
+   bound Tree per Pass" consistent across both onboarding paths.
+4. **Binding target:** the xch wallet **address** (what `/register` binds
+   today). A DID layer can be added later without changing the claim flow.
+5. **Activation config:** the oracle URL is **baked at flash time**
+   (`oracle.theorchard.network`); activation only flips the Tree from
+   "unprovisioned/polling" to "claimed → post." Keeps the claim response
+   minimal and avoids the Tree trusting a post-claim config payload.
+
+These are defaults, not constraints — each is cheap to change in firmware/oracle
+before devices are in testers' hands. Revisit if the onboarding UX or the Pass
+model shifts.
 
 ## Consequences
 
