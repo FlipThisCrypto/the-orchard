@@ -47,7 +47,7 @@ jobs:
       # on day one. Tighten by adding rules to a [tool.ruff] section in
       # pyproject.toml later.
       - name: Ruff (errors only)
-        run: ruff check --select E9,F oracle dashboard orchard_chia
+        run: ruff check --select E9,F oracle dashboard orchard_chia tools puzzles
 
       # `python -m pytest` (not bare `pytest`) so the repo root lands on
       # sys.path — oracle imports its sibling component orchard_chia
@@ -130,3 +130,27 @@ jobs:
 
       - name: Build panel
         run: pio run -d panel
+
+  # ChiaLisp puzzle toolchain (HANDOVER T19). Compiles puzzles/src/*.clsp,
+  # checks the committed hashes haven't drifted, and runs each puzzle under
+  # the consensus VM (chia_rs). Separate from python-tests so the oracle
+  # suite doesn't pull the clvm toolchain.
+  puzzles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install puzzle toolchain
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r puzzles/requirements.txt
+
+      - name: Build + verify pinned hashes
+        run: python puzzles/build.py --check
+
+      - name: Run puzzles under the VM
+        run: python -m pytest puzzles/tests -v

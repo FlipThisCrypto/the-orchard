@@ -1,0 +1,6 @@
+# ChiaLisp puzzle toolchain (puzzles/, HANDOVER T19 → T20+).
+# Used by puzzles/build.py and the `puzzles` CI job; not needed to run the
+# oracle/dashboard.
+clvm_tools>=0.4.9     # .clsp -> CLVM compiler (compile_clvm_text)
+chia_rs>=0.42.0       # consensus VM (run_chia_program) for puzzle tests
+pytest>=8.0.0
