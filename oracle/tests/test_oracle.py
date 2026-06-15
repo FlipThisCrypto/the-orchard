@@ -1402,3 +1402,72 @@ def test_seq_not_enforced_when_flag_off(client: TestClient):
     assert _post_seq_reading(client, {"seq": 3, "sensors": {}}).status_code == 202
     # And no-seq bodies stay accepted (today's fleet).
     assert _post_seq_reading(client, {"sensors": {}}).status_code == 202
+
+
+# ---------------- T6: reading freshness (max_reading_age_seconds) ----------
+#
+# Optional data-quality guard: reject readings whose signed UTC `ts` is older
+# than the configured window. Off by default; only enforced when a ts is
+# present, so pre-SNTP firmware (no ts) is never rejected.
+
+@pytest.fixture()
+def fresh_client(monkeypatch):
+    monkeypatch.setenv("ORCHARD_ORACLE_REQUIRE_WALLET_SESSION", "false")
+    monkeypatch.setenv("ORCHARD_ORACLE_MAX_READING_AGE_SECONDS", "120")
+    reset_settings_for_tests()
+    reset_for_tests()
+    test_engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False},
+        poolclass=StaticPool, future=True)
+    TestSession = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(test_engine)
+
+    def override_get_db():
+        db = TestSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        c.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+        yield c
+    app.dependency_overrides.clear()
+
+
+def _now_epoch() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _post_with_ts(c: TestClient, ts):
+    body_obj = {"sensors": {}}
+    if ts is not None:
+        body_obj["ts"] = ts
+    body = json.dumps(body_obj).encode("utf-8")
+    return c.post("/readings", content=body, headers={
+        "Content-Type": "application/json",
+        "X-Orchard-Node": NODE_ID,
+        "X-Orchard-Sig": _sign(body),
+    })
+
+
+def test_fresh_reading_accepted(fresh_client: TestClient):
+    assert _post_with_ts(fresh_client, _now_epoch()).status_code == 202
+
+
+def test_stale_reading_rejected(fresh_client: TestClient):
+    r = _post_with_ts(fresh_client, _now_epoch() - 10_000)  # ~2.7h old, > 120s
+    assert r.status_code == 422
+    assert "stale" in r.json()["detail"]
+
+
+def test_missing_ts_not_rejected_by_freshness(fresh_client: TestClient):
+    # Pre-SNTP firmware sends no ts — the freshness guard must not block it.
+    assert _post_with_ts(fresh_client, None).status_code == 202
+
+
+def test_freshness_off_by_default_accepts_old_ts(client: TestClient):
+    # Default fixture has max_reading_age_seconds=0 (off).
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    assert _post_with_ts(client, _now_epoch() - 10_000).status_code == 202
