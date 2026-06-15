@@ -2,6 +2,7 @@
 #include "serial_console.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <Wire.h>
 
 #include "config.h"
@@ -108,6 +109,22 @@ void cmd_wifi_set_(const String& args) {
   Serial.println(ok ? "OK" : "ERR could not set");
 }
 
+void cmd_sensor_mq135_(const String& args) {
+  // MQ-135 is analog and can't be auto-detected, so it's off by default; the
+  // operator declares it per-Tree here. Persisted in NVS; applied on next boot
+  // (sensor presence is decided in begin()).
+  String a = args; a.toLowerCase();
+  bool on;
+  if (a == "on" || a == "1" || a == "true")       on = true;
+  else if (a == "off" || a == "0" || a == "false") on = false;
+  else { Serial.println("ERR usage: SENSOR_MQ135 on|off"); return; }
+  Preferences prefs;
+  prefs.begin(ORCHARD_NVS_NAMESPACE, /*readOnly=*/false);
+  prefs.putBool("mq135", on);
+  prefs.end();
+  Serial.printf("OK mq135=%s (reboot to apply)\n", on ? "on" : "off");
+}
+
 void dispatch_(const String& line) {
   // Split COMMAND <args...>
   int sp = line.indexOf(' ');
@@ -145,6 +162,8 @@ void dispatch_(const String& line) {
     if (args.length() == 0) { Serial.println("ERR usage: ORACLE_SET <url>"); return; }
     oracle_set_url(args);
     Serial.println("OK");
+  } else if (cmd == "SENSOR_MQ135") {
+    cmd_sensor_mq135_(args);
   } else if (cmd == "SAMPLE_NOW") {
     if (sample_cb_) {
       sample_cb_();

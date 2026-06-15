@@ -191,6 +191,17 @@ void GpsNeoSensor::pump_uart_() {
 bool GpsNeoSensor::read(JsonObject out) {
   pump_uart_();
 
+  // Presence gate: a real NEO module emits NMEA sentence cycles continuously
+  // (even with no fix), so ZERO passed AND ZERO failed checksums means the
+  // UART has been silent — no module is wired. Omit the sensor entirely
+  // rather than posting a phantom "gps: fix=false, satellites=0" entry that
+  // makes a GPS-less Tree look like it has a (broken) GPS (ADR-0006). The
+  // moment any NMEA framing appears, the sensor reports — with a fix or
+  // honestly without one.
+  if (gps_.passedChecksum() == 0 && gps_.failedChecksum() == 0) {
+    return false;
+  }
+
   // Always report sat count and fix flag, even without a fix.
   out["satellites"]  = gps_.satellites.isValid() ? gps_.satellites.value() : 0;
   out["fix"]         = gps_.location.isValid();

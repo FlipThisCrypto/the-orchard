@@ -37,8 +37,13 @@ void SensorRegistry::sample_all(JsonObject parent) {
   for (auto& s : sensors_) {
     if (!s->is_active()) continue;
     JsonObject child = parent[s->name()].to<JsonObject>();
+    // A sensor only stays in the payload if read() produced a VALID reading.
+    // A failed/absent read is omitted entirely — not zero-filled, not tagged
+    // with an error — so the oracle and dashboard only ever see sensors that
+    // are genuinely present and reporting real data (ADR-0006). Reporting
+    // phantom values would undermine the whole "verifiable data" premise.
     if (!s->read(child)) {
-      child["error"] = "read_failed";
+      parent.remove(s->name());
     }
   }
 }
