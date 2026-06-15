@@ -60,6 +60,10 @@
     .preview{margin-top:12px;font-size:14px;min-height:18px}
     .preview.ok{color:var(--leaf)} .preview.warn{color:var(--citrus)}
     .preview.bad{color:var(--err)} .preview.dim{color:var(--muted)}
+    #trees-card{display:none}
+    .tree{padding:10px 0;border-bottom:1px solid var(--border)}
+    .tree:last-child{border-bottom:0;padding-bottom:0}
+    .tree:first-child{padding-top:0}
     .note{border-radius:8px;padding:12px 14px;margin-top:14px;font-size:14px;display:none}
     .note.show{display:block}
     .note.ok{border:1px solid var(--leaf);background:rgba(82,232,158,.08);color:var(--leaf)}
@@ -104,6 +108,11 @@
         Uses WalletConnect — works with <b>Sage</b> and <b>Goby</b>. We only ask
         to read your address and sign a one-line login message; <b>no spend
         permission</b> is requested.</p>
+    </div>
+
+    <div class="card" id="trees-card">
+      <h2>Your Trees</h2>
+      <div id="trees-body"></div>
     </div>
 
     <div class="card">
@@ -223,12 +232,39 @@
       `<span class="pill"><span class="dot"></span>Connected as <code>${esc(short)}</code></span> ` +
       `<button id="disc-btn" style="margin-left:8px">Disconnect</button>`;
     $("#disc-btn").addEventListener("click", disconnect);
-    refreshClaimBtn();
+    refreshClaimBtn(); loadTrees();
   }
   function renderDisconnected() {
     $("#connect-slot").innerHTML = `<button id="connect-btn">Connect Wallet</button>`;
     $("#connect-btn").addEventListener("click", onConnect);
-    refreshClaimBtn();
+    refreshClaimBtn(); loadTrees();
+  }
+
+  // Show the Trees already bound to the connected wallet. GET /nodes with a
+  // session token is scoped server-side to the caller's wallet, so this only
+  // ever lists the operator's own Trees.
+  async function loadTrees() {
+    const card = $("#trees-card"), body = $("#trees-body");
+    if (!session) { card.style.display = "none"; return; }
+    card.style.display = "block";
+    body.innerHTML = `<span class="muted small">Loading…</span>`;
+    try {
+      const r = await fetch("/nodes", { headers: { Authorization: "Bearer " + session.token } });
+      if (!r.ok) { body.innerHTML = `<span class="muted small">Couldn't load your Trees (${r.status}).</span>`; return; }
+      const trees = await r.json();
+      if (!Array.isArray(trees) || !trees.length) {
+        body.innerHTML = `<span class="muted small">No Trees bound to this wallet yet — claim one below.</span>`; return;
+      }
+      body.innerHTML = trees.map(t => {
+        const name = t.label || (String(t.node_id).slice(0, 8) + "…");
+        const last = t.last_seen_at || t.last_reading_at;
+        const seen = last ? new Date(last).toLocaleString() : "not seen yet";
+        return `<div class="tree">
+          <div><b>${esc(name)}</b> <span class="muted small">${esc(String(t.node_id).slice(0, 10))}…</span></div>
+          <div class="muted small">fw ${esc(t.fw_version || "?")} · ${esc(seen)}${t.pass_nft_id ? " · Pass ✓" : ""}</div>
+        </div>`;
+      }).join("");
+    } catch (e) { body.innerHTML = `<span class="muted small">Couldn't load your Trees.</span>`; }
   }
 
   function codeValue() { return $("#code").value.replace(/[^0-9a-zA-Z]/g, "").toUpperCase(); }

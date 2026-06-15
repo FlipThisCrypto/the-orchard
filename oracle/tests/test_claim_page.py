@@ -34,6 +34,10 @@ def test_claim_page_serves_html():
     assert "code-preview" in r.text
     assert "Back to The Orchard" in r.text
     assert "Tree claimed!" in r.text
+    # "Your Trees" list (session-scoped /nodes) so operators see existing Trees
+    assert "Your Trees" in r.text
+    assert "trees-card" in r.text
+    assert '"/nodes"' in r.text
 
 
 def test_claim_config_unconfigured_by_default(monkeypatch):
