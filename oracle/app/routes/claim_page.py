@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from ..config import settings
 
@@ -22,6 +22,7 @@ router = APIRouter(tags=["claim-page"])
 
 # oracle/app/routes/claim_page.py -> oracle/app/claim_page.html
 _PAGE_PATH = Path(__file__).resolve().parent.parent / "claim_page.html"
+_WIDGET_PATH = Path(__file__).resolve().parent.parent / "connect_widget.js"
 
 _LOGO = (
     "https://defiant-black-skink.myfilebase.com/ipfs/"
@@ -34,6 +35,19 @@ def claim_page() -> HTMLResponse:
     """The claim UI. Static HTML; all dynamic bits come from /claim/config
     and the existing /auth + /provision endpoints (same-origin)."""
     return HTMLResponse(_PAGE_PATH.read_text(encoding="utf-8"))
+
+
+@router.get("/connect.js")
+def connect_widget() -> Response:
+    """The shared 'Connect Wallet' widget, included by every Orchard page
+    (landing, claim, future dashboard) so one connection flows across the
+    subdomains via a .theorchard.network cookie. Short cache so updates
+    propagate quickly during active development."""
+    return Response(
+        content=_WIDGET_PATH.read_text(encoding="utf-8"),
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=60"},
+    )
 
 
 @router.get("/claim/config")

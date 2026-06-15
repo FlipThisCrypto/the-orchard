@@ -14,6 +14,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from . import db
@@ -49,6 +50,19 @@ app = FastAPI(
     ),
     version="0.1.0",
     lifespan=_lifespan,
+)
+
+# Cross-origin allowlist for the shared wallet widget: the landing page +
+# dashboard (other Orchard subdomains) call /auth, /provision and /nodes
+# cross-origin. Auth rides as a Bearer header (not a sent cookie), so
+# allow_credentials stays False and origins are an explicit allowlist (never
+# "*"). The same-origin claim page is unaffected.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings().cors_origin_list(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(health.router)
