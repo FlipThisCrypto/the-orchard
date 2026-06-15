@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """SQLAlchemy engine + Session factory.
 
-All FastAPI routes obtain a Session via the `get_db` dependency. Schema
-is created on app startup (see main.py); for migrations later we'll
-swap in Alembic.
+All FastAPI routes obtain a Session via the `get_db` dependency.
+
+Schema bootstrap: ``create_all()`` runs on app startup (see main.py) and is
+the zero-config path for dev/tests — it creates missing tables and applies
+the idempotent additive ALTERs below. Versioned, Postgres-ready migrations
+live in ``oracle/migrations`` (Alembic, T4); see that dir's README for the
+``stamp`` / ``upgrade`` workflow. The two agree: the Alembic baseline builds
+the same schema ``create_all()`` does (asserted in tests/test_migrations.py).
 """
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ import sys
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
@@ -35,6 +40,18 @@ def engine():
         # threadpool unhappy — turn it off for SQLite specifically.
         connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
         _engine = create_engine(url, connect_args=connect_args, future=True)
+        # On-disk SQLite: WAL for durable concurrent reads while the writer
+        # commits (the dashboard + Season writer read while the oracle
+        # writes), plus a busy timeout so a brief writer lock waits instead
+        # of erroring. Skipped for :memory: (no WAL there) and for non-SQLite
+        # (Postgres handles concurrency natively — T4 / D4 Postgres path).
+        if url.startswith("sqlite") and ":memory:" not in url:
+            @event.listens_for(_engine, "connect")
+            def _sqlite_pragmas(dbapi_conn, _rec):  # noqa: ANN001
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA journal_mode=WAL")
+                cur.execute("PRAGMA busy_timeout=10000")
+                cur.close()
     return _engine
 
 
