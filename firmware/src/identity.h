@@ -35,6 +35,13 @@ const String& node_id_hex();
 const uint8_t* signing_secret();
 constexpr size_t kSigningSecretLen = 32;
 
+// Human-readable claim code for remote provisioning (ADR-0005). 8 Crockford
+// base32 chars derived from sha256(p256_pubkey || secret_nonce); the nonce is
+// random per device, persisted in NVS, and NEVER transmitted, so the code
+// can't be computed from the public key alone. Stable across reboots; shown
+// to the operator over serial and announced to the oracle so they can claim it.
+const String& claim_code();
+
 // Compute HMAC-SHA256 over `data` using the device signing secret.
 // `out` must be 32 bytes.
 void hmac_sha256(const uint8_t* data, size_t len, uint8_t out[32]);

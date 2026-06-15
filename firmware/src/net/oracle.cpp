@@ -4,6 +4,7 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 
 #include "config.h"
 #include "identity.h"
@@ -27,7 +28,15 @@ String load_url_() {
 }  // namespace
 
 String oracle_url() {
-  return load_url_();
+  return load_url_();   // NVS value as-is (empty if unset) — for the console/dashboard
+}
+
+String oracle_base_url() {
+  // Resolved URL the device actually talks to: the NVS override if the
+  // operator set one (local-dev / LAN oracle), else the baked default
+  // (ADR-0005 §5). Used for posting and for claim-code provisioning.
+  String u = load_url_();
+  return u.length() ? u : String(ORCHARD_DEFAULT_ORACLE_URL);
 }
 
 bool oracle_set_url(const String& url) {
@@ -43,7 +52,7 @@ bool oracle_post_reading(JsonDocument& payload) {
     Serial.println("[oracle] WiFi not connected; skipping POST");
     return false;
   }
-  String url = load_url_();
+  String url = oracle_base_url();  // NVS override or the baked default
   if (url.length() == 0) {
     Serial.println("[oracle] no URL configured; skipping POST");
     return false;
@@ -76,7 +85,20 @@ bool oracle_post_reading(JsonDocument& payload) {
   String sig_hex = identity::to_hex(sig, sizeof(sig));
 
   HTTPClient http;
-  if (!http.begin(url)) {
+  // https gets a TLS client with cert verification disabled — the oracle is
+  // Cloudflare-fronted and every body is signature-protected (HMAC +
+  // secp256r1), so transport auth isn't what guarantees integrity. `secure`
+  // must outlive the request (HTTPClient borrows it). Pinning the CA is a
+  // hardening follow-up (T10 track).
+  WiFiClientSecure secure;
+  bool began;
+  if (url.startsWith("https://")) {
+    secure.setInsecure();
+    began = http.begin(secure, url);
+  } else {
+    began = http.begin(url);
+  }
+  if (!began) {
     Serial.printf("[oracle] http.begin failed for %s\n", url.c_str());
     return false;
   }

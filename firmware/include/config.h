@@ -56,3 +56,16 @@
 #ifndef ORCHARD_NVS_NAMESPACE
 #define ORCHARD_NVS_NAMESPACE  "orchard"
 #endif
+
+// Default oracle base URL, baked at flash time (ADR-0005 §5). A freshly
+// flashed Tree posts here and runs claim-code provisioning against it
+// without the operator configuring a URL. The dashboard's local-dev flow
+// still overrides this by writing oracle_url into NVS (e.g. a LAN oracle).
+#ifndef ORCHARD_DEFAULT_ORACLE_URL
+#define ORCHARD_DEFAULT_ORACLE_URL  "https://oracle.theorchard.network"
+#endif
+
+// How often the unprovisioned Tree re-announces + polls the claim endpoint.
+#ifndef ORCHARD_PROVISION_POLL_MS
+#define ORCHARD_PROVISION_POLL_MS  15000  // 15 seconds
+#endif

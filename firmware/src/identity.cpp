@@ -25,6 +25,11 @@ constexpr const char* kNvsKeyEdSeedLegacy = "ed_seed";
 constexpr const char* kNvsKeyAPPw    = "ap_pw";
 constexpr const char* kNvsKeySeq     = "seq_wm";   // persisted seq watermark
 constexpr uint32_t kSeqReserve       = 256;        // NVS write amortization
+constexpr const char* kNvsKeyClaimNonce = "claim_nonce";
+constexpr size_t kClaimNonceLen = 16;   // secret; never transmitted (ADR-0005)
+
+// Crockford base32 — excludes I L O U to stay unambiguous over serial/voice.
+constexpr const char* kCrockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 // Printable alphabet for AP passwords. Skips characters that are
 // hard to read or hard to type on a phone:  0 O o 1 l I.
@@ -37,9 +42,11 @@ uint8_t p256_d_[kP256PrivLen] = {0};      // P-256 private scalar (big-endian)
 uint8_t p256_pub_[kP256PubLen] = {0};     // compressed SEC1 public point
 uint32_t seq_counter_   = 0;   // live counter (RAM)
 uint32_t seq_watermark_ = 0;   // highest value guaranteed unused after a crash
+uint8_t claim_nonce_[kClaimNonceLen] = {0};  // secret, persisted; never sent
 String node_id_hex_;
 String p256_pubkey_hex_;
 String ap_password_;
+String claim_code_;
 
 void random_bytes(uint8_t* out, size_t len) {
   // esp_random() is hardware-backed when WiFi/BT is active. Before that,
@@ -145,13 +152,16 @@ void begin() {
   const bool need_p256 =
       prefs.getBytes(kNvsKeyP256, p256_d_, sizeof(p256_d_))
           != sizeof(p256_d_);
+  const bool need_nonce =
+      prefs.getBytes(kNvsKeyClaimNonce, claim_nonce_, kClaimNonceLen)
+          != kClaimNonceLen;
 
   // H5 hardening: persistent device keys MUST come from the hardware RNG.
   // esp_random() only returns true entropy once the RF subsystem (WiFi/BT)
   // is running — which is LATER than this first-boot identity init. Enable
   // the bootloader entropy source (valid before RF) for the duration of
   // key generation, then disable it again before sensors / WiFi come up.
-  const bool generating = need_node || need_secret || need_p256;
+  const bool generating = need_node || need_secret || need_p256 || need_nonce;
   if (generating) bootloader_random_enable();
 
   if (need_node) {
@@ -192,6 +202,14 @@ void begin() {
     }
   }
 
+  // Claim-code nonce (ADR-0005): a secret that stays on the device, so the
+  // public key alone can't be used to compute a Tree's claim code.
+  if (need_nonce) {
+    random_bytes(claim_nonce_, kClaimNonceLen);
+    prefs.putBytes(kNvsKeyClaimNonce, claim_nonce_, kClaimNonceLen);
+    Serial.println("[identity] generated new claim-code nonce");
+  }
+
   if (generating) bootloader_random_disable();
 
   // One-time cleanup of the pre-ADR-0007 ed25519 seed, if this board had one.
@@ -216,6 +234,34 @@ const String& node_id_hex() {
 
 const uint8_t* signing_secret() {
   return signing_secret_;
+}
+
+const String& claim_code() {
+  // Lazy + cached. Derived from sha256(pubkey || secret nonce); the nonce
+  // (set in begin()) keeps the code unguessable from the public key. Stable
+  // across reboots until NVS is wiped. 5 digest bytes -> 8 Crockford chars.
+  if (claim_code_.length() > 0) {
+    return claim_code_;
+  }
+  uint8_t buf[kP256PubLen + kClaimNonceLen];
+  memcpy(buf, p256_pub_, kP256PubLen);
+  memcpy(buf + kP256PubLen, claim_nonce_, kClaimNonceLen);
+  uint8_t digest[32];
+  const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (mbedtls_md(md, buf, sizeof(buf), digest) != 0) {
+    return claim_code_;  // empty on failure; caller treats as "no code"
+  }
+  // 40 bits (digest[0..4]) -> 8 base32 chars, MSB first.
+  uint64_t v = ((uint64_t)digest[0] << 32) | ((uint64_t)digest[1] << 24) |
+               ((uint64_t)digest[2] << 16) | ((uint64_t)digest[3] << 8) | digest[4];
+  char out[9];
+  for (int i = 7; i >= 0; --i) {
+    out[i] = kCrockford[v & 0x1f];
+    v >>= 5;
+  }
+  out[8] = '\0';
+  claim_code_ = String(out);
+  return claim_code_;
 }
 
 const String& ap_password() {
