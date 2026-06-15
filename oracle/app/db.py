@@ -186,6 +186,27 @@ def _migrate_node_last_seq_column(eng) -> None:
         conn.execute(text("ALTER TABLE nodes ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0"))
 
 
+def _migrate_reading_schema_version_column(eng) -> None:
+    """T14: add `schema_version` to an existing `readings` table.
+
+    Same idempotent-ALTER pattern. `create_all()` only creates missing
+    *tables*, never adds a column to an existing one — so an oracle updated
+    to the T14 code would otherwise crash on the first /readings against a DB
+    created before the column (``no such column: readings.schema_version``).
+    Nullable, so existing rows are fine. (Alembic carries the same change for
+    migration-managed deployments; this covers the create_all bootstrap.)
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(eng)
+    if "readings" not in insp.get_table_names():
+        return
+    existing_cols = {c["name"] for c in insp.get_columns("readings")}
+    if "schema_version" in existing_cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE readings ADD COLUMN schema_version INTEGER"))
+
+
 def create_all() -> None:
     """Called once on app startup. Idempotent."""
     eng = engine()
@@ -194,6 +215,7 @@ def create_all() -> None:
     _migrate_node_pass_columns(eng)
     _migrate_attestation_chain_columns(eng)
     _migrate_node_last_seq_column(eng)
+    _migrate_reading_schema_version_column(eng)
     Base.metadata.create_all(eng)
     # Tighten file perms AFTER the DB file exists. SQLAlchemy creates
     # the file on first connection inside create_all().
