@@ -187,5 +187,11 @@ def poll(claim_code: str, db: Session = Depends(get_db)) -> dict:
     if claim_row is None:
         return {"claimed": False, "known": False}
     claimed = claim_row.consumed_at is not None
+    # `label` lets the claim page preview WHICH Tree a code maps to before the
+    # operator binds it (a known unclaimed code only reveals a human label; the
+    # code space is large enough that enumeration isn't a concern). node_id is
+    # still only returned once claimed, matching prior behavior.
+    node = db.get(models.Node, claim_row.node_id)
     return {"claimed": claimed, "known": True,
+            "label": node.label if node else None,
             "node_id": claim_row.node_id if claimed else None}

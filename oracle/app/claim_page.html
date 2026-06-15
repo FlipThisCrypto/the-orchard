@@ -27,6 +27,8 @@
     .brand{font-weight:700;font-size:18px;letter-spacing:.6px;background:var(--holo);
       background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:holo 9s linear infinite}
     .sub{color:var(--muted);font-size:11px;letter-spacing:2.5px;text-transform:uppercase}
+    .home-link{margin-left:auto;color:var(--muted);font-size:13px;text-decoration:none}
+    .home-link:hover{color:var(--cyber)}
     main{flex:1;max-width:640px;margin:36px auto;padding:0 22px;width:100%}
     h1{margin:0 0 8px;font-size:30px;background:var(--holo);background-size:200% 100%;
       -webkit-background-clip:text;background-clip:text;color:transparent;animation:holo 11s linear infinite}
@@ -55,11 +57,25 @@
     .pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;
       background:var(--bg-2);border:1px solid var(--border);font-size:13px}
     .dot{width:8px;height:8px;border-radius:50%;background:var(--leaf);box-shadow:0 0 8px var(--leaf)}
+    .preview{margin-top:12px;font-size:14px;min-height:18px}
+    .preview.ok{color:var(--leaf)} .preview.warn{color:var(--citrus)}
+    .preview.bad{color:var(--err)} .preview.dim{color:var(--muted)}
     .note{border-radius:8px;padding:12px 14px;margin-top:14px;font-size:14px;display:none}
     .note.show{display:block}
     .note.ok{border:1px solid var(--leaf);background:rgba(82,232,158,.08);color:var(--leaf)}
     .note.err{border:1px solid var(--err);background:rgba(255,118,118,.08);color:var(--err)}
     .note.info{border:1px solid var(--border);background:var(--bg-2);color:var(--muted)}
+    .claimed{text-align:center}
+    .claimed .big{font-size:46px;margin:4px 0 6px}
+    .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:18px}
+    .linkbtn{display:inline-block;text-decoration:none;font-weight:700;letter-spacing:.3px;padding:12px 22px;
+      font-size:15px;border-radius:6px;border:1px solid var(--citrus);
+      background:linear-gradient(180deg,var(--citrus-glow),var(--citrus));color:#2a1300}
+    .linkbtn:hover{background:linear-gradient(180deg,#ffe072,#ffbf52);color:#2a1300}
+    .linkbtn.ghost{background:transparent;color:var(--cyber);border-color:var(--border)}
+    .linkbtn.ghost:hover{background:var(--bg-2);color:var(--cyber)}
+    .countdown{margin-top:16px;font-size:13px;color:var(--muted)}
+    .countdown a{cursor:pointer;color:var(--cyber);text-decoration:underline}
     footer{padding:16px 22px;color:var(--muted);font-size:13px;border-top:1px solid var(--border);text-align:center}
     .tagline{display:block;margin-top:4px;font-size:11px;letter-spacing:3px;text-transform:uppercase;color:var(--cyber);opacity:.7}
     @keyframes holo{0%{background-position:0 50%}100%{background-position:200% 50%}}
@@ -70,13 +86,14 @@
   <header>
     <img src="https://defiant-black-skink.myfilebase.com/ipfs/QmUWhqeByfKrVAa5Ev3MRymFmhMSoTMnzDwE3Gjd4Cvray" alt="The Orchard">
     <div><div class="brand">THE ORCHARD</div><div class="sub">Claim a Tree</div></div>
+    <a class="home-link" id="hdr-home" href="https://theorchard.network">← theorchard.network</a>
   </header>
 
-  <main>
+  <main id="main">
     <h1>Claim your Tree</h1>
     <p class="lede">Bind a freshly-planted Tree to your wallet. Connect a Chia
-      wallet holding an <b>Orchard Pass</b>, enter the claim code your Tree shows
-      over serial, and it becomes yours on the network.</p>
+      wallet holding an <b>Orchard Pass</b>, enter the claim code your Tree shows,
+      and it becomes yours on the network.</p>
 
     <div class="card">
       <h2><span class="step-n">1</span>Connect your wallet</h2>
@@ -92,9 +109,12 @@
     <div class="card">
       <h2><span class="step-n">2</span>Enter the Tree's claim code</h2>
       <input id="code" maxlength="9" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false">
+      <div id="code-preview" class="preview"></div>
       <p class="small muted" style="margin:10px 0 0">
-        The 8-character code printed on the Tree's serial console
-        (<code>[provision] claim code: …</code>).</p>
+        Find this code <b>on the Tree itself</b> — its screen, or the serial
+        console right after flashing (<code>[provision] claim code: XXXX-XXXX</code>).
+        The code <i>is</i> how you pick which Tree you're claiming — only someone
+        holding that device sees it.</p>
     </div>
 
     <div class="card">
@@ -106,14 +126,14 @@
 
   <footer>
     Open-source environmental DePIN on Chia ·
+    <a href="https://theorchard.network" rel="noopener">theorchard.network</a> ·
     <a href="https://github.com/FlipThisCrypto/the-orchard" target="_blank" rel="noopener">GitHub</a> ·
     <a href="https://mintgarden.io/collections/col1a56lp9zufakywlq4k5nntu3nd7k6jy2pe6ee23046ydlahmungqslvmj29" target="_blank" rel="noopener">Genesis Passes</a>
     <span class="tagline">You plant. The network grows.</span>
   </footer>
 
   <script type="module">
-  // WalletConnect v2 ping-watchdog polyfill (browser WebSocket has no
-  // .terminate()). Harmless no-op once the SDK switches to .close().
+  // WalletConnect v2 ping-watchdog polyfill (browser WebSocket has no .terminate()).
   if (typeof WebSocket !== "undefined" && !WebSocket.prototype.terminate) {
     WebSocket.prototype.terminate = function () { try { this.close(); } catch {} };
   }
@@ -126,7 +146,9 @@
   function clearNote() { noteEl.className = "note"; noteEl.innerHTML = ""; }
 
   let signClient = null, wcModal = null, wcConfig = null, wcSession = null;
-  let session = null;  // { token, address }
+  let session = null;                              // { token, address }
+  let homeUrl = "https://theorchard.network";      // overridden by /claim/config
+  let dashboardUrl = "";                           // "" => hide "View your Tree"
 
   async function jget(url) {
     const r = await fetch(url); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) };
@@ -170,14 +192,12 @@
     try { await wcModal.openModal({ uri }); wcSession = await approval(); }
     finally { wcModal.closeModal(); }
 
-    // Get the operator's xch1 address (CHIP-22; Sage/Goby).
     const ga = await signClient.request({ topic: wcSession.topic, chainId: "chia:mainnet",
       request: { method: "chia_getAddress", params: {} } });
     const address = (typeof ga === "string") ? ga : (ga?.address || ga?.data?.address);
     if (!/^xch1[0-9a-z]{50,80}$/.test(address || ""))
       throw new Error("Wallet returned an unexpected address: " + JSON.stringify(ga));
 
-    // Challenge -> sign -> verify -> session token.
     const ch = await jpost("/auth/challenge", {});
     if (!ch.ok) throw new Error(ch.body.detail || "challenge failed");
     const sig = await signClient.request({ topic: wcSession.topic, chainId: "chia:mainnet",
@@ -211,9 +231,34 @@
     refreshClaimBtn();
   }
 
+  function codeValue() { return $("#code").value.replace(/[^0-9a-zA-Z]/g, "").toUpperCase(); }
   function refreshClaimBtn() {
-    const code = $("#code").value.replace(/[^0-9a-zA-Z]/g, "");
-    $("#claim-btn").disabled = !(session && code.length >= 6);
+    $("#claim-btn").disabled = !(session && codeValue().length >= 6);
+  }
+
+  // Preview which Tree a code maps to, before binding.
+  let previewTimer = null;
+  function updatePreview() {
+    const code = codeValue();
+    const el = $("#code-preview");
+    if (code.length < 6) { el.className = "preview dim"; el.textContent = code ? "Keep typing…" : ""; return; }
+    el.className = "preview dim"; el.textContent = "Checking…";
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(async () => {
+      if (codeValue() !== code) return;                    // changed while waiting
+      const r = await jget("/provision/" + code);
+      if (codeValue() !== code) return;
+      const b = r.body || {};
+      if (!r.ok || !b.known) {
+        el.className = "preview warn";
+        el.textContent = "No Tree has announced this code yet — power your Tree on and give it a moment.";
+      } else if (b.claimed) {
+        el.className = "preview bad"; el.textContent = "This code has already been claimed.";
+      } else {
+        el.className = "preview ok";
+        el.textContent = "✓ Found your Tree" + (b.label ? ` (“${b.label}”)` : "") + " — ready to claim.";
+      }
+    }, 400);
   }
 
   async function onConnect() {
@@ -225,40 +270,62 @@
 
   async function onClaim() {
     if (!session) { note("err", "Connect your wallet first."); return; }
-    const code = $("#code").value.replace(/[^0-9a-zA-Z]/g, "").toUpperCase();
+    const code = codeValue();
     const btn = $("#claim-btn"); btn.disabled = true; btn.textContent = "Claiming…"; clearNote();
     try {
       const r = await jpost("/provision/claim", { claim_code: code }, session.token);
-      if (r.ok && r.body.claimed) {
-        note("ok", `🌳 <b>Claimed!</b> This Tree is now bound to your wallet.<br>` +
-          `<span class="small">node <code>${esc(r.body.node_id)}</code>` +
-          (r.body.pass_nft_id ? ` · Pass <code>${esc(r.body.pass_nft_id)}</code>` : "") + `</span>`);
-        $("#code").value = "";
-      } else {
-        const map = { 401: "Session expired — reconnect your wallet.",
-          403: "That wallet doesn't hold an Orchard Pass NFT.",
-          404: "Unknown claim code — check the Tree's serial output.",
-          409: "That code was already used.",
-          410: "Claim code expired — re-announce from the Tree, then try again." };
-        note("err", esc(map[r.status] || r.body.detail || ("claim failed (" + r.status + ")")));
-        if (r.status === 401) { session = null; renderDisconnected(); }
-      }
+      if (r.ok && r.body.claimed) { renderClaimed(r.body); return; }
+      const map = { 401: "Session expired — reconnect your wallet.",
+        403: "That wallet doesn't hold an Orchard Pass NFT.",
+        404: "Unknown claim code — check the Tree's serial output.",
+        409: "That code was already used.",
+        410: "Claim code expired — re-announce from the Tree, then try again." };
+      note("err", esc(map[r.status] || r.body.detail || ("claim failed (" + r.status + ")")));
+      if (r.status === 401) { session = null; renderDisconnected(); }
     } catch (e) { note("err", "Claim failed: " + esc(e.message)); }
     finally { btn.textContent = "Claim this Tree"; refreshClaimBtn(); }
   }
 
-  // Pretty-format the code input as XXXX-XXXX while typing.
+  // Success screen: not a dead end — clear next steps + a gentle redirect home.
+  function renderClaimed(body) {
+    const dash = dashboardUrl
+      ? `<a class="linkbtn" href="${esc(dashboardUrl)}">View your Tree →</a>` : "";
+    $("#main").innerHTML =
+      `<div class="card claimed">
+         <div class="big">🌳</div>
+         <h1 style="font-size:26px">Tree claimed!</h1>
+         <p class="lede" style="margin:8px 0 0">This Tree is now bound to your wallet and your Orchard Pass.</p>
+         <p class="small muted" style="margin:10px 0 0">node <code>${esc(body.node_id || "")}</code>`
+         + (body.pass_nft_id ? ` · Pass <code>${esc(body.pass_nft_id)}</code>` : "") + `</p>
+         <div class="row">${dash}<a class="linkbtn ghost" href="${esc(homeUrl)}">Back to The Orchard →</a></div>
+         <div class="countdown" id="cd"></div>
+       </div>`;
+    if (homeUrl) {
+      let n = 12, stop = false;
+      const cd = $("#cd");
+      cd.innerHTML = `Returning to The Orchard in <b id="cdn">${n}</b>s · <a id="stay">stay here</a>`;
+      $("#stay").addEventListener("click", () => { stop = true; cd.textContent = ""; });
+      const t = setInterval(() => {
+        if (stop) { clearInterval(t); return; }
+        n--; const e = $("#cdn"); if (e) e.textContent = n;
+        if (n <= 0) { clearInterval(t); if (!stop) location.href = homeUrl; }
+      }, 1000);
+    }
+  }
+
   $("#code").addEventListener("input", (e) => {
-    let v = e.target.value.replace(/[^0-9a-zA-Z]/g, "").toUpperCase().slice(0, 8);
+    let v = codeValue().slice(0, 8);
     e.target.value = v.length > 4 ? v.slice(0, 4) + "-" + v.slice(4) : v;
-    refreshClaimBtn();
+    refreshClaimBtn(); updatePreview();
   });
   $("#claim-btn").addEventListener("click", onClaim);
   $("#connect-btn").addEventListener("click", onConnect);
 
-  // Surface the not-configured state up front so the operator isn't surprised.
+  // Load config: wallet project id + where to send people (home/dashboard).
   jget("/claim/config").then(r => {
-    wcConfig = r.body;
+    wcConfig = r.body || {};
+    if (wcConfig.home_url) { homeUrl = wcConfig.home_url; $("#hdr-home").href = homeUrl; }
+    dashboardUrl = wcConfig.dashboard_url || "";
     if (!wcConfig.wc_configured) {
       $("#connect-btn").disabled = true;
       note("info", "⚙️ WalletConnect isn't configured on this oracle yet — the operator " +

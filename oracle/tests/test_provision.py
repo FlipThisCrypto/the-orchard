@@ -76,7 +76,8 @@ def test_announce_claim_poll_happy_path(prov):
         n = s.get(models.Node, NODE_ID)
         assert n is not None and n.wallet_address is None
 
-    assert c.get("/provision/ABCD2345").json() == {"claimed": False, "known": True, "node_id": None}
+    assert c.get("/provision/ABCD2345").json() == {
+        "claimed": False, "known": True, "node_id": None, "label": "tree-1"}
 
     r = _claim(c)
     assert r.status_code == 200, r.text
