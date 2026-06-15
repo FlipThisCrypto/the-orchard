@@ -17,64 +17,61 @@ bool DS18B20Sensor::begin() {
   dt_.setOneWire(&wire_);
   dt_.begin();
 
-  device_count_ = dt_.getDeviceCount();
-  if (device_count_ <= 0) {
-    // No 1-Wire device responded. Most common causes (in rough order):
-    //   1. Missing 4.7 kΩ pull-up resistor between DATA and VCC.
-    //   2. DATA wire on the wrong GPIO (expected:
-    //      ORCHARD_PIN_DS18B20_DATA — see pins.h).
-    //   3. Sensor not powered (3.3V supply not connected).
+  // Try to bind a device now, but DON'T deactivate if the bus is empty:
+  // the probe may power up slightly after us, or the 1-Wire bus can glitch
+  // during the boot WiFi-association current spike, and a one-shot scan would
+  // then miss a really-present sensor forever. Instead we stay active and
+  // re-probe from read(); read() omits the sensor until a real device answers
+  // with a valid temperature (ADR-0006). Always returning true keeps the
+  // registry sampling us, which is what drives the re-probe.
+  if (!probe_()) {
     Serial.println(
-        "[ds18b20] no devices on 1-Wire bus — check 4.7k pull-up "
-        "between DATA and VCC, and DATA wire on the configured GPIO.");
-    return false;
+        "[ds18b20] no device on the 1-Wire bus yet — will keep re-probing. "
+        "If a probe IS wired, check the 4.7k pull-up between DATA and VCC, "
+        "and that DATA is on the configured GPIO (see pins.h).");
   }
+  return true;
+}
 
-  // Bind to the first device on the bus. getAddress returns false if
-  // the index is out of range — which we just established it isn't.
-  if (!dt_.getAddress(rom_, 0)) {
-    return false;
-  }
+bool DS18B20Sensor::probe_() {
+  device_count_ = dt_.getDeviceCount();
+  if (device_count_ <= 0) { device_count_ = 0; return false; }
+  if (!dt_.getAddress(rom_, 0)) { device_count_ = 0; return false; }
 
   // 12-bit (1/16 °C) resolution gives ~0.0625 °C steps with a ~750 ms
-  // conversion time. That's fine for our 60-second sample cadence;
-  // it'd be too slow if we ever shrink the sample interval.
+  // conversion time — fine at our 60-second sample cadence.
   dt_.setResolution(rom_, 12);
 
   // Non-blocking conversions. By default DallasTemperature blocks inside
-  // requestTemperatures() for the full ~750 ms 12-bit conversion. That
-  // 750 ms block overlapping the WiFi association handshake at boot was
-  // the root cause of the ESP32-S3 power-cycle loop (see LOG 2026-06-02):
-  // the radio's association current draw plus a stalled main task browned
-  // the chip out ~12 s in, before it could ever connect. Gating the
-  // sample tick on wifi_connected() in 0.4.6 was a workaround that left
-  // the block in place; setWaitForConversion(false) removes it entirely
-  // so read() always returns in microseconds, connected or not.
-  //
-  // The pattern: request a conversion now, read its result on the NEXT
-  // sample tick. With a 60 s sample interval the 750 ms conversion is
-  // always finished long before we read it. Kick the first conversion
-  // here so the first sample tick already has a valid result waiting.
+  // requestTemperatures() for the full ~750 ms conversion; that block
+  // overlapping the boot WiFi handshake browned out the S3 (LOG 2026-06-02).
+  // setWaitForConversion(false) makes read() return in microseconds: we
+  // request a conversion now and read its result on the NEXT sample tick.
   dt_.setWaitForConversion(false);
   dt_.requestTemperatures();
-
   return true;
 }
 
 bool DS18B20Sensor::read(JsonObject out) {
-  // Read the conversion requested on the previous tick (or in begin()),
-  // then immediately kick the next one. Because begin() called
-  // setWaitForConversion(false), requestTemperatures() returns without
-  // blocking — this whole call is a few microseconds, not ~750 ms.
+  // No device bound yet? Re-probe (handles slow power-up / boot bus glitch /
+  // a probe plugged in after boot). probe_() kicks the first conversion, so
+  // there's nothing valid to report on THIS tick either way — omit and report
+  // on the next one once a device is bound and its conversion is done.
+  if (device_count_ <= 0) {
+    probe_();
+    return false;
+  }
+
+  // Read the conversion requested on the previous tick, then kick the next.
   const float t = dt_.getTempC(rom_);
   dt_.requestTemperatures();
 
-  // DallasTemperature reports DEVICE_DISCONNECTED_C (-127.0) when the
-  // chip doesn't respond. Drop the sample if so — better to omit the
-  // reading than to publish a sentinel value the oracle treats as a
-  // real -127 °C measurement.
+  // DallasTemperature reports DEVICE_DISCONNECTED_C (-127.0) when the chip
+  // doesn't respond. Omit the sample (never publish the sentinel as a real
+  // -127 °C) and force a re-probe next tick in case it comes back.
   if (t == DEVICE_DISCONNECTED_C) {
-    Serial.println("[ds18b20] chip went away mid-read; dropping sample");
+    device_count_ = 0;
+    Serial.println("[ds18b20] chip not responding; dropping sample, re-probing next tick");
     return false;
   }
 

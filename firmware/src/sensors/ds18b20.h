@@ -31,12 +31,18 @@ class DS18B20Sensor : public Sensor {
   bool read(JsonObject out) override;
 
  private:
+  // (Re)scan the 1-Wire bus and bind the first device. Returns true if a
+  // device is now bound. Called from begin() and again from read() whenever
+  // we don't yet have a device, so a sensor that powers up late (or after a
+  // boot bus glitch) is still picked up rather than missed forever.
+  bool probe_();
+
   // OneWire and DallasTemperature both default-construct happily; the
   // bus pin is bound in begin().
   OneWire wire_;
   DallasTemperature dt_;
   DeviceAddress rom_ = {0};   // 8-byte ROM id of the bound chip
-  int device_count_ = 0;
+  int device_count_ = 0;      // > 0 == a device is currently bound (rom_ valid)
 };
 
 }  // namespace orchard::sensors
