@@ -16,6 +16,18 @@
 
 ---
 
+## Try it (live · pre-alpha)
+
+The first end-to-end loop is up — flash a Tree from your browser, then claim it with your Chia wallet:
+
+- 🌐 **[theorchard.network](https://theorchard.network)** — start here (overview + get-started)
+- ⚡ **[Flash a Tree](https://orchard-flasher.pages.dev)** — install firmware onto an ESP32 from the browser (desktop Chrome/Edge — uses Web Serial — no toolchain)
+- 🌳 **[Claim a Tree](https://oracle.theorchard.network/claim)** — connect a Chia wallet (Sage/Goby), prove your Orchard Pass, and bind the Tree to you
+
+> Pre-alpha, so expect rough edges. Flashing needs desktop Chromium; claiming needs a Chia wallet holding an [Orchard Pass](https://mintgarden.io/collections/col1a56lp9zufakywlq4k5nntu3nd7k6jy2pe6ee23046ydlahmungqslvmj29). Found a bug? That's the point — open an issue.
+
+---
+
 ## What is this?
 
 The Orchard turns inexpensive ESP32-based hardware into **verifiable environmental sensing Trees**. Each Tree:
