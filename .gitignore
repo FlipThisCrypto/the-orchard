@@ -31,6 +31,9 @@ env/
 # (e.g. puzzles/build.py). It's a build artifact, not source.
 *.sym
 
+# --- Cloudflare Wrangler (Pages dev/deploy local cache) ---
+.wrangler/
+
 # --- PlatformIO / Arduino / ESP32 ---
 firmware/.pio/
 firmware/.vscode/

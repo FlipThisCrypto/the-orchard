@@ -22,6 +22,7 @@ from .ratelimit import FixedWindowLimiter
 from .routes import (
     attestations,
     auth,
+    claim_page,
     health,
     network,
     nodes,
@@ -52,6 +53,7 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(claim_page.router)
 app.include_router(register.router)
 app.include_router(provision.router)
 app.include_router(readings.router)

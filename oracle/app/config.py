@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # Challenge nonce TTL — the window between /auth/challenge and
     # /auth/verify. 120s is generous for a real wallet sign prompt.
     challenge_ttl_seconds: int = 120
+    # WalletConnect project id for the hosted claim page (GET /claim). A
+    # PUBLIC client identifier (not a secret) the browser uses to open the
+    # WalletConnect modal — get a free one at https://cloud.reown.com
+    # (formerly cloud.walletconnect.com). Empty default -> the claim page
+    # renders a "WalletConnect not configured" notice. Reuse the same value
+    # as the dashboard's ORCHARD_VIEW_WC_PROJECT_ID.
+    wc_project_id: str = ""
     # Test-mode bypass for the BLS signature step. The pubkey -> address
     # binding check still runs (so a wrong-pk submission fails). Use
     # ONLY in tests/CI. Defaults False so production fails closed.

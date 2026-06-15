@@ -1,0 +1,271 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claim a Tree — The Orchard</title>
+  <style>
+    :root{
+      --bg:#06070f; --bg-card:#0e1124; --bg-2:#161a35; --fg:#f4e9c5;
+      --muted:#8a96b0; --citrus:#ffae33; --citrus-glow:#ffd23a; --leaf:#52e89e;
+      --cyber:#48fff0; --magenta:#ff5fb2; --border:#1a1e3a; --err:#ff7676;
+      --holo:linear-gradient(110deg,#48fff0 0%,#52e89e 30%,#ffd23a 55%,#ff5fb2 80%,#48fff0 100%);
+    }
+    *{box-sizing:border-box} html,body{margin:0;padding:0}
+    body{background:var(--bg);color:var(--fg);line-height:1.55;min-height:100vh;
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+      display:flex;flex-direction:column;
+      background-image:radial-gradient(ellipse 60% 40% at 50% 0%,rgba(72,255,240,.06),transparent 70%),
+        radial-gradient(ellipse 70% 50% at 50% 100%,rgba(82,232,158,.05),transparent 70%);}
+    header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);
+      background:linear-gradient(180deg,rgba(14,17,36,.95),rgba(6,7,15,.85));position:relative}
+    header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
+      background:var(--holo);background-size:200% 100%;opacity:.45;animation:holo 14s linear infinite}
+    header img{width:40px;height:40px;border-radius:50%;
+      box-shadow:0 0 0 1px rgba(72,255,240,.35),0 0 14px rgba(72,255,240,.25)}
+    .brand{font-weight:700;font-size:18px;letter-spacing:.6px;background:var(--holo);
+      background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:holo 9s linear infinite}
+    .sub{color:var(--muted);font-size:11px;letter-spacing:2.5px;text-transform:uppercase}
+    main{flex:1;max-width:640px;margin:36px auto;padding:0 22px;width:100%}
+    h1{margin:0 0 8px;font-size:30px;background:var(--holo);background-size:200% 100%;
+      -webkit-background-clip:text;background-clip:text;color:transparent;animation:holo 11s linear infinite}
+    .lede{color:var(--muted);font-size:16px;margin:0 0 24px}
+    .card{background:linear-gradient(180deg,rgba(22,26,53,.6),rgba(14,17,36,.85));
+      border:1px solid var(--border);border-radius:12px;padding:20px 22px;margin:18px 0;position:relative}
+    .card::before{content:"";position:absolute;left:12px;right:12px;top:-1px;height:1px;
+      background:var(--holo);background-size:200% 100%;opacity:.55;animation:holo 13s linear infinite}
+    .card h2{margin:0 0 12px;font-size:13px;color:var(--citrus);letter-spacing:1px;text-transform:uppercase}
+    .step-n{display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:50%;
+      background:var(--bg-2);border:1px solid var(--border);color:var(--cyber);font-size:12px;margin-right:8px}
+    button{font:inherit;cursor:pointer;border-radius:6px;font-weight:700;letter-spacing:.3px;
+      padding:12px 22px;font-size:15px;border:1px solid var(--citrus);
+      background:linear-gradient(180deg,var(--citrus-glow),var(--citrus));color:#2a1300;
+      box-shadow:0 0 0 1px rgba(255,174,51,.35),0 0 16px rgba(255,174,51,.3);transition:.15s}
+    button:hover:not(:disabled){background:linear-gradient(180deg,#ffe072,#ffbf52);box-shadow:0 0 0 1px rgba(255,210,58,.7),0 0 24px rgba(255,210,58,.5)}
+    button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+    input{font:inherit;width:100%;padding:12px 14px;border-radius:6px;border:1px solid var(--border);
+      background:var(--bg-2);color:var(--fg);font-family:ui-monospace,Consolas,monospace;
+      font-size:20px;letter-spacing:3px;text-align:center;text-transform:uppercase}
+    input:focus{outline:none;border-color:var(--citrus)}
+    code{background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;
+      font-family:ui-monospace,Consolas,monospace;font-size:13px;color:var(--cyber)}
+    a{color:var(--leaf)} a:hover{color:var(--cyber)}
+    .muted{color:var(--muted)} .small{font-size:13px}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;
+      background:var(--bg-2);border:1px solid var(--border);font-size:13px}
+    .dot{width:8px;height:8px;border-radius:50%;background:var(--leaf);box-shadow:0 0 8px var(--leaf)}
+    .note{border-radius:8px;padding:12px 14px;margin-top:14px;font-size:14px;display:none}
+    .note.show{display:block}
+    .note.ok{border:1px solid var(--leaf);background:rgba(82,232,158,.08);color:var(--leaf)}
+    .note.err{border:1px solid var(--err);background:rgba(255,118,118,.08);color:var(--err)}
+    .note.info{border:1px solid var(--border);background:var(--bg-2);color:var(--muted)}
+    footer{padding:16px 22px;color:var(--muted);font-size:13px;border-top:1px solid var(--border);text-align:center}
+    .tagline{display:block;margin-top:4px;font-size:11px;letter-spacing:3px;text-transform:uppercase;color:var(--cyber);opacity:.7}
+    @keyframes holo{0%{background-position:0 50%}100%{background-position:200% 50%}}
+    @media(max-width:640px){.sub{display:none}h1{font-size:24px}main{margin:18px auto}}
+  </style>
+</head>
+<body>
+  <header>
+    <img src="https://defiant-black-skink.myfilebase.com/ipfs/QmUWhqeByfKrVAa5Ev3MRymFmhMSoTMnzDwE3Gjd4Cvray" alt="The Orchard">
+    <div><div class="brand">THE ORCHARD</div><div class="sub">Claim a Tree</div></div>
+  </header>
+
+  <main>
+    <h1>Claim your Tree</h1>
+    <p class="lede">Bind a freshly-planted Tree to your wallet. Connect a Chia
+      wallet holding an <b>Orchard Pass</b>, enter the claim code your Tree shows
+      over serial, and it becomes yours on the network.</p>
+
+    <div class="card">
+      <h2><span class="step-n">1</span>Connect your wallet</h2>
+      <div id="connect-slot">
+        <button id="connect-btn">Connect Wallet</button>
+      </div>
+      <p class="small muted" style="margin:12px 0 0">
+        Uses WalletConnect — works with <b>Sage</b> and <b>Goby</b>. We only ask
+        to read your address and sign a one-line login message; <b>no spend
+        permission</b> is requested.</p>
+    </div>
+
+    <div class="card">
+      <h2><span class="step-n">2</span>Enter the Tree's claim code</h2>
+      <input id="code" maxlength="9" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false">
+      <p class="small muted" style="margin:10px 0 0">
+        The 8-character code printed on the Tree's serial console
+        (<code>[provision] claim code: …</code>).</p>
+    </div>
+
+    <div class="card">
+      <h2><span class="step-n">3</span>Claim</h2>
+      <button id="claim-btn" disabled>Claim this Tree</button>
+      <div id="note" class="note"></div>
+    </div>
+  </main>
+
+  <footer>
+    Open-source environmental DePIN on Chia ·
+    <a href="https://github.com/FlipThisCrypto/the-orchard" target="_blank" rel="noopener">GitHub</a> ·
+    <a href="https://mintgarden.io/collections/col1a56lp9zufakywlq4k5nntu3nd7k6jy2pe6ee23046ydlahmungqslvmj29" target="_blank" rel="noopener">Genesis Passes</a>
+    <span class="tagline">You plant. The network grows.</span>
+  </footer>
+
+  <script type="module">
+  // WalletConnect v2 ping-watchdog polyfill (browser WebSocket has no
+  // .terminate()). Harmless no-op once the SDK switches to .close().
+  if (typeof WebSocket !== "undefined" && !WebSocket.prototype.terminate) {
+    WebSocket.prototype.terminate = function () { try { this.close(); } catch {} };
+  }
+
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+    c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  const noteEl = $("#note");
+  function note(kind, html) { noteEl.className = "note show " + kind; noteEl.innerHTML = html; }
+  function clearNote() { noteEl.className = "note"; noteEl.innerHTML = ""; }
+
+  let signClient = null, wcModal = null, wcConfig = null, wcSession = null;
+  let session = null;  // { token, address }
+
+  async function jget(url) {
+    const r = await fetch(url); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) };
+  }
+  async function jpost(url, body, token) {
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = "Bearer " + token;
+    const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body || {}) });
+    return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) };
+  }
+
+  async function ensureClients() {
+    if (signClient && wcModal) return;
+    if (!wcConfig) wcConfig = (await jget("/claim/config")).body;
+    if (!wcConfig.wc_configured) {
+      throw new Error("WalletConnect isn't configured on this oracle yet. " +
+        "The operator needs to set ORCHARD_ORACLE_WC_PROJECT_ID (free id at cloud.reown.com).");
+    }
+    const [sign, modal] = await Promise.all([
+      import("https://esm.sh/@walletconnect/sign-client@2.17.0?bundle"),
+      import("https://esm.sh/@walletconnect/modal@2.7.0?bundle"),
+    ]);
+    signClient = signClient || await sign.SignClient.init({
+      projectId: wcConfig.wc_project_id, metadata: wcConfig.metadata,
+    });
+    wcModal = wcModal || new modal.WalletConnectModal({
+      projectId: wcConfig.wc_project_id, chains: ["chia:mainnet"], themeMode: "dark",
+      themeVariables: { "--wcm-z-index": "2000", "--wcm-accent-color": "#ffae33",
+        "--wcm-background-color": "#0e1124" },
+    });
+  }
+
+  async function connect() {
+    await ensureClients();
+    const { uri, approval } = await signClient.connect({
+      requiredNamespaces: { chia: {
+        chains: ["chia:mainnet"],
+        methods: ["chia_getAddress", "chia_signMessageByAddress"], events: [],
+      } },
+    });
+    try { await wcModal.openModal({ uri }); wcSession = await approval(); }
+    finally { wcModal.closeModal(); }
+
+    // Get the operator's xch1 address (CHIP-22; Sage/Goby).
+    const ga = await signClient.request({ topic: wcSession.topic, chainId: "chia:mainnet",
+      request: { method: "chia_getAddress", params: {} } });
+    const address = (typeof ga === "string") ? ga : (ga?.address || ga?.data?.address);
+    if (!/^xch1[0-9a-z]{50,80}$/.test(address || ""))
+      throw new Error("Wallet returned an unexpected address: " + JSON.stringify(ga));
+
+    // Challenge -> sign -> verify -> session token.
+    const ch = await jpost("/auth/challenge", {});
+    if (!ch.ok) throw new Error(ch.body.detail || "challenge failed");
+    const sig = await signClient.request({ topic: wcSession.topic, chainId: "chia:mainnet",
+      request: { method: "chia_signMessageByAddress", params: { address, message: ch.body.message } } });
+    const publicKey = sig.publicKey || sig.public_key, signature = sig.signature;
+    if (!publicKey || !signature) throw new Error("Wallet returned an unexpected sign response.");
+    const ver = await jpost("/auth/verify", { address, public_key: publicKey, signature, nonce: ch.body.nonce });
+    if (!ver.ok) throw new Error("verify failed: " + (ver.body.detail || ver.status));
+
+    session = { token: ver.body.session_token, address: ver.body.address };
+    renderConnected();
+  }
+
+  async function disconnect() {
+    try { if (wcSession && signClient) await signClient.disconnect({ topic: wcSession.topic,
+      reason: { code: 6000, message: "user disconnected" } }); } catch {}
+    wcSession = null; session = null; renderDisconnected();
+  }
+
+  function renderConnected() {
+    const short = session.address.slice(0, 10) + "…" + session.address.slice(-6);
+    $("#connect-slot").innerHTML =
+      `<span class="pill"><span class="dot"></span>Connected as <code>${esc(short)}</code></span> ` +
+      `<button id="disc-btn" style="margin-left:8px">Disconnect</button>`;
+    $("#disc-btn").addEventListener("click", disconnect);
+    refreshClaimBtn();
+  }
+  function renderDisconnected() {
+    $("#connect-slot").innerHTML = `<button id="connect-btn">Connect Wallet</button>`;
+    $("#connect-btn").addEventListener("click", onConnect);
+    refreshClaimBtn();
+  }
+
+  function refreshClaimBtn() {
+    const code = $("#code").value.replace(/[^0-9a-zA-Z]/g, "");
+    $("#claim-btn").disabled = !(session && code.length >= 6);
+  }
+
+  async function onConnect() {
+    const btn = $("#connect-btn"); btn.disabled = true; btn.textContent = "Connecting…"; clearNote();
+    try { await connect(); }
+    catch (e) { note("err", "Connect failed: " + esc(e.message)); }
+    finally { if ($("#connect-btn")) { $("#connect-btn").disabled = false; $("#connect-btn").textContent = "Connect Wallet"; } }
+  }
+
+  async function onClaim() {
+    if (!session) { note("err", "Connect your wallet first."); return; }
+    const code = $("#code").value.replace(/[^0-9a-zA-Z]/g, "").toUpperCase();
+    const btn = $("#claim-btn"); btn.disabled = true; btn.textContent = "Claiming…"; clearNote();
+    try {
+      const r = await jpost("/provision/claim", { claim_code: code }, session.token);
+      if (r.ok && r.body.claimed) {
+        note("ok", `🌳 <b>Claimed!</b> This Tree is now bound to your wallet.<br>` +
+          `<span class="small">node <code>${esc(r.body.node_id)}</code>` +
+          (r.body.pass_nft_id ? ` · Pass <code>${esc(r.body.pass_nft_id)}</code>` : "") + `</span>`);
+        $("#code").value = "";
+      } else {
+        const map = { 401: "Session expired — reconnect your wallet.",
+          403: "That wallet doesn't hold an Orchard Pass NFT.",
+          404: "Unknown claim code — check the Tree's serial output.",
+          409: "That code was already used.",
+          410: "Claim code expired — re-announce from the Tree, then try again." };
+        note("err", esc(map[r.status] || r.body.detail || ("claim failed (" + r.status + ")")));
+        if (r.status === 401) { session = null; renderDisconnected(); }
+      }
+    } catch (e) { note("err", "Claim failed: " + esc(e.message)); }
+    finally { btn.textContent = "Claim this Tree"; refreshClaimBtn(); }
+  }
+
+  // Pretty-format the code input as XXXX-XXXX while typing.
+  $("#code").addEventListener("input", (e) => {
+    let v = e.target.value.replace(/[^0-9a-zA-Z]/g, "").toUpperCase().slice(0, 8);
+    e.target.value = v.length > 4 ? v.slice(0, 4) + "-" + v.slice(4) : v;
+    refreshClaimBtn();
+  });
+  $("#claim-btn").addEventListener("click", onClaim);
+  $("#connect-btn").addEventListener("click", onConnect);
+
+  // Surface the not-configured state up front so the operator isn't surprised.
+  jget("/claim/config").then(r => {
+    wcConfig = r.body;
+    if (!wcConfig.wc_configured) {
+      $("#connect-btn").disabled = true;
+      note("info", "⚙️ WalletConnect isn't configured on this oracle yet — the operator " +
+        "needs to set <code>ORCHARD_ORACLE_WC_PROJECT_ID</code> (a free id from " +
+        "<a href='https://cloud.reown.com' target='_blank' rel='noopener'>cloud.reown.com</a>).");
+    }
+  }).catch(() => {});
+  </script>
+</body>
+</html>
