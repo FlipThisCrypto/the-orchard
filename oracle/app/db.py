@@ -149,6 +149,26 @@ def _migrate_attestation_chain_columns(eng) -> None:
             conn.execute(text(stmt))
 
 
+def _migrate_node_last_seq_column(eng) -> None:
+    """T3 replay protection: add `last_seq` to an existing `nodes` table.
+
+    Same idempotent-ALTER pattern as the Pass/attestation columns. Without
+    this, an oracle that gained the `Node.last_seq` model column would crash
+    every query against a DB created before the column existed
+    (``no such column: nodes.last_seq``). NOT NULL DEFAULT 0 is safe for
+    existing rows. Alembic (T4) will supersede these hand-rolled ALTERs.
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(eng)
+    if "nodes" not in insp.get_table_names():
+        return
+    existing_cols = {c["name"] for c in insp.get_columns("nodes")}
+    if "last_seq" in existing_cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE nodes ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0"))
+
+
 def create_all() -> None:
     """Called once on app startup. Idempotent."""
     eng = engine()
@@ -156,6 +176,7 @@ def create_all() -> None:
     # has a chance to no-op the new columns into existence.
     _migrate_node_pass_columns(eng)
     _migrate_attestation_chain_columns(eng)
+    _migrate_node_last_seq_column(eng)
     Base.metadata.create_all(eng)
     # Tighten file perms AFTER the DB file exists. SQLAlchemy creates
     # the file on first connection inside create_all().
