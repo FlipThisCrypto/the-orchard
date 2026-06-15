@@ -92,6 +92,8 @@ class Reading(Base):
     # Tree-reported fields surfaced for indexing; full payload retained in payload_json.
     tree_ts_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fw_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Payload format version (ADR-0006/T14). NULL = pre-versioning firmware.
+    schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gps_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     gps_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
     gps_fix: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

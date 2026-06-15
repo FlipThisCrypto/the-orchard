@@ -1471,3 +1471,27 @@ def test_freshness_off_by_default_accepts_old_ts(client: TestClient):
     # Default fixture has max_reading_age_seconds=0 (off).
     client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
     assert _post_with_ts(client, _now_epoch() - 10_000).status_code == 202
+
+
+# ---------------- T14: payload schema version (ADR-0006) -------------------
+
+def test_schema_version_stored_and_returned(client: TestClient):
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    body = json.dumps({"schema": 1, "sensors": {}}).encode("utf-8")
+    r = client.post("/readings", content=body, headers={
+        "Content-Type": "application/json",
+        "X-Orchard-Node": NODE_ID, "X-Orchard-Sig": _sign(body)})
+    assert r.status_code == 202
+    rows = client.get(f"/readings/{NODE_ID}").json()
+    assert rows[0]["schema_version"] == 1
+
+
+def test_missing_schema_version_is_null(client: TestClient):
+    # Pre-versioning firmware sends no `schema` -> stored as NULL (mixed fleet).
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    body = json.dumps({"sensors": {}}).encode("utf-8")
+    client.post("/readings", content=body, headers={
+        "Content-Type": "application/json",
+        "X-Orchard-Node": NODE_ID, "X-Orchard-Sig": _sign(body)})
+    rows = client.get(f"/readings/{NODE_ID}").json()
+    assert rows[0]["schema_version"] is None
