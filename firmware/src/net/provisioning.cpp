@@ -155,7 +155,7 @@ bool is_provisioned() {
 }
 
 void provisioning_loop() {
-  if (provisioned_ || !wifi_connected()) return;
+  if (provisioned_) return;
 
   const uint32_t now = millis();
   if (announced_banner_ && (now - last_attempt_ms_ < ORCHARD_PROVISION_POLL_MS)) {
@@ -163,6 +163,22 @@ void provisioning_loop() {
   }
   last_attempt_ms_ = now;
   announced_banner_ = true;
+
+  // Wizard path: the serial "Plant a Tree" flow writes an oracle URL to NVS
+  // after boot. Treat that as provisioned right away — no reboot needed.
+  // Before claim-code provisioning this was the only flow, and a configured
+  // URL has always meant "start posting"; gating on the claim flag alone
+  // would regress it (a Tree configured this boot wouldn't post until the
+  // next reset). Checked here on the throttled tick, so it's one NVS read
+  // per interval rather than every loop.
+  if (nvs_has_oracle_url()) {
+    set_provisioned(true);
+    Serial.println("[provision] oracle URL configured (wizard) — provisioned.");
+    return;
+  }
+
+  // Claim-code path needs the network up to announce + poll.
+  if (!wifi_connected()) return;
 
   announce();
   if (provisioned_) return;   // announce() may have learned we're claimed
