@@ -33,7 +33,64 @@ The token is hardware-first and infrastructure-first: it pays operators for runn
 
 ## How $JUICE is distributed
 
-See [reward economics in the README](../../README.md#reward-model-v1-tunable) and the manual-payout flow in [`../../orchard_chia/README.md`](../../orchard_chia/README.md). v1 distribution is a manual Season harvest from the issuer wallet; future versions may move to on-chain claim flows (out of scope for v1).
+See [reward economics in the README](../../README.md#reward-model-v1-tunable) and the manual-payout flow in [`../../orchard_chia/README.md`](../../orchard_chia/README.md). v1 distribution is a manual Season harvest from the issuer wallet; future versions may move to on-chain claim flows (epoch vaults, [ADR-0008](../decisions/0008-serverless-target-architecture.md)).
+
+## Treasury & allocation
+
+Total supply is **100,000,000 JUICE** (single issuance). The allocation below is
+the published breakdown of where that supply is committed.
+
+> **`TODO(owner)`** — fill in the real split before any public launch. The
+> categories are the proposed structure; the percentages are placeholders.
+
+| Allocation        | Share | Amount (JUICE) | Purpose                                        |
+|-------------------|-------|----------------|------------------------------------------------|
+| Rewards pool      | `TODO%` | `TODO`       | Operator Season payouts (the core sink)        |
+| Team              | `TODO%` | `TODO`       | Founders / contributors (consider vesting)     |
+| Liquidity         | `TODO%` | `TODO`       | DEX / market liquidity                         |
+| Reserve / treasury| `TODO%` | `TODO`       | Runway, partnerships, contingencies            |
+| **Total**         | 100%  | 100,000,000    |                                                |
+
+### Payout wallet
+
+The Season-harvest payouts are sent from a dedicated, thinly-funded payout key
+(see the deploy runbook's wallet-hygiene section). The **public receive
+address** for that wallet, once the owner chooses to publish it, goes here so
+the community can audit reward outflows on-chain:
+
+> **`TODO(owner)`** — publish the payout wallet's `xch1…` receive address (a
+> receive address is public-safe; never publish the fingerprint, wallet id, or
+> mnemonic — those stay gitignored per the section below).
+
+## Emission expectations
+
+v1 reward rate (from the [reward model](../../README.md#reward-model-v1-tunable),
+all tunable config):
+
+- **1 JUICE per Tree per day**, accrued **1/24 JUICE per verified uptime hour**.
+- A Season is ~24h (4608 Chia blocks), so a fully-online Tree earns ~1 JUICE/Season.
+
+Total emission per Season therefore scales with fleet size:
+
+| Fleet size | Max JUICE / Season (all Trees 100% uptime) |
+|------------|---------------------------------------------|
+| 10 Trees   | ~10                                          |
+| 100 Trees  | ~100                                         |
+| 1,000 Trees| ~1,000                                       |
+
+> **`TODO(owner)`** — set the target emission schedule / cap: at what fleet
+> size or date does the rate step down, and how many Seasons does the rewards
+> pool fund at the expected fleet curve? (Sanity-check the pool size against
+> 100–1,000 Trees over the first 6–12 months.)
+
+## Legal note
+
+This document describes token mechanics for transparency; it is **not legal or
+financial advice**. Token issuance, rewards, and any sale or distribution
+mechanics should get **qualified legal review** (securities, tax, consumer
+protection in the relevant jurisdictions) **before broad public launch**.
+Treat the numbers above as engineering parameters, not commitments, until that
+review and the owner's sign-off are complete.
 
 ## What's *not* in this file
 
