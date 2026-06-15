@@ -37,6 +37,7 @@ class ReadingResponse(BaseModel):
     received_at: datetime
     tree_ts_ms: int | None
     fw_version: str | None
+    schema_version: int | None = None
     gps_lat: float | None
     gps_lon: float | None
     gps_fix: bool | None
@@ -165,12 +166,16 @@ async def post_reading(
 
     sensors_obj = payload.get("sensors", {}) if isinstance(payload, dict) else {}
     gps = sensors_obj.get("gps", {}) if isinstance(sensors_obj, dict) else {}
+    # Payload schema version (ADR-0006/T14); int or None (pre-versioning fw).
+    raw_schema = payload.get("schema") if isinstance(payload, dict) else None
+    schema_version = raw_schema if isinstance(raw_schema, int) and not isinstance(raw_schema, bool) else None
 
     reading = models.Reading(
         node_id=node.node_id,
         received_at=now,
         tree_ts_ms=payload.get("ts_ms") if isinstance(payload, dict) else None,
         fw_version=payload.get("fw") if isinstance(payload, dict) else None,
+        schema_version=schema_version,
         gps_lat=gps.get("lat") if isinstance(gps, dict) else None,
         gps_lon=gps.get("lon") if isinstance(gps, dict) else None,
         gps_fix=gps.get("fix") if isinstance(gps, dict) else None,
@@ -255,6 +260,7 @@ def list_readings(
                 received_at=r.received_at,
                 tree_ts_ms=r.tree_ts_ms,
                 fw_version=r.fw_version,
+                schema_version=r.schema_version,
                 gps_lat=r.gps_lat if owner else None,
                 gps_lon=r.gps_lon if owner else None,
                 gps_fix=r.gps_fix,

@@ -50,6 +50,7 @@ bool oracle_post_reading(JsonDocument& payload) {
   }
 
   // Add identity fields.
+  payload["schema"]  = 1;  // ADR-0006/T14: payload format version (start at 1)
   payload["node_id"] = identity::node_id_hex();
   payload["fw"]      = orchard::kFirmwareVersion;
   payload["ts_ms"]   = (uint32_t)millis();  // monotonic per boot (not wall-clock)
