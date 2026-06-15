@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,6 +26,39 @@ import requests
 from . import attest, config
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
+
+# T16 confirmation monitoring: after a batch_update is accepted into the
+# mempool, poll the store root until the spend confirms on chain. Bounded +
+# non-fatal — the write is already submitted, and the writer is convergent so
+# an unconfirmed root is simply retried on the next run. A root update is
+# typically mined within a block or two (~tens of seconds).
+CONFIRM_TIMEOUT_S = 180
+CONFIRM_POLL_S = 10
+
+
+def wait_for_root_confirmation(
+    dl: DataLayerRpc,
+    store_id: str,
+    *,
+    timeout_s: float = CONFIRM_TIMEOUT_S,
+    poll_s: float = CONFIRM_POLL_S,
+    _sleep=time.sleep,
+    _clock=time.monotonic,
+) -> bool:
+    """Poll the DataLayer store root until ``confirmed`` is true or the budget
+    runs out. Returns True iff confirmed within ``timeout_s``. Never raises —
+    an RPC hiccup is treated as 'not yet confirmed' and retried within budget.
+    (``_sleep`` / ``_clock`` are injectable for tests.)"""
+    deadline = _clock() + timeout_s
+    while True:
+        try:
+            if dl.get_root(store_id).get("confirmed") is True:
+                return True
+        except ChiaRpcError:
+            pass  # transient — keep polling within the budget
+        if _clock() >= deadline:
+            return False
+        _sleep(poll_s)
 
 
 @dataclass
@@ -240,7 +274,23 @@ def main() -> int:
         tx_id=txn_id,
         written_at=written_at,
     )
-    return 0
+
+    # T16: confirm the root update actually landed on chain. Non-fatal — the
+    # spend is submitted and the writer is convergent (an unconfirmed root is
+    # re-attempted next run, so attestation data is never silently dropped).
+    print(f"[orchard.attest] waiting up to {CONFIRM_TIMEOUT_S}s for the root "
+          f"update to confirm on chain …")
+    if wait_for_root_confirmation(dl, cfg.data_layer.store_id):
+        print("[orchard.attest] root update CONFIRMED on chain.")
+        return 0
+    print(
+        f"WARNING: root update tx_id={txn_id} not confirmed within "
+        f"{CONFIRM_TIMEOUT_S}s. The spend may still confirm shortly; if it "
+        f"does not, the next run re-publishes (convergent writer). Check the "
+        f"Season ledger before relying on this attestation.",
+        file=sys.stderr,
+    )
+    return 6  # distinct non-zero so a cron/timer wrapper can alert
 
 
 if __name__ == "__main__":
