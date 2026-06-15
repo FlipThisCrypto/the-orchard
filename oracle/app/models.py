@@ -160,3 +160,27 @@ class Attestation(Base):
     block_height_at_write: Mapped[int | None] = mapped_column(Integer, nullable=True)
     written_to_datalayer_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class Claim(Base):
+    """Remote claim-code provisioning (ADR-0005, T9).
+
+    On first boot an unprovisioned Tree announces itself — creating its Node
+    row (no wallet yet) and a Claim holding the human-readable code it shows
+    over serial. The operator, authenticated with their wallet in a browser,
+    submits that code to bind the Tree to their wallet (+ Orchard Pass). The
+    Tree polls until the claim is consumed, then starts posting.
+
+    The code (8 chars, normalized — no dash/ambiguous letters) is the primary
+    key. Codes expire and are single-use (consumed_at set once, via a guarded
+    UPDATE so a claim race can't double-bind).
+    """
+    __tablename__ = "claims"
+
+    claim_code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(64), ForeignKey("nodes.node_id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Wallet that consumed the claim (the bound owner). Null while unclaimed.
+    claimed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)

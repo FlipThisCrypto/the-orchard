@@ -19,7 +19,17 @@ from fastapi.responses import JSONResponse
 from . import db
 from .config import settings
 from .ratelimit import FixedWindowLimiter
-from .routes import attestations, auth, health, network, nodes, readings, register, uptime
+from .routes import (
+    attestations,
+    auth,
+    health,
+    network,
+    nodes,
+    provision,
+    readings,
+    register,
+    uptime,
+)
 from .session_deps import LOOPBACK_HOSTS
 
 
@@ -43,6 +53,7 @@ app = FastAPI(
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(register.router)
+app.include_router(provision.router)
 app.include_router(readings.router)
 app.include_router(nodes.router)
 app.include_router(uptime.router)
