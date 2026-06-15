@@ -1,0 +1,7 @@
+{
+  "hashlock": {
+    "clvm_hex": "ff02ffff03ffff09ffff0bff0580ff0280ffff010bffff01ff088080ff0180",
+    "sha256": "4eb2e56bce8f7e930b35b5649539d5d9d35edff758c4178beb391830805ff528",
+    "treehash": "caf9f00763b55cfc71db469957fc5c21a4da350c4d5d36ab0a929de987b8eade"
+  }
+}
