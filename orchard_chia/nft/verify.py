@@ -144,6 +144,11 @@ def list_owned_passes(rpc: WalletRpc, *, nft_wallet_id: int,
 # Indexer (MintGarden) path
 # ----------------------------------------------------------------------
 
+# Cap on pages we'll walk before declaring the collection implausibly large —
+# a runaway guard, far above any real Orchard Pass collection.
+INDEXER_MAX_PAGES = 100
+
+
 def _fetch_mintgarden_collection_items(
     collection_bech32_id: str = ORCHARD_GENESIS_COLLECTION_BECH32_ID,
     *,
@@ -152,32 +157,57 @@ def _fetch_mintgarden_collection_items(
     timeout: int = 30,
     _opener=None,
 ) -> list[dict]:
-    """Fetch every NFT in a MintGarden collection.
+    """Fetch EVERY NFT in a MintGarden collection, paging through all of it.
 
-    MintGarden's API doesn't accept ``page=N`` — it uses opaque
-    cursor-based paging that we don't implement here. So this is a
-    single-page fetch capped at ``page_size`` (default 50). Genesis
-    is 10 items, well within that. If a future collection exceeds
-    50 we'll need to wire cursor pagination via ``from_id`` /
-    ``last_id`` or whatever MintGarden settles on.
+    MintGarden returns a `next` cursor (opaque token) on each page; we pass it
+    back as ``?page=<cursor>`` until it's exhausted. The cursor field name is
+    read defensively (``next`` / ``next_cursor`` / ``cursor``).
 
-    ``_opener`` is a hook for tests — pass a callable ``(url)->bytes``
-    to short-circuit the HTTP call.
+    Safety — this must NEVER silently miss a Pass (it gates registration):
+      * If a page is the last one (fewer than ``page_size`` items) we stop —
+        the collection is fully read.
+      * If we get a FULL page but find no cursor we recognize, we cannot prove
+        the collection is complete, so we raise ``IndexerError`` rather than
+        truncate. (At today's tiny collection a single short page ends cleanly.)
+      * A runaway is capped at ``INDEXER_MAX_PAGES`` with a raise.
+
+    ``_opener`` is a hook for tests — a callable ``(url)->bytes``.
     """
-    url = (f"{api_base}/collections/{collection_bech32_id}/nfts"
-           f"?size={page_size}")
-    try:
-        raw = (_opener(url) if _opener
-               else urllib.request.urlopen(url, timeout=timeout).read())
-    except urllib.error.HTTPError as e:
-        raise IndexerError(f"MintGarden {url} -> HTTP {e.code}") from e
-    except (urllib.error.URLError, TimeoutError) as e:
-        raise IndexerError(f"MintGarden {url} unreachable: {e}") from e
-    try:
-        doc = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise IndexerError(f"MintGarden {url} non-JSON: {e}") from e
-    return list(doc.get("items") or [])
+    items: list[dict] = []
+    cursor: str | None = None
+    for _ in range(INDEXER_MAX_PAGES):
+        url = f"{api_base}/collections/{collection_bech32_id}/nfts?size={page_size}"
+        if cursor:
+            url += f"&page={urllib.parse.quote(str(cursor), safe='')}"
+        try:
+            raw = (_opener(url) if _opener
+                   else urllib.request.urlopen(url, timeout=timeout).read())
+        except urllib.error.HTTPError as e:
+            raise IndexerError(f"MintGarden {url} -> HTTP {e.code}") from e
+        except (urllib.error.URLError, TimeoutError) as e:
+            raise IndexerError(f"MintGarden {url} unreachable: {e}") from e
+        try:
+            doc = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise IndexerError(f"MintGarden {url} non-JSON: {e}") from e
+
+        page = list(doc.get("items") or [])
+        items.extend(page)
+        cursor = doc.get("next") or doc.get("next_cursor") or doc.get("cursor")
+
+        if len(page) < page_size:
+            return items          # short page => last page, fully read
+        if not cursor:
+            # Full page but no cursor we understand — can't confirm we got it
+            # all. Fail loud rather than silently drop Passes past this page.
+            raise IndexerError(
+                f"MintGarden returned a full page ({page_size}) for "
+                f"{collection_bech32_id} with no recognized pagination cursor; "
+                "refusing to risk a truncated Pass list — wire the cursor field."
+            )
+    raise IndexerError(
+        f"MintGarden collection {collection_bech32_id} exceeded "
+        f"{INDEXER_MAX_PAGES} pages; aborting as implausibly large.")
 
 
 def _normalize_indexer_item(item: dict) -> dict:
