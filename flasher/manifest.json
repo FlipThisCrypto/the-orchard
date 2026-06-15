@@ -7,13 +7,13 @@
     {
       "chipFamily": "ESP32",
       "parts": [
-        { "path": "https://github.com/FlipThisCrypto/the-orchard/releases/download/v0.4.8/orchard-freenove_esp32_wroom-web-v0.4.8.bin", "offset": 0 }
+        { "path": "/fw/v0.4.8/orchard-freenove_esp32_wroom-web-v0.4.8.bin", "offset": 0 }
       ]
     },
     {
       "chipFamily": "ESP32-S3",
       "parts": [
-        { "path": "https://github.com/FlipThisCrypto/the-orchard/releases/download/v0.4.8/orchard-freenove_esp32s3_uart-web-v0.4.8.bin", "offset": 0 }
+        { "path": "/fw/v0.4.8/orchard-freenove_esp32s3_uart-web-v0.4.8.bin", "offset": 0 }
       ]
     }
   ]
