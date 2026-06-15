@@ -24,6 +24,7 @@
 #include "sensors/sensor.h"
 #include "net/oracle.h"
 #include "net/ota.h"
+#include "net/provisioning.h"
 #include "net/serial_console.h"
 #include "net/wifi_mgr.h"
 
@@ -59,6 +60,13 @@ void setup() {
   // 5. WiFi (using NVS-stored creds, if any).
   orchard::net::wifi_begin();
 
+  // 5b. Provisioning state (ADR-0005). Grandfathers a Tree that already has
+  // an oracle URL in NVS; a fresh device stays unprovisioned until an
+  // operator claims its code in the browser. Must run after wifi_begin()
+  // (it talks to the oracle) and after identity::begin() (it needs the
+  // node_id / signing key / claim code).
+  orchard::net::provisioning_begin();
+
   // 6. Status LED on.
   pinMode(ORCHARD_PIN_STATUS_LED, OUTPUT);
   digitalWrite(ORCHARD_PIN_STATUS_LED, HIGH);
@@ -70,6 +78,10 @@ void loop() {
   orchard::net::console_loop();
   orchard::net::wifi_loop();
   orchard::net::ota_loop();
+
+  // Drive the claim-code flow while unprovisioned (no-op once claimed /
+  // grandfathered). Announces + polls on its own throttle.
+  orchard::net::provisioning_loop();
 
   // Only sample-and-post once WiFi is up. As of 0.4.7 this is an
   // efficiency gate, not a stability one: a reading we can't POST is
@@ -83,9 +95,14 @@ void loop() {
   // conversions non-blocking (see sensors/ds18b20.cpp), so the block —
   // and therefore the brownout — is gone even if this gate were removed.
   // We keep it only because sampling with nowhere to send is pointless.
+  // Gate automatic posting on provisioning: an unclaimed Tree has no wallet
+  // binding at the oracle, so its readings would be rejected — and we don't
+  // want a fresh device spamming readings before someone owns it. The manual
+  // "sample now" console command stays ungated for bench testing.
   const uint32_t now = millis();
   if (now - last_sample_ms_ >= ORCHARD_SAMPLE_INTERVAL_MS &&
-      orchard::net::wifi_connected()) {
+      orchard::net::wifi_connected() &&
+      orchard::net::is_provisioned()) {
     last_sample_ms_ = now;
     do_sample_and_post();
   }

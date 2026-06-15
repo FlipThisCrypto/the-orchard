@@ -13,6 +13,10 @@ namespace orchard::net {
 String oracle_url();
 bool   oracle_set_url(const String& url);
 
+// Resolved base URL the device talks to: the NVS override if set, else the
+// baked default (ORCHARD_DEFAULT_ORACLE_URL). Used by posting + provisioning.
+String oracle_base_url();
+
 // Build the canonical payload and POST it. Returns true on 2xx.
 // Caller fills `payload` with sensor data; this function adds node_id,
 // firmware version, and timestamp, then signs the body.
