@@ -62,9 +62,12 @@ class Settings(BaseSettings):
     # Where the claim page sends operators. home_url is the "Back to The
     # Orchard" button + the post-claim auto-redirect target (the landing page).
     # dashboard_url is the "View your Tree" button shown after a successful
-    # claim — leave empty to hide that button until the hosted dashboard exists.
+    # claim, and the per-Tree "View live" links in the Your Trees list. The
+    # page deep-links to <dashboard_url>/?tree=<node_id>. Set to the public
+    # Orchard View (live once its custom domain is attached); set empty to
+    # hide those links.
     home_url: str = "https://theorchard.network"
-    dashboard_url: str = ""
+    dashboard_url: str = "https://view.theorchard.network"
     # Cross-origin allowlist for the shared wallet widget (connect.js). The
     # landing page + dashboard live on other Orchard subdomains and call the
     # oracle's /auth + /provision + /nodes cross-origin, so those origins must

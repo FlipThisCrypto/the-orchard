@@ -200,9 +200,11 @@
         const name = t.label || (String(t.node_id).slice(0, 8) + "…");
         const last = t.last_seen_at || t.last_reading_at;
         const seen = last ? new Date(last).toLocaleString() : "not seen yet";
+        const viewLink = dashboardUrl
+          ? ` · <a href="${esc(dashboardUrl)}/?tree=${encodeURIComponent(t.node_id)}">View live →</a>` : "";
         return `<div class="tree">
           <div><b>${esc(name)}</b> <span class="muted small">${esc(String(t.node_id).slice(0, 10))}…</span></div>
-          <div class="muted small">fw ${esc(t.fw_version || "?")} · ${esc(seen)}${t.pass_nft_id ? " · Pass ✓" : ""}</div>
+          <div class="muted small">fw ${esc(t.fw_version || "?")} · ${esc(seen)}${t.pass_nft_id ? " · Pass ✓" : ""}${viewLink}</div>
         </div>`;
       }).join("");
     } catch (e) { body.innerHTML = `<span class="muted small">Couldn't load your Trees.</span>`; }
@@ -231,7 +233,7 @@
 
   function renderClaimed(body) {
     const dash = dashboardUrl
-      ? `<a class="linkbtn" href="${esc(dashboardUrl)}">View your Tree →</a>` : "";
+      ? `<a class="linkbtn" href="${esc(dashboardUrl)}/?tree=${encodeURIComponent(body.node_id || "")}">View your Tree →</a>` : "";
     $("#main").innerHTML =
       `<div class="card claimed">
          <div class="big">🌳</div>

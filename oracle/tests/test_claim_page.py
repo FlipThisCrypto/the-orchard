@@ -77,9 +77,10 @@ def test_claim_config_unconfigured_by_default(monkeypatch):
     assert j["metadata"]["name"].startswith("The Orchard")
     assert j["metadata"]["url"].startswith("http")
     # navigation targets the page reads (home defaults to the landing page;
-    # dashboard hidden until the operator sets it)
+    # dashboard defaults to the public Orchard View so the "View your Tree"
+    # button + per-Tree "View live" links are wired out of the box)
     assert j["home_url"] == "https://theorchard.network"
-    assert j["dashboard_url"] == ""
+    assert j["dashboard_url"] == "https://view.theorchard.network"
     reset_settings_for_tests()
 
 
