@@ -145,6 +145,24 @@ async def post_reading(
     # ------------------------------------------------------------------
 
     now = datetime.now(timezone.utc)
+
+    # ---- Reading freshness (D6/T6) ----------------------------------
+    # Optional data-quality guard: reject a reading whose signed UTC `ts`
+    # (epoch seconds, set once the Tree's SNTP clock syncs) is older than
+    # max_reading_age_seconds. Only enforced when a ts is present, so
+    # pre-SNTP firmware (no ts) is never rejected by it. Off by default.
+    max_age = settings().max_reading_age_seconds
+    if max_age > 0:
+        ts = payload.get("ts") if isinstance(payload, dict) else None
+        if isinstance(ts, int) and not isinstance(ts, bool) and ts > 0:
+            age = int(now.timestamp()) - ts
+            if age > max_age:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"stale reading: ts {ts} is {age}s old (max {max_age}s)",
+                )
+    # ------------------------------------------------------------------
+
     sensors_obj = payload.get("sensors", {}) if isinstance(payload, dict) else {}
     gps = sensors_obj.get("gps", {}) if isinstance(sensors_obj, dict) else {}
 

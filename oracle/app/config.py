@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     # seamless for Trees already sending seq.)
     require_seq: bool = False
 
+    # Reading freshness (HANDOVER D6/T6). When > 0, POST /readings rejects a
+    # reading whose signed `ts` (real UTC epoch seconds, set once the Tree's
+    # SNTP clock syncs) is older than this many seconds — a data-quality
+    # guard that complements `seq`. Default 0 = off; readings without a `ts`
+    # (pre-SNTP firmware, or before first sync) are never rejected by it, so
+    # a mixed fleet is safe. Turn it on (e.g. 900) once the fleet reports ts.
+    max_reading_age_seconds: int = 0
+
     model_config = SettingsConfigDict(
         env_prefix="ORCHARD_ORACLE_",
         env_file=str(_ENV_PATH),

@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "identity.h"
+#include "timekeeping.h"
 #include "version.h"
 
 namespace orchard::net {
@@ -51,10 +52,17 @@ bool oracle_post_reading(JsonDocument& payload) {
   // Add identity fields.
   payload["node_id"] = identity::node_id_hex();
   payload["fw"]      = orchard::kFirmwareVersion;
-  payload["ts_ms"]   = (uint32_t)millis();  // monotonic; oracle gets UTC via gps.utc
+  payload["ts_ms"]   = (uint32_t)millis();  // monotonic per boot (not wall-clock)
   payload["seq"]     = identity::next_seq();  // replay protection — inside the
                                               // HMAC'd body, so it can't be
                                               // bumped on a captured packet
+  // D6/T6: real UTC epoch seconds once SNTP has synced (GPS UTC, when a
+  // fix exists, is also in sensors.gps.utc). Omitted until first sync so a
+  // pre-sync reading never carries a bogus 1970 timestamp.
+  const uint32_t epoch = utc_now();
+  if (epoch > 0) {
+    payload["ts"] = epoch;
+  }
 
   String body;
   serializeJson(payload, body);

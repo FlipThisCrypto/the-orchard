@@ -5,6 +5,7 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "timekeeping.h"
 
 namespace orchard::net {
 
@@ -85,6 +86,8 @@ void wifi_loop() {
                     WiFi.localIP().toString().c_str(),
                     WiFi.RSSI());
       connect_in_flight_ = false;
+      // D6: start SNTP now that we have a route to the internet. Idempotent.
+      time_sync_begin();
     } else if (now - connect_started_at_ >=
                ORCHARD_WIFI_CONNECT_TIMEOUT_MS) {
       Serial.println("[wifi] connect timeout; will retry");
