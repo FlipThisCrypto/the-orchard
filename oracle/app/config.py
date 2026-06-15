@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     # claim — leave empty to hide that button until the hosted dashboard exists.
     home_url: str = "https://theorchard.network"
     dashboard_url: str = ""
+    # Cross-origin allowlist for the shared wallet widget (connect.js). The
+    # landing page + dashboard live on other Orchard subdomains and call the
+    # oracle's /auth + /provision + /nodes cross-origin, so those origins must
+    # be allowed. Comma-separated; exact origins (scheme+host), never "*".
+    cors_origins: str = (
+        "https://theorchard.network,https://www.theorchard.network,"
+        "https://view.theorchard.network"
+    )
+
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
     # Test-mode bypass for the BLS signature step. The pubkey -> address
     # binding check still runs (so a wrong-pk submission fails). Use
     # ONLY in tests/CI. Defaults False so production fails closed.

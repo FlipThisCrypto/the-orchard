@@ -28,8 +28,9 @@ def test_claim_page_serves_html():
     # key bits of the flow the page must drive
     assert "Claim your Tree" in r.text
     assert "/provision/claim" in r.text
-    assert "/auth/challenge" in r.text
-    assert "chia_signMessageByAddress" in r.text
+    # the WC flow now lives in the shared widget, included via /connect.js
+    assert "/connect.js" in r.text
+    assert "data-orchard-connect" in r.text
     # UX: code preview + a real post-claim destination (not a dead end)
     assert "code-preview" in r.text
     assert "Back to The Orchard" in r.text
@@ -38,6 +39,30 @@ def test_claim_page_serves_html():
     assert "Your Trees" in r.text
     assert "trees-card" in r.text
     assert '"/nodes"' in r.text
+
+
+def test_connect_widget_served():
+    reset_settings_for_tests()
+    with TestClient(app) as c:
+        r = c.get("/connect.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers["content-type"]
+    # the shared widget's contract
+    assert "OrchardConnect" in r.text
+    assert "orchard_session" in r.text            # the shared cookie
+    assert "chia_signMessageByAddress" in r.text  # the WC flow lives here now
+    assert "/auth/verify" in r.text
+
+
+def test_cors_allows_orchard_origin():
+    reset_settings_for_tests()
+    with TestClient(app) as c:
+        # a CORS preflight from the landing page origin
+        r = c.options("/auth/challenge", headers={
+            "Origin": "https://theorchard.network",
+            "Access-Control-Request-Method": "POST",
+        })
+    assert r.headers.get("access-control-allow-origin") == "https://theorchard.network"
 
 
 def test_claim_config_unconfigured_by_default(monkeypatch):
