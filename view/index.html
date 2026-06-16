@@ -3,6 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+    // view.theorchard.network is the canonical home. Wallet Connect (oracle
+    // CORS + the shared .theorchard.network session cookie) only works on an
+    // *.theorchard.network origin, never the bare *.pages.dev URL — so forward
+    // visitors who land on pages.dev to the real domain.
+    if (location.hostname === "orchard-view.pages.dev")
+      location.replace("https://view.theorchard.network" + location.pathname + location.search + location.hash);
+  </script>
   <title>Orchard View — live Trees</title>
 
   <!-- Shared cross-subdomain wallet widget (SSO). Renders a Connect

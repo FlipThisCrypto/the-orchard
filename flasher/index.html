@@ -3,6 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+    // flash.theorchard.network is the canonical home. Wallet Connect (oracle
+    // CORS + the shared .theorchard.network session cookie) only works on an
+    // *.theorchard.network origin, never the bare *.pages.dev URL — so forward
+    // visitors who land on pages.dev to the real domain.
+    if (location.hostname === "orchard-flasher.pages.dev")
+      location.replace("https://flash.theorchard.network" + location.pathname + location.search + location.hash);
+  </script>
   <title>Flash a Tree — The Orchard</title>
 
   <!-- esp-web-tools: ~80KB JS bundle that wraps esptool-js + a UI
