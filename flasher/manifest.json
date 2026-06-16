@@ -2,7 +2,7 @@
   "name": "The Orchard — Tree Firmware",
   "version": "0.5.0",
   "funding_url": "https://github.com/FlipThisCrypto/the-orchard",
-  "new_install_prompt_erase": false,
+  "new_install_prompt_erase": true,
   "builds": [
     {
       "chipFamily": "ESP32",
