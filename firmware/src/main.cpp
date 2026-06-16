@@ -8,8 +8,9 @@
 //     console_begin()             -> open USB-serial provisioning UI
 //     SensorRegistry::begin_all() -> bring up every self-registered driver
 //     wifi_begin()                -> try to connect with stored creds
+//     improv_begin()              -> Improv Wi-Fi Serial (esp-web-tools)
 //   loop()
-//     console_loop()              -> handle dashboard commands
+//     improv_serial_pump()        -> single Serial reader: Improv + console
 //     wifi_loop()                 -> reconnect on drop
 //     ota_loop()                  -> serve /health + /ota when WiFi up
 //     sample_loop()               -> every N seconds, sample sensors + POST
@@ -22,6 +23,7 @@
 #include "identity.h"
 #include "pins.h"
 #include "sensors/sensor.h"
+#include "net/improv_serial.h"
 #include "net/oracle.h"
 #include "net/ota.h"
 #include "net/provisioning.h"
@@ -67,6 +69,15 @@ void setup() {
   // node_id / signing key / claim code).
   orchard::net::provisioning_begin();
 
+  // 5c. Improv Wi-Fi Serial (esp-web-tools). After a browser flashes the
+  // board, esp-web-tools' "Connect to Wi-Fi" dialog provisions WiFi over this
+  // same USB serial line and we hand back the claim URL so it shows a "Next"
+  // button. MUST come after console_begin() (it shares the one Serial reader
+  // with the console) and after wifi_begin() (so it reports the right initial
+  // state). Improv ONLY sets WiFi creds — never an oracle URL — so it can't
+  // trip the provisioning grandfather skip in provisioning.cpp.
+  orchard::net::improv_begin();
+
   // 6. Status LED on.
   pinMode(ORCHARD_PIN_STATUS_LED, OUTPUT);
   digitalWrite(ORCHARD_PIN_STATUS_LED, HIGH);
@@ -75,6 +86,11 @@ void setup() {
 }
 
 void loop() {
+  // Single Serial reader (fw 0.5.0): the Improv pump reads every byte, routes
+  // Improv-protocol bytes to the Improv handler and everything else to the
+  // ASCII console (console_feed_byte). console_loop() is now a no-op kept for
+  // any future non-input console housekeeping.
+  orchard::net::improv_serial_pump();
   orchard::net::console_loop();
   orchard::net::wifi_loop();
   orchard::net::ota_loop();

@@ -228,19 +228,29 @@ void console_begin() {
   Serial.println("Type 'STATUS' for current state, 'PING' to test.");
 }
 
-void console_loop() {
-  while (Serial.available()) {
-    const char c = (char)Serial.read();
-    if (c == '\r') continue;
-    if (c == '\n') {
-      String l = line_buf_;
-      l.trim();
-      line_buf_ = "";
-      if (l.length() > 0) dispatch_(l);
-    } else {
-      if (line_buf_.length() < 512) line_buf_ += c;
-    }
+void console_feed_byte(uint8_t b) {
+  // One byte of typed/console input, routed here by the Improv serial pump
+  // for every byte that is NOT part of an Improv packet. Same line assembly
+  // and dispatch as the pre-0.5.0 console_loop(), so typed commands behave
+  // identically (a human never types the binary "IMPROV" header, so Improv
+  // framing never swallows a console byte).
+  const char c = (char)b;
+  if (c == '\r') return;
+  if (c == '\n') {
+    String l = line_buf_;
+    l.trim();
+    line_buf_ = "";
+    if (l.length() > 0) dispatch_(l);
+  } else {
+    if (line_buf_.length() < 512) line_buf_ += c;
   }
+}
+
+void console_loop() {
+  // No-op as of fw 0.5.0: the single Serial reader lives in
+  // improv_serial_pump(), which routes non-Improv bytes to
+  // console_feed_byte(). Kept so main.cpp's loop() reads naturally and as a
+  // hook for any future non-input periodic console work.
 }
 
 void console_set_sample_callback(SampleNowFn fn) {
