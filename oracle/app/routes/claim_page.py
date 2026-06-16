@@ -13,12 +13,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
+from .. import pass_verify
 from ..config import settings
 
 router = APIRouter(tags=["claim-page"])
+
+# The Orchard Genesis Passes collection on MintGarden — where to send a
+# wallet that doesn't hold one yet.
+_BUY_URL = (
+    "https://mintgarden.io/collections/"
+    "col1a56lp9zufakywlq4k5nntu3nd7k6jy2pe6ee23046ydlahmungqslvmj29"
+)
 
 # oracle/app/routes/claim_page.py -> oracle/app/claim_page.html
 _PAGE_PATH = Path(__file__).resolve().parent.parent / "claim_page.html"
@@ -48,6 +56,46 @@ def connect_widget() -> Response:
         media_type="application/javascript",
         headers={"Cache-Control": "public, max-age=60"},
     )
+
+
+@router.get("/claim/pass/{address}")
+def claim_pass_check(address: str) -> dict:
+    """Public, read-only Orchard Pass check used by the flasher to gate
+    flashing on Pass ownership BEFORE an ESP32 is written — no point flashing
+    a board you can't claim. Mounted under /claim so it rides the same edge
+    allowlist as the rest of the claim flow (no new WAF path). No auth: a
+    wallet address is public, and this only reads the on-chain Pass ownership
+    the operator is about to prove at claim time anyway. Cached upstream in
+    pass_verify, so a retry storm doesn't hammer the indexer."""
+    address = (address or "").strip()
+    if not address.startswith("xch1") or len(address) < 20:
+        raise HTTPException(status_code=400, detail="expected an xch1... address")
+    try:
+        passes = pass_verify.list_passes_for_address(address)
+    except pass_verify.PassVerifyError as e:
+        raise HTTPException(status_code=502, detail=f"indexer error: {e}") from e
+    if not passes:
+        return {
+            "address": address,
+            "has_pass": False,
+            "pass_nft_id": None,
+            "pass_name": None,
+            "edition_number": None,
+            "owner_count": 0,
+            "buy_url": _BUY_URL,
+        }
+    first = passes[0]
+    nft_id = first.get("nft_coin_id") or first.get("launcher_id")
+    return {
+        "address": address,
+        "has_pass": True,
+        "pass_nft_id": nft_id,
+        "pass_name": first.get("name"),
+        "edition_number": first.get("edition_number"),
+        "owner_count": len(passes),
+        "mintgarden_url": f"https://mintgarden.io/nfts/{nft_id}" if nft_id else None,
+        "buy_url": _BUY_URL,
+    }
 
 
 @router.get("/claim/config")

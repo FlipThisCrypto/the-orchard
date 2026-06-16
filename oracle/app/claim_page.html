@@ -186,6 +186,13 @@
   function refreshClaimBtn() { $("#claim-btn").disabled = !(sess() && codeValue().length >= 6); }
 
   let previewTimer = null;
+  let autoClaim = false, autoClaimPolls = 0;
+  // When the operator arrived from the Tree's auto-handoff (.../claim?code=…)
+  // with a wallet connected, claim the moment the preview confirms the Tree —
+  // one-shot so it never double-submits.
+  function maybeAutoClaim() {
+    if (autoClaim && sess()) { autoClaim = false; onClaim(); }
+  }
   function updatePreview() {
     const code = codeValue();
     const el = $("#code-preview");
@@ -200,11 +207,15 @@
       if (!r.ok || !b.known) {
         el.className = "preview warn";
         el.textContent = "No Tree has announced this code yet — power your Tree on and give it a moment.";
+        // Arrived via the Tree's auto-handoff? It may still be joining WiFi —
+        // re-poll a while so the claim fires the moment it announces, no refresh.
+        if (autoClaim && autoClaimPolls < 20) { autoClaimPolls++; setTimeout(updatePreview, 3000); }
       } else if (b.claimed) {
         el.className = "preview bad"; el.textContent = "This code has already been claimed.";
       } else {
         el.className = "preview ok";
         el.textContent = "✓ Found your Tree" + (b.label ? ` (“${b.label}”)` : "") + " — ready to claim.";
+        maybeAutoClaim();
       }
     }, 400);
   }
@@ -290,9 +301,26 @@
   $("#claim-btn").addEventListener("click", onClaim);
 
   // React to the shared wallet connection (connect/disconnect on any page).
-  function onSession() { refreshClaimBtn(); loadTrees(); }
+  function onSession() {
+    refreshClaimBtn(); loadTrees();
+    // If we arrived via ?code= and the operator just connected, re-check so the
+    // auto-claim can fire.
+    if (autoClaim && sess()) updatePreview();
+  }
   if (OC) OC.onChange(onSession);
   onSession();
+
+  // Prefill from ?code= — the Tree's Improv handoff opens /claim?code=XXXX-XXXX
+  // with the wallet already connected (shared .theorchard.network session). Fill
+  // the code, start the preview, and claim automatically once it's announced.
+  (function prefillFromUrl() {
+    const urlCode = new URLSearchParams(location.search).get("code");
+    if (!urlCode) return;
+    const clean = urlCode.replace(/[^0-9a-zA-Z]/g, "").toUpperCase().slice(0, 8);
+    $("#code").value = clean.length > 4 ? clean.slice(0, 4) + "-" + clean.slice(4) : clean;
+    autoClaim = true; refreshClaimBtn(); updatePreview();
+    if (!sess()) note("info", "Connect your wallet above to finish claiming your Tree.");
+  })();
 
   // Where to send people (home / dashboard) — set via oracle .env.
   jget("/claim/config").then(r => {
