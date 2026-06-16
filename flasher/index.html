@@ -157,6 +157,19 @@
                   0 0 26px rgba(82, 232, 158, 0.5);
     }
 
+    /* Pass-gate states (set by the inline flasher script). */
+    .pass-status { font-size: 14px; padding: 10px 14px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg-card-2); margin-top: 4px; }
+    .pass-status.dim { color: var(--fg-muted); }
+    .pass-status.ok  { color: var(--leaf); border-color: rgba(82,232,158,.4);
+      background: rgba(82,232,158,.08); }
+    .pass-status.bad { color: #ff9f6a; border-color: rgba(255,140,80,.4);
+      background: rgba(255,140,80,.08); }
+    .pass-status a { color: var(--cyber); }
+    .flash-lock { font-size: 14px; color: var(--fg-muted); padding: 14px 16px;
+      border: 1px dashed var(--border-hot); border-radius: 8px;
+      background: rgba(255,255,255,.02); }
+
     .browser-note { color: var(--fg-muted); font-size: 13px; margin-top: 10px; }
     code, kbd {
       background: var(--bg-card-2);
@@ -219,13 +232,21 @@
   <main>
     <h1>Flash a Tree</h1>
     <p class="lede">
-      One-click installer for the Orchard Tree firmware. Plug an ESP32
-      into your computer, click <b>Connect</b>, pick the serial port,
-      and the latest signed firmware flashes in about 30 seconds.
+      Connect your wallet, plug in an ESP32, and flash the Orchard Tree
+      firmware — then the Tree sets up its own WiFi and claims itself to your
+      wallet. An <b>Orchard Pass</b> is required to flash.
     </p>
 
     <div class="card">
-      <h2>1 · Plug in your Tree</h2>
+      <h2>1 · Connect wallet + verify your Orchard Pass</h2>
+      <p>Use <b>Connect Wallet</b> (top-right) — works with <b>Sage</b> and
+         <b>Goby</b>. We check that your wallet holds an <b>Orchard Pass</b>
+         before flashing; the Tree binds to this wallet when it's claimed.</p>
+      <div id="pass-status" class="pass-status dim">Connect your wallet to begin.</div>
+    </div>
+
+    <div class="card">
+      <h2>2 · Plug in your Tree</h2>
       <ul>
         <li>USB cable from your computer to the ESP32 board.</li>
         <li>Confirm a new serial port shows up
@@ -239,58 +260,52 @@
     </div>
 
     <div class="card">
-      <h2>2 · Click Install, pick your board</h2>
-      <p>When you click the button below, your <b>browser</b> opens a
-         small dialog listing every serial port on your machine —
-         pick the one labeled <code>Silicon Labs CP210x</code> (Windows)
-         or <code>cu.SLAB_USBtoUART</code> (macOS) or
-         <code>ttyUSB0</code> (Linux). If you have several boards
-         plugged in, they all appear here so you can choose which one
-         to flash.</p>
-      <p>From there the installer will:</p>
-      <ol>
-        <li>Erase the board's existing firmware.</li>
-        <li>Write a fresh Orchard Tree firmware image
-            (<code>~1 MB</code>, version <code>0.4.9</code>).</li>
-        <li>Reboot the board into the Orchard runtime.</li>
-      </ol>
-      <p style="margin: 18px 0 6px 0;">
-        <esp-web-install-button manifest="./manifest.json">
-          <button slot="activate">Install Tree Firmware</button>
-          <span slot="unsupported" class="unsupported">
-            Your browser doesn't support Web Serial. Open this page in
-            <b>Chrome, Edge, Brave, or Opera</b> on a desktop computer.
-          </span>
-          <span slot="not-allowed" class="unsupported">
-            Web Serial needs a secure context. Reload this page over
-            <code>https://</code> or <code>http://localhost</code>.
-          </span>
-        </esp-web-install-button>
-      </p>
-      <p class="browser-note">
-        Requires a Chromium-based browser (Chrome / Edge / Brave / Opera).
-        Firefox and Safari don't expose the Web Serial API yet.
-        <b>Close any other program holding the port</b> (PlatformIO
-        monitor, Arduino IDE, PuTTY) before clicking — Windows lets
-        only one process own a COM port at a time.
-      </p>
+      <h2>3 · Flash your Tree</h2>
+
+      <!-- Locked until the wallet holds an Orchard Pass (set by flasher.js). -->
+      <div id="flash-lock" class="flash-lock">
+        🔒 Connect your wallet and verify your Orchard Pass (step&nbsp;1) to unlock flashing.
+      </div>
+
+      <div id="flash-area" hidden>
+        <p>Click <b>Install</b> below, then pick your board from the serial-port
+           dialog — <code>Silicon Labs CP210x</code> (Windows),
+           <code>cu.SLAB_USBtoUART</code> (macOS), or <code>ttyUSB0</code> (Linux).
+           The installer erases the board, writes the latest signed Orchard
+           firmware (~1&nbsp;MB), and reboots it.</p>
+        <p style="margin: 18px 0 6px 0;">
+          <esp-web-install-button manifest="./manifest.json">
+            <button slot="activate">Install Tree Firmware</button>
+            <span slot="unsupported" class="unsupported">
+              Your browser doesn't support Web Serial. Open this page in
+              <b>Chrome, Edge, Brave, or Opera</b> on a desktop computer.
+            </span>
+            <span slot="not-allowed" class="unsupported">
+              Web Serial needs a secure context. Reload this page over
+              <code>https://</code> or <code>http://localhost</code>.
+            </span>
+          </esp-web-install-button>
+        </p>
+        <p class="browser-note">
+          Requires a Chromium-based browser (Chrome / Edge / Brave / Opera).
+          <b>Close any other program holding the port</b> (PlatformIO monitor,
+          Arduino IDE, PuTTY) before clicking — only one process can own a COM
+          port at a time.
+        </p>
+      </div>
     </div>
 
     <div class="card">
-      <h2>3 · Claim your Tree</h2>
-      <p>When the flash finishes, the board reboots and shows a
-         <b>claim code</b>. Head to the claim page, connect your Chia wallet
-         (<b>Sage</b> or <b>Goby</b>), prove your <b>Orchard Pass</b>, and
-         enter the code — your Tree is bound to you and starts reporting.</p>
-      <p style="margin: 18px 0 6px 0;">
-        <a class="claim-cta" href="https://oracle.theorchard.network/claim">🌳 Claim your Tree →</a>
-      </p>
-      <p class="browser-note">
-        First connect your WiFi too: point the Tree at your network during
-        setup so it can reach the oracle. New here? The
-        <a href="https://github.com/FlipThisCrypto/the-orchard/blob/main/docs/OPERATOR_QUICKSTART.md"
-           target="_blank" rel="noopener">Operator Quickstart</a> walks through
-        the whole flow.
+      <h2>4 · WiFi + claim — automatic</h2>
+      <p>After flashing, the installer asks for your <b>WiFi</b> and sends it to
+         the Tree over USB. The Tree joins your network, registers its claim
+         code, and hands the browser a link straight to <b>claiming</b> it —
+         your wallet's already connected, so it binds in one step. Then watch it
+         live on <a href="https://view.theorchard.network/">the dashboard</a>.</p>
+      <p class="browser-note">If the installer doesn't offer WiFi (older
+        firmware on the board), claim it manually instead:</p>
+      <p style="margin: 10px 0 6px 0;">
+        <a class="claim-cta" href="https://oracle.theorchard.network/claim">🌳 Claim a Tree manually →</a>
       </p>
     </div>
 
@@ -322,5 +337,75 @@
        *.theorchard.network origin; on the bare *.pages.dev URL the button
        shows but Connect needs the custom domain.) -->
   <script src="https://oracle.theorchard.network/connect.js"></script>
+
+  <script>
+    // Pass gate — flashing stays locked until the connected wallet holds an
+    // Orchard Pass. connect.js (above) exposes window.OrchardConnect; we react
+    // to connect/disconnect and check the oracle's public /claim/pass endpoint.
+    (function () {
+      var ORACLE = "https://oracle.theorchard.network";
+      var el = function (id) { return document.getElementById(id); };
+      function lock(msg) {
+        var f = el("flash-area"), l = el("flash-lock");
+        if (f) f.hidden = true;
+        if (l) { l.hidden = false; if (msg) l.innerHTML = msg; }
+      }
+      function unlock() {
+        var f = el("flash-area"), l = el("flash-lock");
+        if (f) f.hidden = false;
+        if (l) l.hidden = true;
+      }
+      function setStatus(cls, html) {
+        var s = el("pass-status");
+        if (s) { s.className = "pass-status " + cls; s.innerHTML = html; }
+      }
+      var checking = 0;
+      async function checkPass() {
+        var OC = window.OrchardConnect;
+        var sess = OC && OC.getSession && OC.getSession();
+        if (!sess) {
+          setStatus("dim", "Connect your wallet to begin.");
+          lock("🔒 Connect your wallet and verify your Orchard Pass (step&nbsp;1) to unlock flashing.");
+          return;
+        }
+        var myTurn = ++checking;
+        setStatus("dim", "Checking your Orchard Pass…");
+        lock("🔒 Verifying your Orchard Pass…");
+        try {
+          var r = await fetch(ORACLE + "/claim/pass/" + encodeURIComponent(sess.address));
+          if (myTurn !== checking) return;                 // superseded by a newer check
+          var j = await r.json().catch(function () { return {}; });
+          if (r.ok && j.has_pass) {
+            setStatus("ok", "✓ Orchard Pass verified" +
+              (j.edition_number ? " — edition " + j.edition_number : "") +
+              ". You're cleared to flash.");
+            unlock();
+          } else if (r.ok) {
+            setStatus("bad", "No Orchard Pass in this wallet. " +
+              "<a href='" + (j.buy_url || "https://mintgarden.io") +
+              "' target='_blank' rel='noopener'>Get a Genesis Pass on MintGarden →</a> then reconnect.");
+            lock("🔒 An Orchard Pass is required to flash and claim a Tree.");
+          } else {
+            throw new Error("HTTP " + r.status);
+          }
+        } catch (e) {
+          if (myTurn !== checking) return;
+          // Endpoint missing/unreachable (e.g. the oracle is mid-redeploy and
+          // doesn't serve /claim/pass yet) — fail OPEN so the flasher isn't
+          // bricked, but be explicit a Pass is still required to claim.
+          setStatus("dim", "⚠️ Couldn't verify your Orchard Pass (the oracle may be " +
+            "updating). Flashing is open for now — a Pass is still required to claim the Tree.");
+          unlock();
+        }
+      }
+      function start() {
+        var OC = window.OrchardConnect;
+        if (OC && OC.onChange) OC.onChange(checkPass);
+        checkPass();
+      }
+      if (window.OrchardConnect) start();
+      else window.addEventListener("load", start);
+    })();
+  </script>
 </body>
 </html>
