@@ -84,6 +84,63 @@ def test_claim_config_unconfigured_by_default(monkeypatch):
     reset_settings_for_tests()
 
 
+# --- GET /claim/pass/{address} — the flasher's pre-flash Pass gate ---------
+
+_ADDR = "xch1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+
+
+def test_claim_pass_check_has_pass(monkeypatch):
+    from oracle.app import pass_verify
+    monkeypatch.setattr(
+        pass_verify, "list_passes_for_address",
+        lambda addr: [{"nft_coin_id": "nft1examplepass",
+                       "name": "Orchard Pass", "edition_number": 1}],
+    )
+    reset_settings_for_tests()
+    with TestClient(app) as c:
+        r = c.get(f"/claim/pass/{_ADDR}")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["has_pass"] is True
+    assert j["pass_nft_id"] == "nft1examplepass"
+    assert j["pass_name"] == "Orchard Pass"
+    assert j["edition_number"] == 1
+    assert j["mintgarden_url"].endswith("nft1examplepass")
+
+
+def test_claim_pass_check_no_pass(monkeypatch):
+    from oracle.app import pass_verify
+    monkeypatch.setattr(pass_verify, "list_passes_for_address", lambda addr: [])
+    reset_settings_for_tests()
+    with TestClient(app) as c:
+        r = c.get(f"/claim/pass/{_ADDR}")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["has_pass"] is False
+    assert j["pass_nft_id"] is None
+    assert "mintgarden.io/collections/" in j["buy_url"]
+
+
+def test_claim_pass_check_rejects_bad_address():
+    reset_settings_for_tests()
+    with TestClient(app) as c:
+        r = c.get("/claim/pass/not-an-address")
+    assert r.status_code == 400
+
+
+def test_claim_pass_check_indexer_error_502(monkeypatch):
+    from oracle.app import pass_verify
+
+    def boom(addr):
+        raise pass_verify.PassVerifyError("indexer down")
+
+    monkeypatch.setattr(pass_verify, "list_passes_for_address", boom)
+    reset_settings_for_tests()
+    with TestClient(app) as c:
+        r = c.get(f"/claim/pass/{_ADDR}")
+    assert r.status_code == 502
+
+
 def test_claim_config_reflects_project_id(monkeypatch):
     monkeypatch.setenv("ORCHARD_ORACLE_WC_PROJECT_ID", "pid_test_abc123")
     reset_settings_for_tests()
