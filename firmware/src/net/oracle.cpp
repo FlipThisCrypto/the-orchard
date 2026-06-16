@@ -57,6 +57,12 @@ bool oracle_post_reading(JsonDocument& payload) {
     Serial.println("[oracle] no URL configured; skipping POST");
     return false;
   }
+  // The reading-ingest endpoint is POST <base>/readings. oracle_base_url() is
+  // only the host root, so append the path (Cloudflare blocks the bare root, so
+  // a missing path here is a hard 403 — see fw 0.5.0 field reports). Strip any
+  // trailing slash first so we never produce "//readings".
+  while (url.endsWith("/")) url.remove(url.length() - 1);
+  url += "/readings";
 
   // Add identity fields.
   payload["schema"]  = 1;  // ADR-0006/T14: payload format version (start at 1)
@@ -116,7 +122,8 @@ bool oracle_post_reading(JsonDocument& payload) {
   }
   Serial.printf("[oracle] POST -> %d (%u bytes)\n", code, (unsigned)body.length());
   if (code < 200 || code >= 300) {
-    const String resp = http.getString();
+    String resp = http.getString();
+    if (resp.length() > 160) resp = resp.substring(0, 160) + "...";
     Serial.printf("[oracle] body: %s\n", resp.c_str());
   }
   http.end();
