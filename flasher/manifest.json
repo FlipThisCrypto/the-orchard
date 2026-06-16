@@ -1,19 +1,19 @@
 {
   "name": "The Orchard — Tree Firmware",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "funding_url": "https://github.com/FlipThisCrypto/the-orchard",
   "new_install_prompt_erase": true,
   "builds": [
     {
       "chipFamily": "ESP32",
       "parts": [
-        { "path": "/fw/v0.5.0/orchard-freenove_esp32_wroom-web-v0.5.0.bin", "offset": 0 }
+        { "path": "/fw/v0.5.1/orchard-freenove_esp32_wroom-web-v0.5.1.bin", "offset": 0 }
       ]
     },
     {
       "chipFamily": "ESP32-S3",
       "parts": [
-        { "path": "/fw/v0.5.0/orchard-freenove_esp32s3_uart-web-v0.5.0.bin", "offset": 0 }
+        { "path": "/fw/v0.5.1/orchard-freenove_esp32s3_uart-web-v0.5.1.bin", "offset": 0 }
       ]
     }
   ]
