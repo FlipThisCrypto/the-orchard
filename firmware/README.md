@@ -126,7 +126,7 @@ Each sample POST is a small JSON document:
     "mq135": { "adc_raw": 1834.0, "adc_baseline": 1820.3,
                "adc_dev": 13.7, "voltage_v": 1.477 },
     "gps":   { "satellites": 7, "fix": true, "fix_age_ms": 412,
-               "lat": 38.004616, "lon": -85.737403,
+               "lat": 40.000000, "lon": -83.000000,
                "alt_m": 168.2, "speed_kmh": 0.0,
                "utc": "2026-05-27T20:02:14Z" }
   }
