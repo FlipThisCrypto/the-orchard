@@ -28,10 +28,26 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace orchard::net {
 
 void console_begin();
+
+// Drain the console's pending input. As of fw 0.5.0 the console NO LONGER
+// reads Serial itself — Improv serial owns the single Serial reader and
+// routes non-Improv bytes here via console_feed_byte(). console_loop() is
+// kept (a) so the lifecycle in main.cpp reads naturally and (b) as the place
+// for any future non-input periodic console work; today it is a no-op. The
+// byte routing happens in improv_serial_pump().
 void console_loop();
+
+// Feed one received byte to the console's line buffer. Called by the Improv
+// serial pump for every byte that is NOT part of an Improv packet. A complete
+// line (terminated by '\n') is dispatched exactly as the old console_loop()
+// did, so typed commands behave identically. '\r' is ignored; the line buffer
+// is bounded to 512 chars.
+void console_feed_byte(uint8_t b);
 
 // Optional: callback used to trigger an immediate sample+POST from
 // console (lets us avoid a circular dep between this module and main).
