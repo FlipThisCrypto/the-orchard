@@ -140,6 +140,23 @@
                   0 0 26px rgba(255, 210, 58, 0.55);
     }
 
+    /* "Claim your Tree" CTA — leaf-green so it reads as the next step after
+       the orange Install button. */
+    .claim-cta {
+      display: inline-block; font-weight: 700; font-size: 16px;
+      padding: 12px 24px; border-radius: 6px; text-decoration: none;
+      color: #04220f; border: 1px solid var(--leaf);
+      background: linear-gradient(180deg, var(--leaf) 0%, #3ad17f 100%);
+      box-shadow: 0 0 0 1px rgba(82, 232, 158, 0.35),
+                  0 0 18px rgba(82, 232, 158, 0.30);
+      transition: filter 0.15s ease, box-shadow 0.15s ease;
+    }
+    .claim-cta:hover {
+      filter: brightness(1.08); color: #04220f;
+      box-shadow: 0 0 0 1px rgba(82, 232, 158, 0.6),
+                  0 0 26px rgba(82, 232, 158, 0.5);
+    }
+
     .browser-note { color: var(--fg-muted); font-size: 13px; margin-top: 10px; }
     code, kbd {
       background: var(--bg-card-2);
@@ -260,13 +277,21 @@
     </div>
 
     <div class="card">
-      <h2>3 · Provision and plant</h2>
-      <p>After the flash finishes, the board reboots and prints its
-         identity over serial. Next you'll point it at your local
-         Orchard View dashboard and walk through the
-         <b>Plant a Tree</b> wizard — see the
-         <a href="https://github.com/FlipThisCrypto/the-orchard/blob/main/docs/OPERATOR_QUICKSTART.md#10-plant-your-tree"
-            target="_blank" rel="noopener">Operator Quickstart, section 10</a>.</p>
+      <h2>3 · Claim your Tree</h2>
+      <p>When the flash finishes, the board reboots and shows a
+         <b>claim code</b>. Head to the claim page, connect your Chia wallet
+         (<b>Sage</b> or <b>Goby</b>), prove your <b>Orchard Pass</b>, and
+         enter the code — your Tree is bound to you and starts reporting.</p>
+      <p style="margin: 18px 0 6px 0;">
+        <a class="claim-cta" href="https://oracle.theorchard.network/claim">🌳 Claim your Tree →</a>
+      </p>
+      <p class="browser-note">
+        First connect your WiFi too: point the Tree at your network during
+        setup so it can reach the oracle. New here? The
+        <a href="https://github.com/FlipThisCrypto/the-orchard/blob/main/docs/OPERATOR_QUICKSTART.md"
+           target="_blank" rel="noopener">Operator Quickstart</a> walks through
+        the whole flow.
+      </p>
     </div>
 
     <div class="card">
