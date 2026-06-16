@@ -151,7 +151,7 @@ def test_post_reading_happy_path_and_retrieve(client: TestClient):
         "ts_ms": 12345,
         "sensors": {
             "mq135": {"adc_raw": 1820.0, "voltage_v": 1.46},
-            "gps": {"fix": True, "lat": 38.0046, "lon": -85.7374, "satellites": 7},
+            "gps": {"fix": True, "lat": 40.0000, "lon": -83.0000, "satellites": 7},
         },
     }
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -173,7 +173,7 @@ def test_post_reading_happy_path_and_retrieve(client: TestClient):
     rows = r2.json()
     assert len(rows) == 1
     assert rows[0]["fw_version"] == "0.1.0"
-    assert rows[0]["gps_lat"] == pytest.approx(38.0046)
+    assert rows[0]["gps_lat"] == pytest.approx(40.0000)
     assert rows[0]["gps_fix"] is True
     assert rows[0]["payload"]["sensors"]["mq135"]["adc_raw"] == 1820.0
 
@@ -1215,7 +1215,7 @@ def test_readings_gps_hidden_from_non_owner(auth_client):
         s.commit()
 
     payload = {"node_id": NODE_ID, "ts_ms": 99,
-               "sensors": {"gps": {"fix": True, "lat": 38.0046, "lon": -85.7374, "satellites": 7}}}
+               "sensors": {"gps": {"fix": True, "lat": 40.0000, "lon": -83.0000, "satellites": 7}}}
     body = json.dumps(payload, separators=(",", ":")).encode()
     pr = auth_client.post("/readings", content=body, headers={
         "Content-Type": "application/json", "X-Orchard-Node": NODE_ID, "X-Orchard-Sig": _sign(body)})
@@ -1233,8 +1233,8 @@ def test_readings_gps_hidden_from_non_owner(auth_client):
     token, _ = sm.issue(addr)
     row2 = auth_client.get(
         f"/readings/{NODE_ID}", headers={"Authorization": f"Bearer {token}"}).json()[0]
-    assert row2["gps_lat"] == pytest.approx(38.0046)
-    assert row2["payload"]["sensors"]["gps"]["lat"] == pytest.approx(38.0046)
+    assert row2["gps_lat"] == pytest.approx(40.0000)
+    assert row2["payload"]["sensors"]["gps"]["lat"] == pytest.approx(40.0000)
 
 
 def test_fixed_window_limiter():

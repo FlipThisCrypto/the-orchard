@@ -384,7 +384,7 @@ const OrchardView = (() => {
 
   // ---- GPS coordinate formatting + interpretation -------------------
 
-  // Directional decimal: "38.004648°N", "85.737465°W"
+  // Directional decimal: "40.000000°N", "83.000000°W"
   function formatLat(lat) {
     if (lat === null || lat === undefined) return '—';
     const n = Number(lat);

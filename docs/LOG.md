@@ -219,8 +219,8 @@ The Orchard — Genesis Passes (10 NFTs) are minted and indexed on MintGarden.
 - **Collection (bech32):** `col1a56lp9zufakywlq4k5nntu3nd7k6jy2pe6ee23046ydlahmungqslvmj29`
 - **Collection (CHIP-7 UUID):** `96ae1978-1a69-4f1c-ad24-f5ac66d02811`
 - **Browse:** https://mintgarden.io/collections/col1a56lp9zufakywlq4k5nntu3nd7k6jy2pe6ee23046ydlahmungqslvmj29
-- **Creator DID:** `did:chia:10g777py7u3yj2uytdd7a0537ajkkdap9yk9jau5g7n27vvf3s7jqrfamq3`
-- **Minter address:** `xch1yq9grysxg3tjx5drgjg2f9rps9njd34gl3c0g5x3gyhyq9lmyhlqhh8997`
+- **Creator DID:** `did:chia:10g777…famq3` (full value lives in `nft/generate.py`, where it's load-bearing for on-chain Pass verification)
+- **Minter address:** `xch1yq9g…hh8997` (redacted from docs; discoverable on-chain)
 - **Royalty:** 10% (1000 BP).
 - **Per-Pass `data_hash` and `license_hash`:** match the values in our `nft/mint_plan.yaml` byte-for-byte — same compressed videos, same License PDF as we prepared locally.
 
