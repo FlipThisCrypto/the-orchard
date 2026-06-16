@@ -18,17 +18,30 @@
       display:flex;flex-direction:column;
       background-image:radial-gradient(ellipse 60% 40% at 50% 0%,rgba(72,255,240,.06),transparent 70%),
         radial-gradient(ellipse 70% 50% at 50% 100%,rgba(82,232,158,.05),transparent 70%);}
-    header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);
-      background:linear-gradient(180deg,rgba(14,17,36,.95),rgba(6,7,15,.85));position:relative}
-    header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
-      background:var(--holo);background-size:200% 100%;opacity:.45;animation:holo 14s linear infinite}
-    header img{width:40px;height:40px;border-radius:50%;
-      box-shadow:0 0 0 1px rgba(72,255,240,.35),0 0 14px rgba(72,255,240,.25)}
-    .brand{font-weight:700;font-size:18px;letter-spacing:.6px;background:var(--holo);
-      background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:holo 9s linear infinite}
-    .sub{color:var(--muted);font-size:11px;letter-spacing:2.5px;text-transform:uppercase}
-    .home-link{margin-left:auto;color:var(--muted);font-size:13px;text-decoration:none}
-    .home-link:hover{color:var(--cyber)}
+    /* ===== Orchard shared top nav (identical across every page) ===== */
+    .on-nav{position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;gap:14px;height:64px;padding:0 22px;background:linear-gradient(180deg,rgba(7,11,9,.92),rgba(7,11,9,.5));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid rgba(120,230,200,.16);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+    .on-nav a{text-decoration:none}
+    .on-brand{display:flex;align-items:center;gap:11px;font-weight:800;color:#ecfbf3;white-space:nowrap}
+    .on-brand img{width:32px;height:32px;border-radius:50%;display:block;box-shadow:0 0 0 1px rgba(120,230,200,.25),0 0 16px rgba(177,74,239,.4)}
+    .on-brand .on-name{font-size:1.05rem}
+    .on-brand .on-tld{color:#76907f;font-weight:600}
+    .on-links{display:flex;align-items:center;gap:6px}
+    .on-links a.on-lnk{color:#a3bcb0;font-size:.92rem;padding:8px 11px;border-radius:9px;white-space:nowrap}
+    .on-links a.on-lnk:hover{color:#ecfbf3;background:rgba(255,255,255,.05)}
+    .on-links a.on-trees{color:#d9ffe9;font-weight:700}
+    .on-icon{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:10px;border:1px solid rgba(120,230,200,.34);color:#ecfbf3}
+    .on-icon:hover{background:rgba(120,230,200,.1)}
+    .on-icon svg{width:17px;height:17px}
+    .on-nav [data-orchard-connect]{display:inline-flex;align-items:center;gap:7px}
+    .on-nav .orchard-connect-btn{cursor:pointer;font:inherit;font-weight:700;font-size:.9rem;letter-spacing:.2px;padding:9px 16px;border-radius:11px;border:1px solid transparent;color:#0a0a0a;background:linear-gradient(100deg,#b14aef,#4f7bff,#28d0d0,#46e08a,#f4d23c);background-size:180% auto;box-shadow:none}
+    .on-nav .orchard-connect-btn:hover{filter:brightness(1.08)}
+    .on-nav .orchard-connect-btn:disabled{opacity:.6;cursor:default}
+    .on-nav .orchard-disc{cursor:pointer;font:inherit;font-weight:600;font-size:.82rem;letter-spacing:normal;padding:7px 12px;border-radius:10px;color:#ecfbf3;background:transparent;border:1px solid rgba(120,230,200,.34);box-shadow:none}
+    .on-nav .orchard-disc:hover{background:rgba(120,230,200,.1)}
+    .on-nav .orchard-connected{font-size:.82rem;color:#a3bcb0}
+    .on-nav .orchard-connected code{color:#2bd4d4;background:rgba(0,0,0,.34);border:1px solid rgba(120,230,200,.16);border-radius:7px;padding:2px 7px;font-size:.78rem}
+    @media(max-width:820px){.on-links a.on-lnk:not(.on-trees){display:none}}
+    @media(max-width:520px){.on-icon{display:none}}
     main{flex:1;max-width:640px;margin:36px auto;padding:0 22px;width:100%}
     h1{margin:0 0 8px;font-size:30px;background:var(--holo);background-size:200% 100%;
       -webkit-background-clip:text;background-clip:text;color:transparent;animation:holo 11s linear infinite}
@@ -86,10 +99,22 @@
   </style>
 </head>
 <body>
-  <header>
-    <img src="https://defiant-black-skink.myfilebase.com/ipfs/QmUWhqeByfKrVAa5Ev3MRymFmhMSoTMnzDwE3Gjd4Cvray" alt="The Orchard">
-    <div><div class="brand">THE ORCHARD</div><div class="sub">Claim a Tree</div></div>
-    <a class="home-link" id="hdr-home" href="https://theorchard.network">← theorchard.network</a>
+  <!-- ===== Orchard shared top nav ===== -->
+  <header class="on-nav">
+    <a class="on-brand" id="hdr-home" href="https://theorchard.network/" aria-label="The Orchard home">
+      <img src="https://theorchard.network/icon.jpg" alt="The Orchard Pass emblem">
+      <span class="on-name">The Orchard<span class="on-tld">.network</span></span>
+    </a>
+    <nav class="on-links">
+      <a class="on-lnk" href="https://theorchard.network/#start">Get started</a>
+      <a class="on-lnk" href="https://theorchard.network/#what">What it is</a>
+      <a class="on-lnk" href="https://theorchard.network/#state">Status</a>
+      <a class="on-lnk" href="https://theorchard.network/#roadmap">Roadmap</a>
+      <a class="on-lnk on-trees" href="https://orchard-view.pages.dev/">View Live Trees</a>
+      <a class="on-icon" href="https://x.com/FiendStudios" target="_blank" rel="noopener" aria-label="The Orchard on X"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.9 1.6h3.5l-7.6 8.7L23.8 22h-7l-5.5-7.2L4.9 22H1.4l8.1-9.3L1 1.6h7.2l5 6.6 5.7-6.6zm-1.2 18.3h1.9L7.1 3.6H5l12.7 16.3z"/></svg></a>
+      <a class="on-icon" href="https://github.com/FlipThisCrypto/the-orchard" target="_blank" rel="noopener" aria-label="The Orchard on GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+      <span data-orchard-connect></span>
+    </nav>
   </header>
 
   <main id="main">
