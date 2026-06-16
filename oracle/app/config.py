@@ -76,6 +76,14 @@ class Settings(BaseSettings):
         "https://theorchard.network,https://www.theorchard.network,"
         "https://view.theorchard.network"
     )
+    # Any subdomain of theorchard.network (apex included) may call the oracle
+    # cross-origin — so new Orchard pages (flash., view., …) work without
+    # adding each origin by hand. Safe: allow_credentials is False and auth is
+    # a Bearer token (never a cookie), so CORS here only governs who may READ
+    # responses, all of which are our own properties. A *.theorchard.network
+    # origin can't be forged without controlling the zone; the $ anchor
+    # rejects look-alikes like theorchard.network.evil.com.
+    cors_origin_regex: str = r"^https://([a-z0-9-]+\.)*theorchard\.network$"
 
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
