@@ -7,8 +7,26 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 
 from .. import seasons
+from ..config import settings
 
 router = APIRouter()
+
+
+def _public_flags() -> dict:
+    """Non-secret operator-visible posture flags for preflight / deploy checks.
+
+    Never include tokens, session secrets, DB URLs, or signing material.
+    """
+    s = settings()
+    return {
+        "require_wallet_session": s.require_wallet_session,
+        "require_seq": s.require_seq,
+        "max_reading_age_seconds": s.max_reading_age_seconds,
+        "max_reading_future_seconds": s.max_reading_future_seconds,
+        "max_reading_body_bytes": s.max_reading_body_bytes,
+        "auth_rate_limit_per_min": s.auth_rate_limit_per_min,
+        "readings_rate_limit_per_min": s.readings_rate_limit_per_min,
+    }
 
 
 @router.get("/")
@@ -19,9 +37,10 @@ def root() -> dict:
         "version": "0.1.0",
         "now_utc": datetime.now(timezone.utc).isoformat(),
         "current_season": seasons.current_season(),
+        "flags": _public_flags(),
     }
 
 
 @router.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "flags": _public_flags()}

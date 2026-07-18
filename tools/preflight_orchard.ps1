@@ -28,7 +28,12 @@ foreach ($c in $checks) {
         if ($ok -and $c.RequireJson) {
             try {
                 $j = $r.Content | ConvertFrom-Json
-                if ($c.Name -eq 'health' -and $j.ok -ne $true) { $ok = $false; $extra = ' ok!=true' }
+                if ($c.Name -eq 'health') {
+                    if ($j.ok -ne $true) { $ok = $false; $extra = ' ok!=true' }
+                    elseif ($null -ne $j.flags) {
+                        $extra = " require_seq=$($j.flags.require_seq) body_cap=$($j.flags.max_reading_body_bytes)"
+                    }
+                }
                 if ($c.Name -eq 'manifest') { $extra = " version=$($j.version)" }
                 if ($c.Name -eq 'nodes') {
                     $n = @($j).Count

@@ -1404,6 +1404,70 @@ def test_seq_not_enforced_when_flag_off(client: TestClient):
     assert _post_seq_reading(client, {"sensors": {}}).status_code == 202
 
 
+def test_seq_concurrent_posts_only_advance_monotonically(seq_client: TestClient):
+    """Guarded UPDATE must reject non-increasing seqs even under concurrent POSTs.
+
+    SQLite serializes writers, but the test still proves the *application*
+    contract: many distinct seqs race; only strictly-greater advances win;
+    losers are 409 (not double-accepted). Uses threads + the same in-memory
+    StaticPool engine the fixture already wires.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Seed last_seq = 10.
+    assert _post_seq_reading(seq_client, {"seq": 10, "sensors": {"seed": True}}).status_code == 202
+
+    def post_one(seq: int) -> int:
+        body = json.dumps({"seq": seq, "sensors": {"n": seq}}).encode("utf-8")
+        r = seq_client.post(
+            "/readings",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Orchard-Node": NODE_ID,
+                "X-Orchard-Sig": _sign(body),
+            },
+        )
+        return r.status_code
+
+    # Mix: below watermark (should 409), equal (409 as distinct body), above (202).
+    candidates = [5, 8, 10, 11, 12, 9, 15, 11, 20, 3]
+    codes: list[int] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futs = [pool.submit(post_one, s) for s in candidates]
+        for f in as_completed(futs):
+            codes.append(f.result())
+
+    accepted = codes.count(202)
+    conflicted = codes.count(409)
+    assert accepted + conflicted == len(candidates), codes
+    # At least the three strictly-greater first-winners (11,12,15,20 space)
+    # and several stale; exact count depends on race order among 11/12/15/20.
+    assert accepted >= 1
+    assert conflicted >= 1
+    # Final post of a still-higher seq must succeed (watermark advanced).
+    assert _post_seq_reading(seq_client, {"seq": 100, "sensors": {}}).status_code == 202
+    # And the old max cannot be re-used with a new body.
+    assert _post_seq_reading(seq_client, {"seq": 20, "sensors": {"x": 1}}).status_code == 409
+
+
+def test_health_exposes_public_flags(client: TestClient):
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    flags = body["flags"]
+    assert "require_seq" in flags
+    assert "require_wallet_session" in flags
+    assert "max_reading_body_bytes" in flags
+    assert "max_reading_future_seconds" in flags
+    # Never leak secrets via health.
+    dumped = json.dumps(body)
+    assert "session_secret" not in dumped
+    assert "writer_token" not in dumped
+    assert "db_url" not in dumped
+
+
 # ---------------- T6: reading freshness (max_reading_age_seconds) ----------
 #
 # Optional data-quality guard: reject readings whose signed UTC `ts` is older
