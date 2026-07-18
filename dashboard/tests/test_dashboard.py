@@ -648,13 +648,43 @@ def test_api_auth_verify_forwards_body(client, monkeypatch):
     assert captured["body"]["nonce"] == "deadbeef"
 
 
-def test_base_template_includes_connect_slot(client):
+def test_base_template_includes_connect_slot(client, monkeypatch):
     """The Connect Wallet area must be wired into base.html so every
-    page picks it up via the script tag."""
+    page picks it up via the script tag.
+
+    Mock the oracle: this assertion is about the template chrome, not
+    live oracle connectivity. Without the mock, a local process that
+    answers on the configured oracle URL with a non-JSON body would
+    crash the page (JSONDecodeError) and flake the suite.
+    """
+    monkeypatch.setattr(
+        oracle_client, "root",
+        lambda: {"version": "0.1.0", "current_season": 1, "now_utc": "2026-05-27T20:00:00+00:00"},
+    )
+    monkeypatch.setattr(oracle_client, "list_nodes", lambda: [])
     r = client.get("/")
+    assert r.status_code == 200
     html = r.get_data(as_text=True)
     assert 'id="connect-slot"' in html
     assert "connect.js" in html
+
+
+def test_root_non_json_becomes_oracle_error(monkeypatch):
+    """A 200 with an empty/HTML body must not raise JSONDecodeError."""
+    class _FakeResp:
+        status_code = 200
+        text = "<html>not json</html>"
+
+        def json(self):
+            raise ValueError("No JSON object could be decoded")
+
+    monkeypatch.setattr(
+        "dashboard.app.oracle_client.requests.get",
+        lambda *a, **k: _FakeResp(),
+    )
+    with pytest.raises(oracle_client.OracleError) as ei:
+        oracle_client.root()
+    assert "non-JSON" in str(ei.value)
 
 
 # ---------------- 2026-06-09 security hardening ----------------

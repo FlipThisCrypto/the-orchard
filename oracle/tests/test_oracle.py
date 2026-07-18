@@ -1473,6 +1473,36 @@ def test_freshness_off_by_default_accepts_old_ts(client: TestClient):
     assert _post_with_ts(client, _now_epoch() - 10_000).status_code == 202
 
 
+def test_future_ts_rejected_by_default_skew(client: TestClient):
+    """max_reading_future_seconds defaults to 300 — a day-ahead ts is 422."""
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    r = _post_with_ts(client, _now_epoch() + 86_400)
+    assert r.status_code == 422
+    assert "future" in r.json()["detail"]
+
+
+def test_near_future_ts_within_skew_accepted(client: TestClient):
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    # 60s ahead is inside the default 300s window.
+    assert _post_with_ts(client, _now_epoch() + 60).status_code == 202
+
+
+def test_oversized_reading_body_rejected(client: TestClient):
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    body = json.dumps({"sensors": {}, "pad": "X" * 70_000}).encode("utf-8")
+    r = client.post(
+        "/readings",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Orchard-Node": NODE_ID,
+            "X-Orchard-Sig": _sign(body),
+        },
+    )
+    assert r.status_code == 413
+    assert "exceeds limit" in r.json()["detail"]
+
+
 # ---------------- T14: payload schema version (ADR-0006) -------------------
 
 def test_schema_version_stored_and_returned(client: TestClient):

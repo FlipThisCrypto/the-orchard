@@ -71,6 +71,16 @@ async def post_reading(
 ) -> dict:
     body_bytes = await request.body()
 
+    # Body-size cap before any crypto/DB work. A hostile client can still
+    # fill the TCP buffer, but we refuse to HMAC-verify or persist multi-MB
+    # "readings". Content-Length is advisory; measure the actual body.
+    max_body = settings().max_reading_body_bytes
+    if max_body > 0 and len(body_bytes) > max_body:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"reading body {len(body_bytes)} bytes exceeds limit {max_body}",
+        )
+
     try:
         node = auth.verify_reading_sig(db, x_orchard_node, x_orchard_sig, body_bytes)
     except auth.SignatureError as e:
@@ -152,15 +162,29 @@ async def post_reading(
     # (epoch seconds, set once the Tree's SNTP clock syncs) is older than
     # max_reading_age_seconds. Only enforced when a ts is present, so
     # pre-SNTP firmware (no ts) is never rejected by it. Off by default.
+    #
+    # Future-skew (max_reading_future_seconds, default 300s) rejects a
+    # device clock that is substantially ahead of the oracle — same
+    # "ts present only" rule so mixed fleets stay safe.
     max_age = settings().max_reading_age_seconds
-    if max_age > 0:
+    max_future = settings().max_reading_future_seconds
+    if max_age > 0 or max_future > 0:
         ts = payload.get("ts") if isinstance(payload, dict) else None
         if isinstance(ts, int) and not isinstance(ts, bool) and ts > 0:
-            age = int(now.timestamp()) - ts
-            if age > max_age:
+            now_s = int(now.timestamp())
+            age = now_s - ts
+            if max_age > 0 and age > max_age:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=f"stale reading: ts {ts} is {age}s old (max {max_age}s)",
+                )
+            if max_future > 0 and (-age) > max_future:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"future reading: ts {ts} is {-age}s ahead of oracle "
+                        f"(max {max_future}s)"
+                    ),
                 )
     # ------------------------------------------------------------------
 

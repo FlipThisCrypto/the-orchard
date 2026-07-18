@@ -76,35 +76,133 @@ class VirtualTree:
         self._lat = round(self._lat + random.uniform(-0.00005, 0.00005), 5)
         self._lon = round(self._lon + random.uniform(-0.00005, 0.00005), 5)
 
-    def next_body(self) -> bytes:
-        """Build the next reading body (bytes) the way the firmware would."""
-        self.seq += 1
+    def sensors_dict(self) -> dict:
+        return {
+            "bme280": {
+                "temperature_mc": self._temp_mc,
+                "humidity_milli_pct": self._humidity,
+                "pressure_pa": self._pressure,
+            },
+            "mq135": {"gas_adc_raw": self._gas_adc},
+            "gps": {
+                "fix": True,
+                "lat": self._lat,
+                "lon": self._lon,
+                "satellites": random.randint(5, 12),
+            },
+        }
+
+    def next_body(self, *, seq: int | None = None, ts: int | None = None,
+                  sensors: dict | None = None, extra: dict | None = None,
+                  omit_seq: bool = False) -> bytes:
+        """Build a reading body (bytes) the way the firmware would.
+
+        Pass overrides for adversarial modes (stale seq, future ts, …).
+        When ``seq`` is None the live counter advances (happy path).
+        """
+        if seq is None:
+            self.seq += 1
+            seq_val = self.seq
+        else:
+            seq_val = seq
         self._drift()
-        body = {
+        body: dict = {
             "node_id": self.node_id,
             "fw": "sim",
             "ts_ms": int(time.monotonic() * 1000) & 0xFFFFFFFF,
-            "ts": int(time.time()),
-            "seq": self.seq,
-            "sensors": {
-                "bme280": {
-                    "temperature_mc": self._temp_mc,
-                    "humidity_milli_pct": self._humidity,
-                    "pressure_pa": self._pressure,
-                },
-                "mq135": {"gas_adc_raw": self._gas_adc},
-                "gps": {
-                    "fix": True,
-                    "lat": self._lat,
-                    "lon": self._lon,
-                    "satellites": random.randint(5, 12),
-                },
-            },
+            "ts": int(time.time()) if ts is None else ts,
+            "sensors": sensors if sensors is not None else self.sensors_dict(),
         }
+        if not omit_seq:
+            body["seq"] = seq_val
+        if extra:
+            body.update(extra)
         return json.dumps(body, separators=(",", ":")).encode("utf-8")
 
     def sign(self, body: bytes) -> str:
         return hmac.new(bytes.fromhex(self.secret_hex), body, hashlib.sha256).hexdigest().upper()
+
+    def body_for_mode(self, mode: str) -> tuple[bytes, str, str]:
+        """Return ``(body, node_header, sig_header)`` for an attack/edge mode.
+
+        Modes (tester + CI adversarial suite):
+          ok              normal next reading
+          duplicate_seq   re-use last accepted seq with a *new* body
+          decreasing_seq  seq = last - 1 (or 1 if never advanced)
+          invalid_sig     valid body, wrong HMAC
+          wrong_key       valid body signed with a different secret
+          malformed       not JSON
+          stale_ts        ts far in the past
+          future_ts       ts far in the future
+          unknown_node    valid body/sig for this Tree but wrong header id
+          oversized       body larger than a normal reading (padding)
+          missing_sensors sensors omitted
+          missing_seq     no seq field
+        """
+        mode = mode.lower().strip()
+        if mode == "ok":
+            body = self.next_body()
+            return body, self.node_id, self.sign(body)
+
+        if mode == "duplicate_seq":
+            # Re-use the last minted seq with a *different* body (captured-
+            # and-held replay). Exact byte-for-byte replays are already
+            # covered by the oracle's sig-dedup path (202 + duplicate).
+            if self.seq < 1:
+                self.next_body()
+            stale = self.seq
+            body = self.next_body(seq=stale, sensors={"attack": "dup"})
+            return body, self.node_id, self.sign(body)
+
+        if mode == "decreasing_seq":
+            # Strictly less than the last minted seq (which a prior happy-path
+            # post should have advanced the oracle's last_seq to).
+            if self.seq < 1:
+                self.next_body()
+            body = self.next_body(seq=max(1, self.seq - 1),
+                                  sensors={"attack": "decr"})
+            return body, self.node_id, self.sign(body)
+
+        if mode == "invalid_sig":
+            body = self.next_body()
+            return body, self.node_id, "00" * 32
+
+        if mode == "wrong_key":
+            body = self.next_body()
+            other = os.urandom(32).hex()
+            sig = hmac.new(bytes.fromhex(other), body, hashlib.sha256).hexdigest().upper()
+            return body, self.node_id, sig
+
+        if mode == "malformed":
+            body = b"{not-json"
+            return body, self.node_id, self.sign(body)
+
+        if mode == "stale_ts":
+            body = self.next_body(ts=int(time.time()) - 86_400)
+            return body, self.node_id, self.sign(body)
+
+        if mode == "future_ts":
+            body = self.next_body(ts=int(time.time()) + 86_400)
+            return body, self.node_id, self.sign(body)
+
+        if mode == "unknown_node":
+            body = self.next_body()
+            return body, "DEAD" * 8, self.sign(body)
+
+        if mode == "oversized":
+            # Default max_reading_body_bytes is 65_536; pad past it.
+            body = self.next_body(extra={"pad": "X" * 70_000})
+            return body, self.node_id, self.sign(body)
+
+        if mode == "missing_sensors":
+            body = self.next_body(sensors={})
+            return body, self.node_id, self.sign(body)
+
+        if mode == "missing_seq":
+            body = self.next_body(omit_seq=True)
+            return body, self.node_id, self.sign(body)
+
+        raise ValueError(f"unknown attack mode: {mode!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -135,10 +233,18 @@ class OracleClient:
 
     def post_reading(self, tree: VirtualTree):
         body = tree.next_body()
+        return self.post_raw(tree.node_id, body, tree.sign(body))
+
+    def post_mode(self, tree: VirtualTree, mode: str):
+        """Post a crafted reading for adversarial / edge-case testing."""
+        body, node_hdr, sig = tree.body_for_mode(mode)
+        return self.post_raw(node_hdr, body, sig)
+
+    def post_raw(self, node_id: str, body: bytes, sig_hex: str):
         headers = {
             "Content-Type": "application/json",
-            "X-Orchard-Node": tree.node_id,
-            "X-Orchard-Sig": tree.sign(body),
+            "X-Orchard-Node": node_id,
+            "X-Orchard-Sig": sig_hex,
         }
         if self._client is not None:
             return self._client.post("/readings", content=body, headers=headers)
@@ -179,6 +285,69 @@ def run_functional(client: OracleClient, trees: int = 1, rounds: int = 3,
 
     return {"trees": trees, "rounds": rounds, "accepted": accepted,
             "failures": failures}
+
+
+# Expected status families for adversarial modes under a production-like
+# oracle (require_seq=true, optional max age). Integration tests assert these.
+NEGATIVE_EXPECTATIONS: dict[str, set[int]] = {
+    "duplicate_seq": {409},
+    "decreasing_seq": {409},
+    "invalid_sig": {401},
+    "wrong_key": {401},
+    "malformed": {400, 401},  # bad JSON after sig check, or sig first
+    "stale_ts": {202, 422},   # 422 only when max_reading_age_seconds > 0
+    "future_ts": {422},       # default max_reading_future_seconds=300
+    "unknown_node": {404},
+    "oversized": {413},       # default max_reading_body_bytes=65536
+    "missing_sensors": {202},  # empty sensors still a valid reading today
+    "missing_seq": {400},      # when require_seq=true
+}
+
+
+def run_negative(client: OracleClient, modes: list[str] | None = None,
+                 verbose: bool = True,
+                 require_seq: bool = True) -> dict:
+    """Register one Tree, post a good baseline reading, then each attack mode.
+
+    Returns ``{mode: status_code, ... , failures: [...]}``. Callers (CI) assert
+    status codes land in ``NEGATIVE_EXPECTATIONS``.
+    """
+    modes = modes or list(NEGATIVE_EXPECTATIONS.keys())
+    tree = VirtualTree.random(0)
+    results: dict[str, int] = {}
+    failures: list[str] = []
+
+    r = client.register(tree)
+    if r.status_code not in (200, 201):
+        return {"results": {}, "failures": [f"register failed: {r.status_code}"]}
+
+    # Baseline: at least one accepted reading so last_seq is non-zero.
+    base = client.post_reading(tree)
+    if base.status_code != 202:
+        return {"results": {},
+                "failures": [f"baseline reading failed: {base.status_code} {_body(base)}"]}
+
+    for mode in modes:
+        # Modes that need a higher watermark already have seq>=1 from baseline.
+        try:
+            resp = client.post_mode(tree, mode)
+        except Exception as e:  # noqa: BLE001 — report, keep going
+            failures.append(f"{mode}: transport error {e}")
+            results[mode] = -1
+            continue
+        code = resp.status_code
+        results[mode] = code
+        expected = NEGATIVE_EXPECTATIONS.get(mode, set())
+        # missing_seq is only invalid when require_seq is on.
+        if mode == "missing_seq" and not require_seq:
+            expected = {202}
+        if expected and code not in expected:
+            failures.append(f"{mode}: got {code}, expected one of {sorted(expected)}; "
+                            f"{_body(resp)}")
+        if verbose:
+            print(f"[neg] {mode:16s} -> {code}")
+
+    return {"results": results, "failures": failures, "node_id": tree.node_id}
 
 
 def run_load(base_url: str, trees: int, duration_s: float, interval_s: float,
@@ -243,13 +412,16 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m tools.tree_sim.sim",
                                 description="Emulate virtual Trees against an oracle.")
     p.add_argument("--oracle", required=True, help="base URL, e.g. http://127.0.0.1:8000")
-    p.add_argument("--mode", choices=["functional", "load"], default="functional")
+    p.add_argument("--mode", choices=["functional", "load", "negative"],
+                   default="functional")
     p.add_argument("--trees", type=int, default=1)
     p.add_argument("--rounds", type=int, default=3, help="functional: readings per Tree")
     p.add_argument("--duration", type=float, default=30.0, help="load: seconds")
     p.add_argument("--interval", type=float, default=60.0, help="load: seconds between a Tree's posts")
     p.add_argument("--workers", type=int, default=32, help="load: concurrent threads")
     p.add_argument("--seed", type=int, default=None, help="deterministic identities/drift")
+    p.add_argument("--attacks", default=None,
+                   help="negative mode: comma-separated attack names (default: all)")
     args = p.parse_args(argv)
 
     if args.seed is not None:
@@ -259,6 +431,19 @@ def main(argv: list[str] | None = None) -> int:
         stats = run_functional(OracleClient(base_url=args.oracle),
                                trees=args.trees, rounds=args.rounds, verbose=True)
         print(json.dumps({k: v for k, v in stats.items() if k != "failures"}, indent=2))
+        if stats["failures"]:
+            print("FAILURES:", file=sys.stderr)
+            for f in stats["failures"]:
+                print("  " + f, file=sys.stderr)
+            return 1
+        return 0
+
+    if args.mode == "negative":
+        modes = ([m.strip() for m in args.attacks.split(",") if m.strip()]
+                 if args.attacks else None)
+        stats = run_negative(OracleClient(base_url=args.oracle),
+                             modes=modes, verbose=True)
+        print(json.dumps({"results": stats["results"]}, indent=2))
         if stats["failures"]:
             print("FAILURES:", file=sys.stderr)
             for f in stats["failures"]:
