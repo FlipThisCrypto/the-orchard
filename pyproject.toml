@@ -10,7 +10,7 @@
 # path, which avoids the "two test_*.py files in `tests/` collide" trap
 # you hit when components don't share a package root.
 addopts = "--import-mode=importlib"
-testpaths = ["oracle/tests", "dashboard/tests", "orchard_chia/tests"]
+testpaths = ["oracle/tests", "dashboard/tests", "orchard_chia/tests", "tools"]
 python_files = ["test_*.py"]
 
 [tool.ruff]

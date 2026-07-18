@@ -12,7 +12,7 @@ By the end of this doc you'll have:
 2. **A local Oracle** — a small Python service on your PC that receives those readings, verifies their signatures, and stores them.
 3. **Orchard View** — a local web dashboard showing your Tree's live data.
 
-This is the **single-operator** path — everything runs on your machine. It's how to verify the loop works end-to-end. A future doc (`OPERATOR_NETWORK.md`, not yet written) will cover joining a shared hosted network where multiple operators submit to one oracle and earn `$JUICE` for verified uptime.
+This is the **single-operator** path — everything runs on your machine. It's how to verify the loop works end-to-end. To join the **shared hosted network** (browser flash → claim with an Orchard Pass → Orchard View), see [`OPERATOR_NETWORK.md`](./OPERATOR_NETWORK.md).
 
 > **Pre-alpha caveat:** The Orchard is a proof of concept. The pieces below work today, but the *network* (multiple operators sharing one oracle, automated `$JUICE` payouts to strangers, an NFT-gated registration UX) isn't built yet. You can plant a Tree, see it on a dashboard, and own the data — that's the v1 promise. The earning-`$JUICE`-as-a-stranger flow is Phase 10+.
 

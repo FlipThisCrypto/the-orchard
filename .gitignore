@@ -74,6 +74,9 @@ yarn-error.log
 Thumbs.db
 desktop.ini
 
+# --- Oracle backups (contain Tree signing material; never commit) ---
+oracle/backups/
+
 # --- Secrets / credentials (NEVER commit these) ---
 *.pem
 *.key
