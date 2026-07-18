@@ -12,8 +12,8 @@ The oracle is the single trust boundary in v1 between "what Trees claim" and "wh
 
 | Method | Path                              | Purpose                                                                |
 |--------|-----------------------------------|------------------------------------------------------------------------|
-| GET    | `/`                               | Liveness + current Season number                                       |
-| GET    | `/health`                         | Plain `{"ok": true}`                                                   |
+| GET    | `/`                               | Liveness + current Season + public `flags`                             |
+| GET    | `/health`                         | `{"ok": true, "flags": {...}, "metrics": {...}}` (no secrets/payloads) |
 | POST   | `/register`                       | Register a new Tree (`node_id`, `signing_key_hex`, optional wallet/label) |
 | POST   | `/readings`                       | Tree submits a signed reading (HMAC-SHA256 over the raw body)          |
 | GET    | `/readings/{node_id}?limit=50`    | Most recent readings for a Tree                                        |
@@ -34,7 +34,12 @@ X-Orchard-Sig:  <hex HMAC-SHA256 of the raw request body, 64 chars>
 
 The HMAC secret is the 32-byte signing key the Tree generated on first boot and the dashboard pushed to `/register`. The oracle recomputes the HMAC over the bytes it received (no JSON re-parsing) and constant-time compares.
 
-`/register` is unauthenticated in v1. Phase 6 will add an Orchard Pass verification step (operator must hold the credential NFT on the declared wallet) before allowing registration.
+`/register` requires a wallet session by default (`require_wallet_session=true`);
+claim-code onboarding uses `/provision/*` instead. Remote callers are rate-limited
+on `/auth/*`, `/readings`, `/provision/*`, and `/register` (loopback exempt).
+
+Reading rejections (replay, bad sig, oversized body, future `ts`, etc.) increment
+process counters on `GET /health` → `metrics` — counters only, never payloads.
 
 ## Storage
 

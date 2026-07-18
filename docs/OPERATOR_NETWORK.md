@@ -54,6 +54,8 @@
 | No claim code | Finish Wi‑Fi / first-boot; power-cycle; re-flash if the board never completes identity mint |
 | Claim / wallet fails | Pass must be in the **connected** wallet; try Sage or Goby; confirm claim code matches the Tree |
 | Claimed but nothing on View | Wait a few minutes for readings; confirm Wi‑Fi; open https://view.theorchard.network/ ; note `node_id` if you have it |
+| Claim / announce returns 429 | Remote rate limits protect claim-code brute force — wait a minute and retry; don't script claim guessing |
+| Readings accepted then stop | Check https://oracle.theorchard.network/health — `flags.require_seq` and `metrics.readings_rejected_replay_seq` (firmware must send increasing `seq`) |
 | "How big is the network?" | Small and honest — use View / worldview, not marketing maps |
 
 ## Help
