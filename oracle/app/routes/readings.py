@@ -23,12 +23,17 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .. import auth, models, seasons, sessions
+from .. import auth, metrics, models, seasons, sessions
 from ..config import settings
 from ..db import get_db
 from ..session_deps import maybe_session
 
 router = APIRouter()
+
+# Prefer non-deprecated Starlette names when available (3.x); fall back so
+# older pins still work. Plain ints avoid DeprecationWarning either way.
+_HTTP_413 = getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413)
+_HTTP_422 = getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422)
 
 
 class ReadingResponse(BaseModel):
@@ -76,8 +81,9 @@ async def post_reading(
     # "readings". Content-Length is advisory; measure the actual body.
     max_body = settings().max_reading_body_bytes
     if max_body > 0 and len(body_bytes) > max_body:
+        metrics.incr("readings_rejected_body_too_large")
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=_HTTP_413,
             detail=f"reading body {len(body_bytes)} bytes exceeds limit {max_body}",
         )
 
@@ -87,7 +93,12 @@ async def post_reading(
         # Distinguish "unknown node" (404) from "bad signature" (401) for
         # operator clarity; both leak some info but the data path is local.
         msg = str(e)
-        code = status.HTTP_404_NOT_FOUND if "unregistered" in msg else status.HTTP_401_UNAUTHORIZED
+        if "unregistered" in msg:
+            metrics.incr("readings_rejected_unknown_node")
+            code = status.HTTP_404_NOT_FOUND
+        else:
+            metrics.incr("readings_rejected_bad_sig")
+            code = status.HTTP_401_UNAUTHORIZED
         raise HTTPException(status_code=code, detail=msg)
 
     # Anti-replay: an exact replay re-sends the identical body, so the
@@ -106,6 +117,7 @@ async def post_reading(
             .limit(1)
         ).first()
         if dup is not None:
+            metrics.incr("readings_duplicate")
             return {
                 "id": dup[0],
                 "received_at": dup[1].isoformat() if dup[1] else None,
@@ -116,6 +128,7 @@ async def post_reading(
     try:
         payload = json.loads(body_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        metrics.incr("readings_rejected_bad_json")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"invalid JSON: {e}")
 
     # ---- Replay protection (docs/replay-protection.md, T3) ----------
@@ -134,6 +147,7 @@ async def post_reading(
     seq = payload.get("seq") if isinstance(payload, dict) else None
     seq_valid = isinstance(seq, int) and not isinstance(seq, bool) and seq > 0
     if settings().require_seq and not seq_valid:
+        metrics.incr("readings_rejected_missing_seq")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="missing or invalid 'seq' (firmware too old? reflash)",
@@ -149,6 +163,7 @@ async def post_reading(
             # Signature was VALID; the content is just stale -> 409,
             # no uptime credit, no stored row (the failed UPDATE and
             # everything after roll back when we raise).
+            metrics.incr("readings_rejected_replay_seq")
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"replayed or out-of-order seq {seq} (last accepted {last_accepted})",
@@ -174,13 +189,15 @@ async def post_reading(
             now_s = int(now.timestamp())
             age = now_s - ts
             if max_age > 0 and age > max_age:
+                metrics.incr("readings_rejected_stale_ts")
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=_HTTP_422,
                     detail=f"stale reading: ts {ts} is {age}s old (max {max_age}s)",
                 )
             if max_future > 0 and (-age) > max_future:
+                metrics.incr("readings_rejected_future_ts")
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=_HTTP_422,
                     detail=(
                         f"future reading: ts {ts} is {-age}s ahead of oracle "
                         f"(max {max_future}s)"
@@ -218,6 +235,7 @@ async def post_reading(
 
     db.commit()
     db.refresh(reading)
+    metrics.incr("readings_accepted")
     return {"id": reading.id, "received_at": reading.received_at.isoformat(),
             "season": seasons.current_season()}
 

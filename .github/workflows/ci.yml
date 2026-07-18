@@ -57,6 +57,11 @@ jobs:
       - name: Pytest
         run: python -m pytest -v
 
+      # Shape-check the web-flasher manifest (paths, version↔tag). Network
+      # asset HEAD is optional ops (`python tools/verify_flasher_manifest.py`).
+      - name: Flasher manifest (offline)
+        run: python tools/verify_flasher_manifest.py --offline
+
   # The README sells the hash-pinned lockfiles as the production-safe
   # install. This job makes sure that promise stays true — it fails if
   # a requirements.txt edit lands without regenerating the lockfiles.

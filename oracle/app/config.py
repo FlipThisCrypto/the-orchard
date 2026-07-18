@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     # exempt; these bound remote LAN callers only. 0 disables a limit.
     auth_rate_limit_per_min: int = 30
     readings_rate_limit_per_min: int = 600
+    # Claim-code brute force + announce spam (ADR-0005). Provision paths
+    # are unauthenticated from the Tree side; claim is browser-side.
+    provision_rate_limit_per_min: int = 30
+    # /register key submission — keep low to slow node_id squatting.
+    register_rate_limit_per_min: int = 20
 
     # Phase 6.6 register hardening: /register requires a verified
     # wallet session by default. Closes the "anyone can claim someone

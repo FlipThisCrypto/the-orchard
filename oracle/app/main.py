@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import db
+from . import db, metrics
 from .config import settings
 from .ratelimit import FixedWindowLimiter
 from .routes import (
@@ -105,7 +105,14 @@ async def _rate_limit(request: Request, call_next):
             rule = ("auth", s.auth_rate_limit_per_min)
         elif path.startswith("/readings"):
             rule = ("readings", s.readings_rate_limit_per_min)
+        elif path.startswith("/provision"):
+            # ADR-0005: claim-code space is ~40 bits; per-IP throttle makes
+            # remote brute force impractical without touching the Tree.
+            rule = ("provision", s.provision_rate_limit_per_min)
+        elif path == "/register" or path.startswith("/register/"):
+            rule = ("register", s.register_rate_limit_per_min)
         if rule is not None and not _limiter_for(*rule).allow(host or "?"):
+            metrics.incr("rate_limited")
             return JSONResponse(
                 status_code=429,
                 content={"detail": "rate limit exceeded; slow down"},

@@ -1452,6 +1452,9 @@ def test_seq_concurrent_posts_only_advance_monotonically(seq_client: TestClient)
 
 
 def test_health_exposes_public_flags(client: TestClient):
+    from oracle.app import metrics as metrics_mod
+
+    metrics_mod.reset_for_tests()
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
@@ -1461,11 +1464,76 @@ def test_health_exposes_public_flags(client: TestClient):
     assert "require_wallet_session" in flags
     assert "max_reading_body_bytes" in flags
     assert "max_reading_future_seconds" in flags
+    assert "provision_rate_limit_per_min" in flags
+    assert "register_rate_limit_per_min" in flags
+    metrics = body["metrics"]
+    assert metrics["readings_accepted"] == 0
+    assert metrics["readings_rejected_replay_seq"] == 0
+    assert "rate_limited" in metrics
     # Never leak secrets via health.
     dumped = json.dumps(body)
     assert "session_secret" not in dumped
     assert "writer_token" not in dumped
     assert "db_url" not in dumped
+
+
+def test_metrics_count_accepted_and_replay(seq_client: TestClient):
+    from oracle.app import metrics as metrics_mod
+
+    metrics_mod.reset_for_tests()
+    assert _post_seq_reading(seq_client, {"seq": 1, "sensors": {}}).status_code == 202
+    assert _post_seq_reading(seq_client, {"seq": 1, "sensors": {"x": 1}}).status_code == 409
+    snap = metrics_mod.snapshot()
+    assert snap.get("readings_accepted", 0) >= 1
+    assert snap.get("readings_rejected_replay_seq", 0) >= 1
+    # Counters must not embed payload material.
+    assert "sensors" not in json.dumps(snap)
+
+
+def test_provision_rate_limit_remote_client(monkeypatch):
+    """Non-loopback peer is throttled on /provision (ADR-0005 brute-force)."""
+    monkeypatch.setenv("ORCHARD_ORACLE_REQUIRE_WALLET_SESSION", "false")
+    monkeypatch.setenv("ORCHARD_ORACLE_PROVISION_RATE_LIMIT_PER_MIN", "3")
+    reset_settings_for_tests()
+    reset_for_tests()
+    from oracle.app import metrics as metrics_mod
+    from oracle.app.main import _limiters
+
+    metrics_mod.reset_for_tests()
+    _limiters.clear()
+
+    test_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    TestSession = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(test_engine)
+
+    def override_get_db():
+        db = TestSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    # Starlette TestClient default peer is "testclient" (loopback-exempt).
+    # Force a public-looking peer so middleware rate limits apply.
+    with TestClient(app, client=("203.0.113.50", 50000)) as c:
+        body = {
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "claim_code": "ABCD2345",
+        }
+        codes = []
+        for i in range(5):
+            body["claim_code"] = f"ABCD{i:04d}"
+            codes.append(c.post("/provision/announce", json=body).status_code)
+    app.dependency_overrides.clear()
+    assert 429 in codes, codes
+    assert metrics_mod.snapshot().get("rate_limited", 0) >= 1
 
 
 # ---------------- T6: reading freshness (max_reading_age_seconds) ----------

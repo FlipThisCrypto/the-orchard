@@ -134,6 +134,11 @@ In `oracle/.env`, the critical production values:
 - `max_reading_future_seconds` (default **300**) rejects device clocks far
   ahead of the oracle; set `0` only if you must accept unsynced clocks
 - `max_reading_body_bytes` (default **65536**) hard-caps POST /readings
+- `provision_rate_limit_per_min` (default **30**) and
+  `register_rate_limit_per_min` (default **20**) throttle remote claim-code
+  and registration spam (loopback exempt)
+- `GET /health` exposes non-secret `flags` + process `metrics` (accepted /
+  replay rejections / rate_limited — counters only, no payloads)
   (v0.4.8+). It defaults **false** so a mixed-firmware fleet isn't locked out
   mid-rollout; flip it after every Tree is reflashed/OTA'd.
 - `db_url = sqlite:////opt/orchard/data/orchard.db` (note the **four** slashes —

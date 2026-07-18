@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
-from .. import seasons
+from .. import metrics, seasons
 from ..config import settings
 
 router = APIRouter()
@@ -26,6 +26,8 @@ def _public_flags() -> dict:
         "max_reading_body_bytes": s.max_reading_body_bytes,
         "auth_rate_limit_per_min": s.auth_rate_limit_per_min,
         "readings_rate_limit_per_min": s.readings_rate_limit_per_min,
+        "provision_rate_limit_per_min": s.provision_rate_limit_per_min,
+        "register_rate_limit_per_min": s.register_rate_limit_per_min,
     }
 
 
@@ -43,4 +45,9 @@ def root() -> dict:
 
 @router.get("/health")
 def health() -> dict:
-    return {"ok": True, "flags": _public_flags()}
+    return {
+        "ok": True,
+        "flags": _public_flags(),
+        # Counters only — no payloads, node_ids, or secrets (metrics.py).
+        "metrics": metrics.as_public_dict(),
+    }
