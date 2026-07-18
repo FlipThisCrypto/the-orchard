@@ -231,6 +231,32 @@ class OracleClient:
         return self._requests.post(f"{self.base_url}/register", json=payload,
                                    timeout=self.timeout)
 
+    def announce(self, tree: VirtualTree, claim_code: str | None = None):
+        """POST /provision/announce — first-boot claim-code handoff (T9)."""
+        code = claim_code or ("SIM" + tree.node_id[:5]).upper()
+        payload = {
+            "node_id": tree.node_id,
+            "signing_key_hex": tree.secret_hex,
+            "claim_code": code,
+            "label": tree.label,
+            "fw_version": "sim",
+        }
+        if self._client is not None:
+            return self._client.post("/provision/announce", json=payload)
+        return self._requests.post(
+            f"{self.base_url}/provision/announce",
+            json=payload,
+            timeout=self.timeout,
+        )
+
+    def poll_claim(self, claim_code: str):
+        code = claim_code.replace("-", "").replace(" ", "").upper()
+        if self._client is not None:
+            return self._client.get(f"/provision/{code}")
+        return self._requests.get(
+            f"{self.base_url}/provision/{code}", timeout=self.timeout
+        )
+
     def post_reading(self, tree: VirtualTree):
         body = tree.next_body()
         return self.post_raw(tree.node_id, body, tree.sign(body))

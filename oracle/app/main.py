@@ -116,6 +116,9 @@ async def _rate_limit(request: Request, call_next):
             return JSONResponse(
                 status_code=429,
                 content={"detail": "rate limit exceeded; slow down"},
+                # Fixed-window limiters reset on a ~60s boundary; tell polite
+                # clients to back off without revealing which bucket they hit.
+                headers={"Retry-After": "60"},
             )
     return await call_next(request)
 

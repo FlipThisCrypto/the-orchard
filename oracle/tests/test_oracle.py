@@ -1528,11 +1528,16 @@ def test_provision_rate_limit_remote_client(monkeypatch):
             "claim_code": "ABCD2345",
         }
         codes = []
+        retry_after = None
         for i in range(5):
             body["claim_code"] = f"ABCD{i:04d}"
-            codes.append(c.post("/provision/announce", json=body).status_code)
+            r = c.post("/provision/announce", json=body)
+            codes.append(r.status_code)
+            if r.status_code == 429:
+                retry_after = r.headers.get("Retry-After")
     app.dependency_overrides.clear()
     assert 429 in codes, codes
+    assert retry_after == "60"
     assert metrics_mod.snapshot().get("rate_limited", 0) >= 1
 
 

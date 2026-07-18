@@ -139,3 +139,18 @@ def test_simulator_require_seq_rejects_stale_after_happy_path(seq_oracle_client)
     # Crafted stale seq with a new body (not exact-dup).
     r = client.post_mode(tree, "duplicate_seq")
     assert r.status_code == 409
+
+
+def test_simulator_announce_and_poll_unclaimed(oracle_client):
+    """Announce path (claim-code handoff) without completing wallet claim."""
+    client, _ = oracle_client
+    tree = VirtualTree.random(0)
+    code = "SIMTEST01"
+    r = client.announce(tree, claim_code=code)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body.get("claimed") is False
+    poll = client.poll_claim(code)
+    assert poll.status_code == 200
+    assert poll.json()["known"] is True
+    assert poll.json()["claimed"] is False

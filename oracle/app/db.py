@@ -229,3 +229,7 @@ def reset_for_tests() -> None:
     global _engine, _session_factory
     _engine = None
     _session_factory = None
+    # Keep process counters from bleeding across test cases.
+    from . import metrics
+
+    metrics.reset_for_tests()
