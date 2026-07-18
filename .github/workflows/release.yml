@@ -104,6 +104,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: bins
@@ -114,10 +116,26 @@ jobs:
           cd bins
           sha256sum *.bin > SHA256SUMS.txt
 
+      # T7 signed OTA (docs/security/SIGNED_OTA.md). Soft when the secret
+      # is absent (forks / pre-OWNER): prints UNSIGNED and continues so
+      # releases still publish. When OTA_SIGNING_KEY is set, emits
+      # <image>.bin.sig (64-byte P-256 r‖s) and appends to SHA256SUMS.
+      - name: Sign OTA images (optional until OWNER key exists)
+        env:
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet "cryptography>=42"
+          python tools/sign_release.py --key-env OTA_SIGNING_KEY \
+            --sums bins/SHA256SUMS.txt bins/*.bin
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            bins/*.bin
-            bins/SHA256SUMS.txt
+            bins/*
           generate_release_notes: true
+          body: |
+            Firmware images are **unsigned** unless the `OTA_SIGNING_KEY`
+            repository secret is configured (T7 / docs/security/SIGNED_OTA.md).
+            Always verify `SHA256SUMS.txt` before flashing.

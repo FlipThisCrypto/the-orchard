@@ -51,11 +51,13 @@ Out of scope (known limitations, documented, not vulnerabilities):
 
 ## Known security posture (PoC)
 
-- Released firmware binaries are currently **unsigned**. Verify downloads
-  against the `SHA256SUMS.txt` on each
+- Released firmware binaries are currently **unsigned** until the owner
+  configures the `OTA_SIGNING_KEY` CI secret. Verify downloads against the
+  `SHA256SUMS.txt` on each
   [release](https://github.com/FlipThisCrypto/the-orchard/releases) and flash
-  over USB or trusted OTA only. Signature-verified OTA is in progress (D5/T7);
-  the key-handling procedure will be documented in this file when it lands.
+  over USB or trusted OTA only. Warn-mode signed OTA plumbing has landed
+  (`tools/sign_release.py`, firmware verifier, `OTA_REQUIRE_SIG`); see
+  [docs/security/SIGNED_OTA.md](docs/security/SIGNED_OTA.md).
 - Device keys are secp256r1, generated on-device, private scalar never
   transmitted ([ADR-0007](docs/decisions/0007-secp256r1-device-keys.md)).
   Flash/NVS encryption to protect the key at rest is a tester-readiness item.
