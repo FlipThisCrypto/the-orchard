@@ -45,6 +45,19 @@ class Report:
     def valid(self) -> bool:
         return bool(self.checks) and all(c.ok for c in self.checks)
 
+    def as_dict(self) -> dict:
+        """JSON-serializable summary for automation / --json CLIs."""
+        return {
+            "node_id": self.node_id,
+            "season": self.season,
+            "hours": list(self.hours),
+            "valid": self.valid,
+            "checks": [
+                {"name": c.name, "ok": c.ok, "detail": c.detail}
+                for c in self.checks
+            ],
+        }
+
 
 def verify_bundle(
     *, meta: dict, node: dict, attest: dict, readings_records: list[dict]
