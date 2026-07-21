@@ -32,6 +32,8 @@ def fetch_bundle(
     """
     node_id = node_id.upper()
     season = int(season)
+    if not (store_id or '').strip():
+        raise FetchError('store_id is empty')
 
     def _get(key_hex: str) -> dict | None:
         return schema.parse_value(rpc.get_value(store_id, key_hex))
