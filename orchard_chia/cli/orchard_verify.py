@@ -33,7 +33,11 @@ def _marks() -> tuple[str, str]:
     return ok, fail
 
 
-def _print_report(rep: verify.Report) -> None:
+def _print_report(rep: verify.Report, *, as_json: bool = False) -> None:
+    if as_json:
+        import json
+        print(json.dumps(rep.as_dict(), indent=2, sort_keys=True))
+        return
     ok, fail = _marks()
     print("Orchard Verify\n")
     print(f"Schema: orchard.datalayer v{schema.SCHEMA_VERSION}")
@@ -72,7 +76,7 @@ def cmd_vectors(args: argparse.Namespace) -> int:
         print(f"error: malformed vectors file: {e}", file=sys.stderr)
         return 2
     rep = verify.verify_bundle(**bundle)
-    _print_report(rep)
+    _print_report(rep, as_json=bool(getattr(args, "json", False)))
     return 0 if rep.valid else 1
 
 
@@ -152,7 +156,7 @@ def cmd_live(args: argparse.Namespace) -> int:
         ),
     )
 
-    _print_report(rep)
+    _print_report(rep, as_json=bool(getattr(args, "json", False)))
     return 0 if rep.valid else 1
 
 
@@ -165,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     v = sub.add_parser("vectors", help="verify the offline golden-vectors bundle")
     v.add_argument("path", help="path to vectors.json")
+    v.add_argument("--json", action="store_true", help="emit Report.as_dict JSON")
     v.set_defaults(func=cmd_vectors)
 
     live = sub.add_parser(
@@ -184,6 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="single hour 0-23; omit to discover all hours present in the store",
     )
+    live.add_argument("--json", action="store_true", help="emit Report.as_dict JSON")
     live.set_defaults(func=cmd_live)
     return p
 
