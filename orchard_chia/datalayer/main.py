@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import attest, config, schema
+from . import attest, config, schema, seal
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
@@ -170,11 +170,32 @@ def main() -> int:
                 stats["empty"] += 1
                 continue
 
-            # SPEC §2.4 sealed attest (ADR-0003): publicly verifiable secp256r1
-            # oracle_sig via schema.sign_attest. Until the hot-path publisher has
-            # filled every hour's readings:, season_root falls back to the
-            # uptime-derived placeholder (same bytes as legacy data_hash).
-            season_root_hex = attest.data_hash_for_uptime(node_id, season, hours)
+            # SPEC §2.4 sealed attest (ADR-0003): prefer season_root +
+            # verified_hours from published readings: batches; fall back to
+            # the uptime-derived placeholder when nothing is on-chain yet.
+            pub_readings = seal.load_season_readings(
+                dl, cfg.data_layer.store_id, node_id=node_id, season=season
+            )
+            device_pub = (
+                node.get("device_pubkey")
+                or node.get("pubkey")
+            )
+            sealed = seal.seal_from_readings(
+                pub_readings, device_pubkey=device_pub
+            )
+            if sealed is not None:
+                season_root_hex = sealed.season_root
+                verified_hrs = sealed.verified_hours
+                reading_count = sealed.reading_count
+                seal_src = sealed.source
+            else:
+                season_root_hex = attest.data_hash_for_uptime(
+                    node_id, season, hours
+                )
+                verified_hrs = hours
+                reading_count = 0
+                seal_src = "placeholder"
+
             signed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             payload = schema.build_attest(
                 node_id=node_id,
@@ -182,8 +203,8 @@ def main() -> int:
                 season_start_utc=uptime["season_start_utc"],
                 season_end_utc=uptime["season_end_utc"],
                 hours_online=hours,
-                verified_hrs=hours,  # honest claim until readings seal exists
-                reading_count=0,
+                verified_hrs=verified_hrs,
+                reading_count=reading_count,
                 block_height_at_write=block_height,
                 season_root_hex=season_root_hex,
                 signed_at=signed_at,
@@ -221,7 +242,8 @@ def main() -> int:
             stats["written"] += 1
             print(
                 f"  + node={node_id[:8]}.. season={season:>4} "
-                f"hours={hours:>2} signed sig={signed['oracle_sig'][:10]}.."
+                f"hours={hours:>2} verified={verified_hrs} "
+                f"seal={seal_src} sig={signed['oracle_sig'][:10]}.."
             )
 
     if not changelist:

@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Tests for sealed Season root derivation from published readings."""
+from __future__ import annotations
+
+from orchard_chia.datalayer import schema, seal
+
+
+NODE = "5B9BB022649FA93D4091DA4BA40714B9"
+SEED = "01" + "00" * 31
+PUB = schema.pubkey_for_seed(SEED)
+
+
+def _signed(ts: int, temp: int = 21000) -> dict:
+    return schema.sign_reading(
+        {
+            "node_id": NODE,
+            "ts_ms": ts,
+            "block_anchor": "a1b2c3d4e5f60718",
+            "metrics": {"temperature_mc": temp, "gps_fix": True, "gps_sats": 5},
+        },
+        SEED,
+    )
+
+
+def test_seal_from_readings_matches_season_root():
+    r0 = _signed(1000)
+    r1 = _signed(2000, 22000)
+    batch0 = schema.build_readings_batch(
+        node_id=NODE, season=5, hour=0, readings=[r0]
+    )
+    batch1 = schema.build_readings_batch(
+        node_id=NODE, season=5, hour=1, readings=[r1]
+    )
+    out = seal.seal_from_readings(
+        [batch0, batch1], device_pubkey=PUB
+    )
+    assert out is not None
+    assert out.source == "readings"
+    assert out.hour_count == 2
+    assert out.reading_count == 2
+    assert out.verified_hours == 2
+    expected = schema.season_root(
+        {0: batch0["hour_root"], 1: batch1["hour_root"]}
+    )
+    assert out.season_root == expected
+
+
+def test_seal_verified_hours_drops_bad_sigs():
+    good = _signed(1000)
+    bad = {**_signed(2000), "sig": "00" * 64}
+    batch = schema.build_readings_batch(
+        node_id=NODE, season=3, hour=7, readings=[good, bad]
+    )
+    # hour still has one valid reading → verified_hours = 1
+    out = seal.seal_from_readings([batch], device_pubkey=PUB)
+    assert out is not None
+    assert out.verified_hours == 1
+
+
+def test_seal_empty_returns_none():
+    assert seal.seal_from_readings([], device_pubkey=PUB) is None
+
+
+def test_load_season_readings_via_fake_rpc():
+    r = _signed(1)
+    batch = schema.build_readings_batch(
+        node_id=NODE, season=2, hour=9, readings=[r]
+    )
+    store = {
+        schema.readings_key(NODE, 2, 9): schema.value_hex(batch),
+    }
+
+    class Fake:
+        def get_keys(self, store_id):
+            return list(store.keys())
+
+        def get_value(self, store_id, key_hex):
+            return store.get(key_hex)
+
+    rows = seal.load_season_readings(Fake(), "s", node_id=NODE, season=2)
+    assert len(rows) == 1
+    assert rows[0]["hour"] == 9
