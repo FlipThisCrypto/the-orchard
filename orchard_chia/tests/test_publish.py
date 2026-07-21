@@ -163,14 +163,18 @@ def test_publish_watermark_roundtrip(tmp_path: Path):
     db = tmp_path / "wm.db"
     with publish_watermark.PublishWatermark(db) as wm:
         assert not wm.is_published(NODE, 5, 13)
+        assert wm.count() == 0
         wm.record(node_id=NODE, season=5, hour=13, hour_root="abc", tx_id="tx1")
         assert wm.is_published(NODE, 5, 13)
+        assert wm.count() == 1
         assert wm.last_published_hour(NODE, 5) == 13
         wm.record(node_id=NODE, season=5, hour=14, hour_root="def")
         assert wm.last_published_hour(NODE, 5) == 14
+        assert wm.count() == 2
         # idempotent
         wm.record(node_id=NODE, season=5, hour=13, hour_root="zzz")
         assert wm.is_published(NODE, 5, 13)
+        assert wm.count() == 2
 
 
 def test_readings_from_oracle_payloads():
