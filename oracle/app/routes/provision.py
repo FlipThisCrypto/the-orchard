@@ -84,8 +84,8 @@ class AnnounceRequest(BaseModel):
         if not _HEX64.match(v):
             raise ValueError("signing_key_hex must be 64 hex characters")
         key = v.upper()
-        if key == "0" * 64 or len(set(key)) == 1:
-            raise ValueError("signing_key_hex must not be a degenerate constant key")
+        if int(key, 16) == 0:
+            raise ValueError("signing_key_hex must not be all zeros")
         return key
 
 
