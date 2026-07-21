@@ -5,6 +5,8 @@
   python -m orchard_chia.datalayer attest       # same as default
   python -m orchard_chia.datalayer publish      # hot-path readings publisher (ADR-0003)
   python -m orchard_chia.datalayer publish --dry-run
+  python -m orchard_chia.datalayer preflight    # config + connectivity checks
+  python -m orchard_chia.datalayer preflight --skip-chia
 """
 from __future__ import annotations
 
@@ -21,12 +23,16 @@ def _dispatch(argv: list[str]) -> int:
         from .publish import main as publish_main
         return int(publish_main(argv[1:]) or 0)
 
+    if cmd in ("preflight", "check", "doctor"):
+        from .preflight import main as preflight_main
+        return int(preflight_main(argv[1:]) or 0)
+
     if cmd in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0
 
     print(
-        f"Unknown subcommand {cmd!r}. Use: attest | publish | --help",
+        f"Unknown subcommand {cmd!r}. Use: attest | publish | preflight | --help",
         file=sys.stderr,
     )
     return 2
