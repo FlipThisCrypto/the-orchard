@@ -93,6 +93,10 @@ class PublishWatermark:
         )
         self._conn.commit()
 
+    def count(self) -> int:
+        cur = self._conn.execute('SELECT COUNT(*) AS n FROM published_hours')
+        return int(cur.fetchone()[0])
+
     def set_tx(
         self,
         node_id: str,
