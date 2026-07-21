@@ -698,13 +698,55 @@ def test_api_auth_verify_forwards_body(client, monkeypatch):
     assert captured["body"]["nonce"] == "deadbeef"
 
 
-def test_base_template_includes_connect_slot(client):
+def test_base_template_includes_connect_slot(client, monkeypatch):
     """The Connect Wallet area must be wired into base.html so every
-    page picks it up via the script tag."""
+    page picks it up via the script tag.
+
+    Hermetic: mock the oracle so a flaky/empty LAN response cannot
+    500 the home page (and so this test never depends on a live oracle).
+    """
+    monkeypatch.setattr(
+        oracle_client,
+        "root",
+        lambda: {"version": "0.1.0", "current_season": 1, "now_utc": "2026-05-27T20:00:00+00:00"},
+    )
+    monkeypatch.setattr(oracle_client, "list_nodes", lambda: [])
     r = client.get("/")
+    assert r.status_code == 200
     html = r.get_data(as_text=True)
     assert 'id="connect-slot"' in html
     assert "connect.js" in html
+
+
+def test_oracle_client_root_non_json_becomes_oracle_error(monkeypatch):
+    """Empty / HTML oracle body must not raise JSONDecodeError into Flask."""
+    class FakeResp:
+        status_code = 200
+        content = b""
+        text = ""
+
+        def json(self):
+            raise ValueError("Expecting value")
+
+    monkeypatch.setattr(
+        "dashboard.app.oracle_client.requests.request",
+        lambda *a, **k: FakeResp(),
+    )
+    with pytest.raises(oracle_client.OracleError, match="non-JSON|non-object"):
+        oracle_client.root()
+
+
+def test_index_survives_non_json_oracle(client, monkeypatch):
+    """Home page shows unreachable banner instead of HTTP 500."""
+    def boom():
+        raise oracle_client.OracleError(
+            "oracle GET / returned non-JSON body (0 bytes)"
+        )
+    monkeypatch.setattr(oracle_client, "root", boom)
+    monkeypatch.setattr(oracle_client, "list_nodes", boom)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b"Oracle unreachable" in r.data or b"non-JSON" in r.data
 
 
 # ---------------- 2026-06-09 security hardening ----------------
