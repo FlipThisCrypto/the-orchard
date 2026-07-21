@@ -17,6 +17,13 @@ from ..config import settings
 
 bp = Blueprint("api", __name__)
 
+
+@bp.get("/health")
+def health():
+    """Liveness for reverse proxies; does not call the oracle."""
+    return _ok({"service": "orchard-view", "public_mode": settings().public_mode})
+
+
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 

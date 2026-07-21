@@ -838,3 +838,10 @@ def test_tree_page_oracle_error_is_404(client, monkeypatch):
     monkeypatch.setattr(oracle_client, "get_node", boom)
     r = client.get("/tree/" + "AB" * 16)
     assert r.status_code == 404
+def test_api_health(client):
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["service"] == "orchard-view"
+    assert "public_mode" in body
