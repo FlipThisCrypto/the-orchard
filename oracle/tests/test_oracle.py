@@ -1405,12 +1405,18 @@ def test_register_device_pubkey_and_nodes_expose(client: TestClient):
 
 
 def test_beacon_placeholder_and_env(client: TestClient, monkeypatch):
+    import oracle.app.routes.beacon as be
+    be._cache = None
+    be._cache_mono = 0.0
+    monkeypatch.delenv("ORCHARD_BEACON_BLOCK_ANCHOR", raising=False)
+    monkeypatch.delenv("ORCHARD_BEACON_BLOCK_HEIGHT", raising=False)
     r = client.get("/beacon")
     assert r.status_code == 200
     body = r.json()
     assert body["block_anchor"] == "0" * 16
     assert body["ok"] is False
 
+    be._cache = None
     monkeypatch.setenv("ORCHARD_BEACON_BLOCK_ANCHOR", "a1b2c3d4e5f6071899")
     monkeypatch.setenv("ORCHARD_BEACON_BLOCK_HEIGHT", "42")
     r2 = client.get("/beacon")
