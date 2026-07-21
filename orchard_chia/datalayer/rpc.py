@@ -11,10 +11,14 @@ operator's CA cert path via ``verify=<ca_path>`` instead.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, field
+from typing import Any
 
 import requests
 import urllib3
+
+from .retry import RetryPolicy, call_with_retry
 
 # Local-only mTLS to a self-signed CA — silence the legitimate-but-noisy
 # warning about disabled host verification.
@@ -82,12 +86,28 @@ class FullNodeRpc:
 
 
 class DataLayerRpc:
-    """Subset of Chia DataLayer RPC the attestation writer needs."""
+    """Subset of Chia DataLayer RPC the attestation writer needs.
 
-    def __init__(self, host: str, port: int, cert_path: str, key_path: str):
+    Transient transport / 5xx failures are retried with exponential
+    backoff (Round 3 resilience). Last attempt counts and retry totals
+    are exposed on ``last_retry_attempts`` / ``last_retried`` for ops logs.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        cert_path: str,
+        key_path: str,
+        *,
+        retry_policy: RetryPolicy | None = None,
+    ):
         self._ep = _Endpoint(host, port, cert_path, key_path)
+        self._retry_policy = retry_policy or RetryPolicy.from_env()
+        self.last_retry_attempts: int = 1
+        self.last_retried: bool = False
 
-    def _post(self, route: str, body: dict) -> dict:
+    def _post_once(self, route: str, body: dict) -> dict:
         if self._ep.host not in _LOOPBACK_HOSTS:
             raise ChiaRpcError(
                 f"refusing verify=False against non-loopback host "
@@ -110,6 +130,23 @@ class DataLayerRpc:
         if not data.get("success", True):
             raise ChiaRpcError(f"datalayer {route} returned success=false: {data}")
         return data
+
+    def _post(self, route: str, body: dict) -> dict:
+        def _on_retry(attempt: int, exc: BaseException, wait: float) -> None:
+            print(
+                f"[orchard.datalayer] retry {route} after attempt {attempt}: "
+                f"{type(exc).__name__}: {exc} — sleep {wait:.2f}s",
+                file=sys.stderr,
+            )
+
+        result = call_with_retry(
+            lambda: self._post_once(route, body),
+            policy=self._retry_policy,
+            on_retry=_on_retry,
+        )
+        self.last_retry_attempts = result.attempts
+        self.last_retried = result.retried
+        return result.value
 
     def batch_update(self, store_id: str, changelist: list[dict]) -> dict:
         """Apply a list of insert/delete operations to a DataLayer store.

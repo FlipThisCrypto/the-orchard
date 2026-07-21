@@ -467,11 +467,20 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
     except ChiaRpcError as e:
         print(f"ERROR: DataLayer batch_update failed: {e}", file=sys.stderr)
         wm.close()
-        run.finish("error", error="ChiaRpcError", error_msg=str(e)[:200])
+        run.finish(
+            "error",
+            error="ChiaRpcError",
+            error_msg=str(e)[:200],
+            rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        )
         return 5
 
     txn_id = result.get("tx_id") or result.get("transaction_id") or "<unknown>"
     print(f"[orchard.publish] batch_update accepted tx_id={txn_id}")
+    if getattr(dl, "last_retried", False):
+        print(
+            f"[orchard.publish] succeeded after {dl.last_retry_attempts} RPC attempt(s)"
+        )
 
     for node_id, season, hour, hour_root in plan.hours:
         wm.record(
@@ -492,6 +501,8 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
         nodes_written=len(plan.nodes_written),
         # Only short prefix — full tx ids can be long hex.
         tx_id_prefix=(txn_id[:16] if isinstance(txn_id, str) else None),
+        rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        rpc_retried=bool(getattr(dl, "last_retried", False)),
     )
     return 0
 

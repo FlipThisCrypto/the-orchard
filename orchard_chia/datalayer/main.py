@@ -265,11 +265,21 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
         result = dl.batch_update(cfg.data_layer.store_id, changelist)
     except ChiaRpcError as e:
         print(f"ERROR: DataLayer batch_update failed: {e}", file=sys.stderr)
-        run.finish("error", error="ChiaRpcError", error_msg=str(e)[:200], stats=dict(stats))
+        run.finish(
+            "error",
+            error="ChiaRpcError",
+            error_msg=str(e)[:200],
+            stats=dict(stats),
+            rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        )
         return 5
     txn_id = result.get("tx_id") or result.get("transaction_id") or "<unknown>"
     written_at = datetime.now(timezone.utc)
     print(f"[orchard.attest] DataLayer batch_update accepted. tx_id={txn_id}")
+    if getattr(dl, "last_retried", False):
+        print(
+            f"[orchard.attest] succeeded after {dl.last_retry_attempts} RPC attempt(s)"
+        )
     print(f"[orchard.attest] stats: {dict(stats)}")
 
     # Report back to the oracle so its local DB tracks what's on chain.
@@ -289,6 +299,8 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
         pending=len(pending),
         season=current_season,
         tx_id_prefix=(txn_id[:16] if isinstance(txn_id, str) else None),
+        rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        rpc_retried=bool(getattr(dl, "last_retried", False)),
     )
     return 0
 
