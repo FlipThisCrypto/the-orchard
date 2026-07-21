@@ -1432,3 +1432,19 @@ def test_register_rejects_bad_device_pubkey(client: TestClient):
         },
     )
     assert r.status_code == 422
+
+def test_beacon_cache_hits_second_call(client, monkeypatch):
+    """Second /beacon within TTL should set cached=true without re-load."""
+    monkeypatch.setenv("ORCHARD_BEACON_BLOCK_ANCHOR", "a1b2c3d4e5f6071899")
+    monkeypatch.setenv("ORCHARD_BEACON_BLOCK_HEIGHT", "9")
+    # Reset module cache
+    import oracle.app.routes.beacon as be
+    be._cache = None
+    be._cache_mono = 0.0
+    be._CACHE_TTL_S = 60.0
+    r1 = client.get("/beacon")
+    assert r1.status_code == 200
+    assert r1.json()["cached"] is False
+    r2 = client.get("/beacon")
+    assert r2.json()["cached"] is True
+    assert r2.json()["block_anchor"] == "a1b2c3d4e5f60718"

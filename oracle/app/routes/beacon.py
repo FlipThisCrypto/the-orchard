@@ -21,6 +21,12 @@ log = logging.getLogger("orchard.oracle.beacon")
 _ENV_ANCHOR = "ORCHARD_BEACON_BLOCK_ANCHOR"
 _ENV_HEIGHT = "ORCHARD_BEACON_BLOCK_HEIGHT"
 
+# In-process cache: Trees poll /beacon every sample; full-node RPC is
+# expensive and anchors only need ~block-time freshness. Default 60s.
+_CACHE_TTL_S = float(os.environ.get("ORCHARD_BEACON_CACHE_TTL_S", "60") or "60")
+_cache: dict | None = None
+_cache_mono: float = 0.0
+
 
 def _env_beacon() -> dict | None:
     anchor = (os.environ.get(_ENV_ANCHOR) or "").strip().lower()
@@ -86,9 +92,7 @@ def _fullnode_beacon() -> dict | None:
         return None
 
 
-@router.get("/beacon")
-def beacon() -> dict:
-    """Recent Chia header prefix for Tree ``block_anchor`` (SPEC §4.2)."""
+def _fresh_beacon() -> dict:
     for loader in (_env_beacon, _fullnode_beacon):
         got = loader()
         if got is not None:
@@ -105,3 +109,25 @@ def beacon() -> dict:
             "or ORCHARD_FULLNODE_CERT/KEY for a live header."
         ),
     }
+
+
+@router.get("/beacon")
+def beacon() -> dict:
+    """Recent Chia header prefix for Tree ``block_anchor`` (SPEC §4.2)."""
+    import time
+    global _cache, _cache_mono
+    now = time.monotonic()
+    if (
+        _cache is not None
+        and _CACHE_TTL_S > 0
+        and (now - _cache_mono) < _CACHE_TTL_S
+    ):
+        out = dict(_cache)
+        out["cached"] = True
+        return out
+    body = _fresh_beacon()
+    _cache = dict(body)
+    _cache_mono = now
+    body = dict(body)
+    body["cached"] = False
+    return body
