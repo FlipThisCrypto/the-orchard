@@ -50,7 +50,7 @@ def confirm_inserts(
     store_id: str,
     inserts: list[tuple[str, str]],
     *,
-    max_checks: int = 32,
+    max_checks: int | None = None,
 ) -> ConfirmResult:
     """Verify up to ``max_checks`` insert pairs via get_value.
 
@@ -66,6 +66,12 @@ def confirm_inserts(
             detail="no inserts to confirm",
         )
 
+    import os
+    if max_checks is None:
+        try:
+            max_checks = int(os.environ.get('ORCHARD_DL_CONFIRM_MAX', '32') or '32')
+        except ValueError:
+            max_checks = 32
     sample = inserts[: max(1, int(max_checks))]
     missing: list[str] = []
     mismatched: list[str] = []
