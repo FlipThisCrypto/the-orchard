@@ -113,12 +113,14 @@ def test_api_serial_identify_happy(client, monkeypatch):
     monkeypatch.setattr(tree_serial, "get_signing_key", lambda port: "AA" * 32)
     monkeypatch.setattr(tree_serial, "get_status", lambda port: {"fw": "0.1.0", "wifi": "unconfigured", "oracle": ""})
     monkeypatch.setattr(tree_serial, "get_hw_info", lambda port: None)
+    monkeypatch.setattr(tree_serial, "get_device_pubkey", lambda port: None)
     r = client.post("/api/serial/identify", json={"port": "COM4"})
     assert r.status_code == 200
     body = r.get_json()
     assert body["node_id"] == "5B9BB022649FA93D4091DA4BA40714B9"
     assert body["status"]["fw"] == "0.1.0"
     assert body["hw_info"] is None
+    assert body["device_pubkey"] is None
 
 
 def test_api_serial_identify_includes_hw_info_when_present(client, monkeypatch):
@@ -143,6 +145,7 @@ def test_api_serial_identify_includes_hw_info_when_present(client, monkeypatch):
     monkeypatch.setattr(tree_serial, "get_status",
                         lambda port: {"fw": "0.4.0", "wifi": "connected", "oracle": ""})
     monkeypatch.setattr(tree_serial, "get_hw_info", lambda port: dict(hw_payload))
+    monkeypatch.setattr(tree_serial, "get_device_pubkey", lambda port: None)
     r = client.post("/api/serial/identify", json={"port": "COM4"})
     assert r.status_code == 200
     body = r.get_json()
@@ -152,6 +155,53 @@ def test_api_serial_identify_includes_hw_info_when_present(client, monkeypatch):
     bme = next(s for s in body["hw_info"]["sensors"] if s["name"] == "bme280")
     assert bme["active"] is True
     assert bme["addr"]   == 0x76
+
+
+def test_api_serial_identify_includes_device_pubkey(client, monkeypatch):
+    """ADR-0003: identify returns compressed secp256r1 device_pubkey for
+    registration → DataLayer node:<id>.pubkey."""
+    pub = "02" + "ab" * 32
+    monkeypatch.setattr(tree_serial, "ping", lambda port: True)
+    monkeypatch.setattr(tree_serial, "get_node_id", lambda port: "5B9BB022649FA93D4091DA4BA40714B9")
+    monkeypatch.setattr(tree_serial, "get_signing_key", lambda port: "AA" * 32)
+    monkeypatch.setattr(tree_serial, "get_status",
+                        lambda port: {"fw": "0.4.8", "wifi": "connected", "oracle": ""})
+    monkeypatch.setattr(tree_serial, "get_hw_info", lambda port: {"pubkey": pub, "board": "wroom"})
+    monkeypatch.setattr(tree_serial, "get_device_pubkey", lambda port: pub)
+    r = client.post("/api/serial/identify", json={"port": "COM4"})
+    assert r.status_code == 200
+    assert r.get_json()["device_pubkey"] == pub
+
+
+def test_get_device_pubkey_parses_ok_line(monkeypatch):
+    pub = "03" + "cd" * 32
+    monkeypatch.setattr(tree_serial, "_send_and_read_line",
+                        lambda port, cmd: f"OK {pub}")
+    assert tree_serial.get_device_pubkey("COM4") == pub
+
+
+def test_get_device_pubkey_legacy_none(monkeypatch):
+    monkeypatch.setattr(tree_serial, "_send_and_read_line",
+                        lambda port, cmd: "ERR unknown")
+    assert tree_serial.get_device_pubkey("COM4") is None
+
+
+def test_api_oracle_register_forwards_device_pubkey(client, monkeypatch):
+    captured = {}
+
+    def fake_register(**kw):
+        captured.update(kw)
+        return {"node_id": kw["node_id"], "new": True}
+
+    monkeypatch.setattr(oracle_client, "register_node", fake_register)
+    pub = "02" + "11" * 32
+    r = client.post("/api/oracle/register", json={
+        "node_id": "0123456789ABCDEF0123456789ABCDEF",
+        "signing_key_hex": "AA" * 32,
+        "device_pubkey": pub,
+    })
+    assert r.status_code == 200
+    assert captured.get("device_pubkey") == pub
 
 
 def test_get_hw_info_returns_none_on_legacy_firmware(monkeypatch):

@@ -63,6 +63,7 @@ def register_node(
     label: str | None = None,
     wallet_address: str | None = None,
     fw_version: str | None = None,
+    device_pubkey: str | None = None,
     authorization: str | None = None,
 ) -> dict:
     """POST /register on the oracle.
@@ -73,6 +74,10 @@ def register_node(
     oracle uses session.address as the source of truth for the
     wallet binding; ``wallet_address`` from the body is optional and
     only echoed back as a sanity-check.
+
+    ADR-0003: ``device_pubkey`` is the Tree's compressed secp256r1
+    public key (66 hex). When provided, the oracle stores it and the
+    DataLayer publisher writes it into ``node:<id>.pubkey``.
     """
     body: dict = {"node_id": node_id, "signing_key_hex": signing_key_hex}
     if label:
@@ -81,6 +86,8 @@ def register_node(
         body["wallet_address"] = wallet_address
     if fw_version:
         body["fw_version"] = fw_version
+    if device_pubkey:
+        body["device_pubkey"] = device_pubkey
     headers: dict = {}
     if authorization:
         headers["Authorization"] = authorization

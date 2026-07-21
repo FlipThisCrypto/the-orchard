@@ -215,6 +215,7 @@ def oracle_register():
             label=body.get("label"),
             wallet_address=body.get("wallet_address"),
             fw_version=body.get("fw_version"),
+            device_pubkey=body.get("device_pubkey"),
             authorization=auth,
         )
         return _ok({"register": result})
@@ -243,6 +244,12 @@ def serial_identify():
     HW_INFO. None when the connected Tree runs firmware <0.4.0 (or
     forgets to register the HW_INFO command). The wizard falls back
     to its pre-9.0 identify card in that case.
+
+    ADR-0003: also returns ``device_pubkey`` (compressed secp256r1) from
+    the Tree's PUBKEY command, falling back to ``hw_info.pubkey``. Null
+    on legacy firmware without a device key — registration still works
+    but DataLayer node: records will lack a verifiable pubkey until the
+    Tree is upgraded and re-provisioned.
     """
     body = request.get_json(silent=True) or {}
     port = body.get("port")
@@ -255,9 +262,15 @@ def serial_identify():
         signing_key = tree_serial.get_signing_key(port)
         status = tree_serial.get_status(port)
         hw_info = tree_serial.get_hw_info(port)
+        device_pubkey = tree_serial.get_device_pubkey(port)
+        if not device_pubkey and isinstance(hw_info, dict):
+            raw = hw_info.get("pubkey")
+            if isinstance(raw, str) and raw.strip():
+                device_pubkey = raw.strip().lower()
         return _ok({
             "node_id": node_id,
             "signing_key_hex": signing_key,
+            "device_pubkey": device_pubkey,
             "status": status,
             "hw_info": hw_info,
         })
