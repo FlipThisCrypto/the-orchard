@@ -48,15 +48,28 @@ class OracleClient:
         Used by the payout to resolve each Tree's recipient wallet."""
         return self._get(f"/nodes/{node_id}")
 
-    def get_readings(self, node_id: str, limit: int = 500) -> list[dict]:
+    def get_readings(
+        self,
+        node_id: str,
+        limit: int = 500,
+        *,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+    ) -> list[dict]:
         """Recent readings for a Tree (newest first). Used by the hot-path
         DataLayer publisher to harvest device-signed SPEC readings.
 
-        Returns an empty list on 404 / empty. ``limit`` is clamped to the
-        oracle's max (500).
+        Optional ``since_ms`` / ``until_ms`` filter on ``tree_ts_ms``
+        (inclusive / exclusive) so a closed UTC hour can be fetched without
+        scanning full history. Returns [] on 404 / empty.
         """
-        limit = max(1, min(int(limit), 500))
-        data = self._get(f"/readings/{node_id.upper()}", params={"limit": limit})
+        limit = max(1, min(int(limit), 2000))
+        params: dict = {"limit": limit}
+        if since_ms is not None:
+            params["since_ms"] = int(since_ms)
+        if until_ms is not None:
+            params["until_ms"] = int(until_ms)
+        data = self._get(f"/readings/{node_id.upper()}", params=params)
         if data is None:
             return []
         if not isinstance(data, list):

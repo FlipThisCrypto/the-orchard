@@ -177,6 +177,14 @@ def test_post_reading_happy_path_and_retrieve(client: TestClient):
     assert rows[0]["gps_fix"] is True
     assert rows[0]["payload"]["sensors"]["mq135"]["adc_raw"] == 1820.0
 
+    # DataLayer publisher window: since_ms/until_ms on tree_ts_ms.
+    assert len(client.get(f"/readings/{NODE_ID}", params={"since_ms": 12345}).json()) == 1
+    assert len(client.get(f"/readings/{NODE_ID}", params={"until_ms": 12345}).json()) == 0
+    assert len(client.get(
+        f"/readings/{NODE_ID}", params={"since_ms": 12345, "until_ms": 12346}
+    ).json()) == 1
+    assert len(client.get(f"/readings/{NODE_ID}", params={"since_ms": 99999}).json()) == 0
+
     # Uptime bucket incremented.
     season = client.get("/").json()["current_season"]
     r3 = client.get(f"/uptime/{NODE_ID}/{season}")
@@ -1235,6 +1243,65 @@ def test_readings_gps_hidden_from_non_owner(auth_client):
         f"/readings/{NODE_ID}", headers={"Authorization": f"Bearer {token}"}).json()[0]
     assert row2["gps_lat"] == pytest.approx(38.0046)
     assert row2["payload"]["sensors"]["gps"]["lat"] == pytest.approx(38.0046)
+
+
+def test_geohash_encode_known_vector():
+    """Coarse-location encoder is correct (canonical geohash example) and
+    rejects out-of-range coordinates."""
+    from oracle.app.routes.nodes import _geohash_encode
+
+    assert _geohash_encode(57.64911, 10.40744, 5) == "u4pru"
+    assert _geohash_encode(38.0046, -85.7374, 5) is not None
+    assert _geohash_encode(999.0, 0.0, 5) is None
+
+
+def test_nodes_public_geohash_sensors_and_wallet_scrub(auth_client):
+    """worldview globe contract: /nodes exposes a COARSE ~5 km geohash and
+    the node's sensor classes to everyone, and scrubs wallet_address to null
+    for the public (returned only to the owning session). The Pass binding
+    stays public (it's an on-chain credential)."""
+    import oracle.app.sessions as sm
+    from oracle.app import models
+    from oracle.app.routes.nodes import _geohash_encode
+    from sqlalchemy import update
+
+    _, addr = _test_keypair()
+    auth_client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    with auth_client.Session() as s:
+        s.execute(update(models.Node).where(models.Node.node_id == NODE_ID).values(
+            wallet_address=addr, pass_nft_id="nft1testpass0000"))
+        s.commit()
+
+    payload = {"node_id": NODE_ID, "ts_ms": 1, "sensors": {
+        "mq135": {"adc_raw": 1820.0},
+        "gps": {"fix": True, "lat": 38.0046, "lon": -85.7374, "satellites": 7},
+    }}
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    pr = auth_client.post("/readings", content=body, headers={
+        "Content-Type": "application/json", "X-Orchard-Node": NODE_ID,
+        "X-Orchard-Sig": _sign(body)})
+    assert pr.status_code == 202, pr.text
+
+    # Public / the globe (no session): coarse geohash + sensors present;
+    # wallet + Pass scrubbed to null.
+    pub = auth_client.get(f"/nodes/{NODE_ID}").json()
+    assert pub["geohash"] == _geohash_encode(38.0046, -85.7374, 5)
+    assert pub["geohash"] is not None and len(pub["geohash"]) == 5
+    assert pub["sensors"] == ["gps", "mq135"]
+    assert pub["wallet_address"] is None              # wallet scrubbed for public
+    assert pub["pass_nft_id"] == "nft1testpass0000"   # Pass binding stays public
+    # The list view is scrubbed for the public too.
+    lst = auth_client.get("/nodes").json()
+    assert lst[0]["wallet_address"] is None
+    assert lst[0]["geohash"] == pub["geohash"]
+
+    # Owner session: wallet + Pass visible again; coarse geohash unchanged.
+    token, _ = sm.issue(addr)
+    own = auth_client.get(f"/nodes/{NODE_ID}",
+                          headers={"Authorization": f"Bearer {token}"}).json()
+    assert own["wallet_address"] == addr
+    assert own["pass_nft_id"] == "nft1testpass0000"
+    assert own["geohash"] == pub["geohash"]
 
 
 def test_fixed_window_limiter():

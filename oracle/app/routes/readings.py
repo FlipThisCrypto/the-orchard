@@ -155,7 +155,17 @@ def _scrub_payload_gps(payload: dict) -> dict:
 @router.get("/readings/{node_id}", response_model=list[ReadingResponse])
 def list_readings(
     node_id: str,
-    limit: int = Query(default=50, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=2000),
+    since_ms: int | None = Query(
+        default=None,
+        ge=0,
+        description="Inclusive lower bound on tree_ts_ms (device epoch millis)",
+    ),
+    until_ms: int | None = Query(
+        default=None,
+        ge=0,
+        description="Exclusive upper bound on tree_ts_ms (device epoch millis)",
+    ),
     db: Session = Depends(get_db),
     sess: sessions.Session | None = Depends(maybe_session),
 ) -> list[ReadingResponse]:
@@ -174,12 +184,16 @@ def list_readings(
         sess is not None and sess.address == node.wallet_address
     )
 
+    # DataLayer hot-path publisher uses since_ms/until_ms to harvest a
+    # closed UTC hour without scanning the whole history.
+    q = select(models.Reading).where(models.Reading.node_id == node_id)
+    if since_ms is not None:
+        q = q.where(models.Reading.tree_ts_ms >= int(since_ms))
+    if until_ms is not None:
+        q = q.where(models.Reading.tree_ts_ms < int(until_ms))
     rows = (
         db.execute(
-            select(models.Reading)
-            .where(models.Reading.node_id == node_id)
-            .order_by(models.Reading.received_at.desc())
-            .limit(limit)
+            q.order_by(models.Reading.received_at.desc()).limit(limit)
         )
         .scalars()
         .all()
