@@ -45,9 +45,10 @@ router = APIRouter(prefix="/provision", tags=["provision"])
 # window, long enough that an operator can flash now and claim later.
 CLAIM_TTL = timedelta(hours=24)
 
-# A normalized code: dashes/spaces stripped, upper-cased. We validate shape +
-# case, not the exact alphabet (the firmware picks Crockford-base32).
-_CLAIM_RE = re.compile(r"^[0-9A-Z]{6,12}$")
+# Normalized code: dashes/spaces stripped, upper-cased. Crockford base32
+# alphabet only (no I L O U) — matches firmware claim_code derivation and
+# reduces look-alike operator mistakes (ADR-0005).
+_CLAIM_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{6,12}$")
 
 
 def _now() -> datetime:
