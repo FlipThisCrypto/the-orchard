@@ -135,7 +135,18 @@ def run_preflight(*, skip_chia: bool = False) -> Report:
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     skip = "--skip-chia" in args
+    as_json = "--json" in args
     rep = run_preflight(skip_chia=skip)
+    if as_json:
+        import json
+        print(json.dumps({
+            "ok": rep.ok,
+            "checks": [
+                {"name": c.name, "ok": c.ok, "detail": c.detail}
+                for c in rep.checks
+            ],
+        }, indent=2))
+        return 0 if rep.ok else 1
     ok_m, fail_m = "OK", "FAIL"
     print("Orchard DataLayer preflight\n")
     for c in rep.checks:

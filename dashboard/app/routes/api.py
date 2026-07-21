@@ -136,6 +136,7 @@ def auth_config():
 
 @bp.get("/oracle/status")
 def oracle_status():
+    """Oracle liveness; root payload may include ``datalayer_schema``."""
     try:
         info = oracle_client.root()
         return _ok({"oracle": info})
