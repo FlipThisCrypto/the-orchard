@@ -33,7 +33,13 @@ class AttestationRecord(BaseModel):
     season_number: int = Field(..., ge=1)
     hours_online: int = Field(..., ge=0, le=24)
     data_hash: str = Field(..., description="sha256 hex of the canonical bytes that were signed")
-    oracle_sig: str = Field(..., description="HMAC-SHA256 hex of the signed body")
+    oracle_sig: str = Field(
+        ...,
+        description=(
+            "Oracle season signature hex — secp256r1 r||s (128 hex) for "
+            "ADR-0003 records, or legacy HMAC-SHA256 (64 hex)"
+        ),
+    )
     dl_tx_id: str = Field(..., description="Chia DataLayer batch tx id (0x... or hex)")
     dl_key_hex: str = Field(..., description="hex of the `attest:<node>:<season>` key")
     block_height_at_write: int | None = None

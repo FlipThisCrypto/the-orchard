@@ -144,6 +144,7 @@ class Attestation(Base):
     season_number: Mapped[int] = mapped_column(Integer, ForeignKey("seasons.season_number"), index=True)
     hours_online: Mapped[int] = mapped_column(Integer, nullable=False)
     data_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 128 hex chars fits secp256r1 r||s (64 bytes); legacy HMAC used 64 hex.
     oracle_sig: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Phase 5.5: chain tracking. dl_tx_id is the Chia DataLayer batch
     # transaction id (0x...64hex); dl_key_hex is the hex-encoded

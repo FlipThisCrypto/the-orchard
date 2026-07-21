@@ -87,8 +87,15 @@ def _attestations_to_plan(
     node_cache: dict[str, dict | None] = {}
 
     for s in attestations:
-        # 1. Verify signature against the oracle's own signing key.
-        if not attest.verify_signature(s.signed, signing_key_hex):
+        # 1. Verify oracle_sig. Prefer public secp256r1 (ADR-0003 / schema);
+        # fall back to legacy HMAC for pre-migration attestations still on
+        # chain so operators aren't blocked mid-cutover.
+        from ..datalayer import schema as dl_schema
+        season_pub = dl_schema.pubkey_for_seed(signing_key_hex.lower())
+        sig_ok = dl_schema.verify_attest(s.signed, season_pub)
+        if not sig_ok:
+            sig_ok = attest.verify_signature(s.signed, signing_key_hex)
+        if not sig_ok:
             plan.append({
                 "node_id":   s.node_id,
                 "season":    s.season,

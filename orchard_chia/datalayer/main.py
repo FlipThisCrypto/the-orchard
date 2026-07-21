@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import attest, config
+from . import attest, config, schema
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
@@ -170,20 +170,30 @@ def main() -> int:
                 stats["empty"] += 1
                 continue
 
-            payload = attest.build_attestation_payload(
+            # SPEC §2.4 sealed attest (ADR-0003): publicly verifiable secp256r1
+            # oracle_sig via schema.sign_attest. Until the hot-path publisher has
+            # filled every hour's readings:, season_root falls back to the
+            # uptime-derived placeholder (same bytes as legacy data_hash).
+            season_root_hex = attest.data_hash_for_uptime(node_id, season, hours)
+            signed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            payload = schema.build_attest(
                 node_id=node_id,
                 season=season,
-                hours_online=hours,
                 season_start_utc=uptime["season_start_utc"],
                 season_end_utc=uptime["season_end_utc"],
+                hours_online=hours,
+                verified_hrs=hours,  # honest claim until readings seal exists
+                reading_count=0,
                 block_height_at_write=block_height,
-                data_hash=attest.data_hash_for_uptime(node_id, season, hours),
-                signed_at=datetime.now(timezone.utc),
+                season_root_hex=season_root_hex,
+                signed_at=signed_at,
             )
-            signed = attest.sign_payload(payload, cfg.signing_key_hex)
+            # signing_key_hex is 64 hex chars — valid secp256r1 scalar seed
+            # (generated once per operator; same file as legacy HMAC key).
+            signed = schema.sign_attest(payload, cfg.signing_key_hex.lower())
 
-            key_hex = attest.datalayer_key_for(node_id, season)
-            value_hex = attest.datalayer_value_for(signed)
+            key_hex = schema.attest_key(node_id, season)
+            value_hex = schema.value_hex(signed)
 
             try:
                 existing_hex = dl.get_value(cfg.data_layer.store_id, key_hex)
