@@ -3,15 +3,12 @@
 
     python -m orchard_chia.cli.orchard_verify vectors <path-to-vectors.json>
     python -m orchard_chia.cli.orchard_verify live \\
-        --store-id <ID> --node-id <ID> --season 42 --hour 13
-
-Phase 1 (now): offline verification against the golden ``vectors.json``.
-Phase 2 (stub): live DataLayer verification — interface frozen, not yet wired.
+        --store-id <ID> --node-id <ID> --season 42 [--hour 13]
 
 Exit codes:
     0  VALID    — every check passed
     1  INVALID  — a check failed (tampering, bad signature, wrong score …)
-    2  CANNOT   — couldn't verify (live not wired, file missing/malformed, usage)
+    2  CANNOT   — couldn't verify (RPC down, missing keys, file malformed, usage)
 """
 from __future__ import annotations
 
@@ -20,7 +17,8 @@ import json
 import sys
 from pathlib import Path
 
-from ..datalayer import schema, verify
+from ..datalayer import config, fetch, schema, verify
+from ..datalayer.rpc import ChiaRpcError, DataLayerRpc
 
 
 def _marks() -> tuple[str, str]:
@@ -79,13 +77,53 @@ def cmd_vectors(args: argparse.Namespace) -> int:
 
 
 def cmd_live(args: argparse.Namespace) -> int:
-    print("Live DataLayer verification is not wired yet.")
-    print("Next step: fetch node, readings, attest, latest, and the DataLayer "
-          "inclusion proof for")
-    print(f"  store={args.store_id} node={args.node_id} "
-          f"season={int(args.season):08d} hour={int(args.hour):02d}")
-    print("then run the same checks as `vectors`, plus on-chain get_proof (SPEC §7).")
-    return 2
+    """Fetch a bundle from DataLayer RPC and run the same offline checks.
+
+    On-chain inclusion proof (get_proof vs store root) is a separate SPEC §7
+    step — when the RPC supports it we will add it as an extra Check.
+    """
+    try:
+        cfg = config.load()
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    store_id = args.store_id or cfg.data_layer.store_id
+    if not store_id:
+        print("error: --store-id required (or set datalayer.store_id in config)",
+              file=sys.stderr)
+        return 2
+
+    hours = [int(args.hour)] if args.hour is not None else None
+    rpc = DataLayerRpc(
+        cfg.data_layer.host,
+        cfg.data_layer.port,
+        cfg.data_layer.cert_path,
+        cfg.data_layer.key_path,
+    )
+    try:
+        bundle = fetch.fetch_bundle(
+            rpc,
+            store_id,
+            node_id=args.node_id,
+            season=int(args.season),
+            hours=hours,
+        )
+    except fetch.FetchError as e:
+        print(f"error: cannot assemble bundle: {e}", file=sys.stderr)
+        return 2
+    except ChiaRpcError as e:
+        print(f"error: DataLayer RPC failed: {e}", file=sys.stderr)
+        return 2
+
+    print(
+        f"[live] store={store_id[:16]}… node={args.node_id[:8]}… "
+        f"season={int(args.season)} hours="
+        f"{hours if hours is not None else 'auto'}"
+    )
+    rep = verify.verify_bundle(**bundle)
+    _print_report(rep)
+    return 0 if rep.valid else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -99,11 +137,23 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("path", help="path to vectors.json")
     v.set_defaults(func=cmd_vectors)
 
-    live = sub.add_parser("live", help="(stub) verify a live DataLayer store")
-    live.add_argument("--store-id", required=True)
+    live = sub.add_parser(
+        "live",
+        help="fetch a store via DataLayer RPC and verify the season bundle",
+    )
+    live.add_argument(
+        "--store-id",
+        default=None,
+        help="DataLayer store id (default: config.yaml datalayer.store_id)",
+    )
     live.add_argument("--node-id", required=True)
     live.add_argument("--season", required=True, type=int)
-    live.add_argument("--hour", required=True, type=int)
+    live.add_argument(
+        "--hour",
+        type=int,
+        default=None,
+        help="single hour 0-23; omit to discover all hours present in the store",
+    )
     live.set_defaults(func=cmd_live)
     return p
 

@@ -116,10 +116,16 @@ def test_cli_missing_file_exit_two(capsys):
     assert cli.main(["vectors", "does-not-exist.json"]) == 2
 
 
-def test_cli_live_stub_exit_two(capsys):
-    rc = cli.main(
-        ["live", "--store-id", "S", "--node-id", "N", "--season", "42", "--hour", "13"]
+def test_cli_live_without_config_or_rpc_exit_two(capsys, monkeypatch, tmp_path):
+    """Live mode is wired: missing config / unreachable RPC → exit 2 (cannot)."""
+    # Point config at a non-existent path so load() fails cleanly.
+    monkeypatch.setattr(
+        "orchard_chia.cli.orchard_verify.config.CONFIG_PATH",
+        tmp_path / "no-such-config.yaml",
     )
-    out = capsys.readouterr().out
+    rc = cli.main(
+        ["live", "--store-id", "S", "--node-id", "N" * 32, "--season", "42", "--hour", "13"]
+    )
+    err = capsys.readouterr().err
     assert rc == 2
-    assert "not wired yet" in out
+    assert "error:" in err.lower() or "not found" in err.lower()
