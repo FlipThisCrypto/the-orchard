@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import confirm, metrics as metrics_mod
+from . import clock, confirm, metrics as metrics_mod
 from . import ops_log, schedule, schema
 from .config import CONFIG_PATH, load
 from .oracle import OracleClient, OracleError
@@ -93,7 +93,7 @@ def plan_publish(
     """
     existing = existing_values or {}
     is_pub = already_published or (lambda _n, _s, _h: False)
-    now = created_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = created_at or clock.utc_now_iso()
     plan = PublishPlan(changelist=[])
 
     # Always ensure meta:schema is present / current.
