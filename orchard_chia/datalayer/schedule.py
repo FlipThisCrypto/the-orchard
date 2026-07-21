@@ -7,6 +7,7 @@ queries keep re-runs cheap and convergent.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -14,6 +15,18 @@ from datetime import date, datetime, timedelta, timezone
 # Matches oracle default season_genesis_date so publisher and oracle agree
 # without importing oracle.app (different package roots / install layouts).
 DEFAULT_SEASON_GENESIS = date(2026, 5, 27)
+
+
+def season_genesis_from_env() -> date:
+    """Optional ``ORCHARD_SEASON_GENESIS=YYYY-MM-DD`` to match oracle config."""
+    raw = (os.environ.get("ORCHARD_SEASON_GENESIS") or "").strip()
+    if not raw:
+        return DEFAULT_SEASON_GENESIS
+    try:
+        y, m, d = raw.split("-", 2)
+        return date(int(y), int(m), int(d))
+    except ValueError:
+        return DEFAULT_SEASON_GENESIS
 
 
 @dataclass(frozen=True)
@@ -33,9 +46,11 @@ class ClosedHour:
 def season_number_for(
     ts: datetime,
     *,
-    genesis: date = DEFAULT_SEASON_GENESIS,
+    genesis: date | None = None,
 ) -> int:
     """Day-aligned Season number (same rule as oracle seasons.py)."""
+    if genesis is None:
+        genesis = season_genesis_from_env()
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     else:
@@ -72,9 +87,11 @@ def last_closed_hour_start(now: datetime | None = None) -> datetime:
 def closed_hour_for_start(
     start: datetime,
     *,
-    genesis: date = DEFAULT_SEASON_GENESIS,
+    genesis: date | None = None,
 ) -> ClosedHour:
     """Build a ClosedHour for an hour that begins at ``start`` (UTC hour floor)."""
+    if genesis is None:
+        genesis = season_genesis_from_env()
     start = floor_hour_utc(start)
     end = start + timedelta(hours=1)
     season = season_number_for(start, genesis=genesis)
@@ -91,13 +108,15 @@ def iter_closed_hours(
     *,
     lookback_hours: int = 48,
     now: datetime | None = None,
-    genesis: date = DEFAULT_SEASON_GENESIS,
+    genesis: date | None = None,
     through: datetime | None = None,
 ) -> list[ClosedHour]:
     """Closed hours from ``last_closed - (lookback-1)`` through ``last_closed``.
 
     Oldest first. Caps lookback to avoid unbounded oracle scans.
     """
+    if genesis is None:
+        genesis = season_genesis_from_env()
     if lookback_hours < 1:
         return []
     last = through or last_closed_hour_start(now)
@@ -119,9 +138,11 @@ def is_closed_hour(
     hour: int,
     *,
     now: datetime | None = None,
-    genesis: date = DEFAULT_SEASON_GENESIS,
+    genesis: date | None = None,
 ) -> bool:
     """True if (season, hour) is fully in the past relative to ``now``."""
+    if genesis is None:
+        genesis = season_genesis_from_env()
     last = last_closed_hour_start(now)
     ch = closed_hour_for_start(last, genesis=genesis)
     if season < ch.season:
