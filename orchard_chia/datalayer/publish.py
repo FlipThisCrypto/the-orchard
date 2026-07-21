@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import metrics as metrics_mod
+from . import confirm, metrics as metrics_mod
 from . import ops_log, schedule, schema
 from .config import CONFIG_PATH, load
 from .oracle import OracleClient, OracleError
@@ -482,6 +482,29 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
             f"[orchard.publish] succeeded after {dl.last_retry_attempts} RPC attempt(s)"
         )
 
+    # Round 3: confirm inserts landed before advancing watermark.
+    inserts = confirm.inserts_from_changelist(plan.changelist)
+    conf = confirm.confirm_inserts(dl, cfg.data_layer.store_id, inserts)
+    print(f"[orchard.publish] {conf.detail}")
+    if not conf.ok:
+        print(
+            f"ERROR: post-write confirm failed "
+            f"(missing={conf.missing[:5]} mismatched={conf.mismatched[:5]}). "
+            f"Watermark NOT advanced — re-run to converge.",
+            file=sys.stderr,
+        )
+        wm.close()
+        run.finish(
+            "error",
+            error="ConfirmError",
+            error_msg=conf.detail,
+            confirm_checked=conf.checked,
+            confirm_missing=len(conf.missing),
+            confirm_mismatched=len(conf.mismatched),
+            rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        )
+        return 6
+
     for node_id, season, hour, hour_root in plan.hours:
         wm.record(
             node_id=node_id,
@@ -503,6 +526,7 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
         tx_id_prefix=(txn_id[:16] if isinstance(txn_id, str) else None),
         rpc_attempts=getattr(dl, "last_retry_attempts", 1),
         rpc_retried=bool(getattr(dl, "last_retried", False)),
+        confirm_checked=conf.checked,
     )
     return 0
 

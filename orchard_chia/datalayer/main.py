@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import attest, config, ops_log, schema, seal
+from . import attest, config, confirm, ops_log, schema, seal
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
@@ -282,6 +282,28 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
         )
     print(f"[orchard.attest] stats: {dict(stats)}")
 
+    inserts = confirm.inserts_from_changelist(changelist)
+    conf = confirm.confirm_inserts(dl, cfg.data_layer.store_id, inserts)
+    print(f"[orchard.attest] {conf.detail}")
+    if not conf.ok:
+        print(
+            f"ERROR: post-write confirm failed "
+            f"(missing={conf.missing[:5]} mismatched={conf.mismatched[:5]}). "
+            f"Oracle NOT updated — re-run to converge.",
+            file=sys.stderr,
+        )
+        run.finish(
+            "error",
+            error="ConfirmError",
+            error_msg=conf.detail,
+            stats=dict(stats),
+            confirm_checked=conf.checked,
+            confirm_missing=len(conf.missing),
+            confirm_mismatched=len(conf.mismatched),
+            rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        )
+        return 6
+
     # Report back to the oracle so its local DB tracks what's on chain.
     # Failures here don't roll back the DataLayer write — the chain
     # state is already accepted. The oracle catches up on the next run.
@@ -301,6 +323,7 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
         tx_id_prefix=(txn_id[:16] if isinstance(txn_id, str) else None),
         rpc_attempts=getattr(dl, "last_retry_attempts", 1),
         rpc_retried=bool(getattr(dl, "last_retried", False)),
+        confirm_checked=conf.checked,
     )
     return 0
 
