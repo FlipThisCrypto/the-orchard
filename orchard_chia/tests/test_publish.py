@@ -11,7 +11,8 @@ from orchard_chia.datalayer import metrics, publish, publish_watermark, schema
 
 
 NODE = "5B9BB022649FA93D4091DA4BA40714B9"
-SEED = "0" * 64  # valid 32-byte seed hex for tests
+# Non-zero scalar required for secp256r1 (ADR-0007); all-zero is invalid.
+SEED = "01" + "00" * 31
 PUB = schema.pubkey_for_seed(SEED)
 
 
