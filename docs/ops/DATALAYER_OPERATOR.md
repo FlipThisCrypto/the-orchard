@@ -97,3 +97,8 @@ orchard_chia/data/oracle_signing_key.hex is the Season signer seed. Mode 0600 on
 - [ADR-0003](../decisions/0003-datalayer-verifiable-dataset.md)
 - [ADR-0007 secp256r1](../decisions/) (if present in tree)
 
+
+## Confirm lag
+
+If post-write confirm fails intermittently, DataLayer may still be applying the batch. Re-run publish/attest; writers are convergent. Do not delete the watermark by hand unless recovering from corruption.
+
