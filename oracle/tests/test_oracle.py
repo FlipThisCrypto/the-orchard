@@ -82,6 +82,15 @@ def test_root_identifies_service(client: TestClient):
     assert "current_season" in body
 
 
+def test_register_rejects_degenerate_signing_key(client: TestClient):
+    for bad in ("0" * 64, "a" * 64, "FF" * 32):
+        r = client.post(
+            "/register",
+            json={"node_id": NODE_ID, "signing_key_hex": bad, "label": "x"},
+        )
+        assert r.status_code == 422, bad
+
+
 def test_register_then_list(client: TestClient):
     r = client.post(
         "/register",

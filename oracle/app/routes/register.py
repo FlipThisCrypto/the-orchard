@@ -82,7 +82,13 @@ class RegisterRequest(BaseModel):
     def _key_hex(cls, v: str) -> str:
         if not _HEX64.match(v):
             raise ValueError("signing_key_hex must be 64 hex characters")
-        return v.upper()
+        key = v.upper()
+        # All-zero (or any single-nibble) secrets make HMAC "auth" forgeable
+        # by anyone who can guess the pattern. Real Trees mint from hardware
+        # RNG; reject degenerate keys at the registration boundary.
+        if key == "0" * 64 or len(set(key)) == 1:
+            raise ValueError("signing_key_hex must not be a degenerate constant key")
+        return key
 
     @field_validator("wallet_address")
     @classmethod
