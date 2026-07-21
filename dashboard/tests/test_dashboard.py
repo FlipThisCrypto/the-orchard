@@ -811,3 +811,18 @@ def test_public_mode_auth_config_hides_wc_project_id(monkeypatch):
         assert body["wc_project_id"] == ""
         assert body["wc_configured"] is False
     dash_config.reset_settings_for_tests()
+
+def test_auth_challenge_non_json_oracle_returns_502(client, monkeypatch):
+    class FakeResp:
+        status_code = 200
+        content = b"<html>bad</html>"
+        text = "<html>bad</html>"
+        def json(self):
+            raise ValueError("no json")
+    monkeypatch.setattr(
+        "requests.request",
+        lambda *a, **k: FakeResp(),
+    )
+    r = client.post("/api/auth/challenge")
+    assert r.status_code == 502
+    assert r.get_json()["ok"] is False

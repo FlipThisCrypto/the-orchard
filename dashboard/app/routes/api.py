@@ -72,33 +72,38 @@ def _private(fn):
 # CORS on the oracle. The Authorization: Bearer <session_token> is
 # carried by all downstream /api/oracle/* requests after auth.
 
+def _proxy_oracle_json(method: str, path: str, *, json_body=None, timeout: float = 5):
+    """Forward to the oracle; never raise JSONDecodeError into Flask.
+
+    Returns (response_payload, status_code) or an error tuple via _err.
+    """
+    import requests
+    url = f"{settings().oracle_url.rstrip('/')}{path}"
+    try:
+        r = requests.request(method, url, json=json_body, timeout=timeout)
+    except requests.RequestException as e:
+        return _err(f"oracle unreachable: {e}", code=502)
+    if not (r.content or b"").strip():
+        return _err("oracle returned empty body", code=502)
+    try:
+        payload = r.json()
+    except ValueError:
+        snippet = (r.text or "")[:120]
+        return _err(f"oracle returned non-JSON ({r.status_code}): {snippet}", code=502)
+    return jsonify(payload), r.status_code
+
+
 @bp.post("/auth/challenge")
 def auth_challenge():
     """Forward to oracle /auth/challenge to get a single-use nonce."""
-    import requests
-    try:
-        r = requests.post(
-            f"{settings().oracle_url.rstrip('/')}/auth/challenge",
-            timeout=5,
-        )
-    except requests.RequestException as e:
-        return _err(f"oracle unreachable: {e}", code=502)
-    return jsonify(r.json()), r.status_code
+    return _proxy_oracle_json("POST", "/auth/challenge")
 
 
 @bp.post("/auth/verify")
 def auth_verify():
     """Forward signed-challenge payload to oracle /auth/verify."""
-    import requests
     body = request.get_json(silent=True) or {}
-    try:
-        r = requests.post(
-            f"{settings().oracle_url.rstrip('/')}/auth/verify",
-            json=body, timeout=5,
-        )
-    except requests.RequestException as e:
-        return _err(f"oracle unreachable: {e}", code=502)
-    return jsonify(r.json()), r.status_code
+    return _proxy_oracle_json("POST", "/auth/verify", json_body=body)
 
 
 @bp.get("/auth/config")
