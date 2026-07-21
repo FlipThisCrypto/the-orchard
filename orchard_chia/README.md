@@ -19,13 +19,18 @@ orchard_chia/
 ├── requirements.txt          # requests, pydantic, pyyaml, pytest
 ├── config.example.yaml       # copy to config.yaml, fill in, never commit
 ├── data/                     # gitignored — local state (signing key, etc.)
-├── datalayer/                # Phase 5 — Season attestation writer  ✅
-│   ├── __main__.py           # `python -m orchard_chia.datalayer`
-│   ├── main.py               # orchestrator
+├── datalayer/                # Phase 5 — DataLayer writer (attest + publish)  ✅
+│   ├── __main__.py           # `python -m orchard_chia.datalayer {attest|publish}`
+│   ├── main.py               # Season attest: orchestrator (sealed path)
+│   ├── publish.py            # Hot-path readings:/latest: publisher (ADR-0003)
+│   ├── publish_watermark.py  # (node, season, hour) publish progress SQLite
+│   ├── metrics.py            # oracle sensors → integer fixed-point metrics
+│   ├── schema.py             # SPEC v1 record builders + ed25519 sign/verify
+│   ├── merkle.py / verify.py # Merkle roots + offline orchard-verify engine
 │   ├── config.py             # YAML loader
 │   ├── oracle.py             # HTTP client to the oracle
 │   ├── rpc.py                # TLS-wrapped Chia full-node + DataLayer clients
-│   └── attest.py             # pure functions: build, sign, serialize
+│   └── attest.py             # legacy HMAC Season attestation helpers
 ├── wallet/                   # Shared Chia wallet RPC client
 │   └── rpc.py                # TLS-wrapped wallet RPC (port 9256)
 ├── nft/                      # Phase 6 — Orchard Pass minting + verification  ✅

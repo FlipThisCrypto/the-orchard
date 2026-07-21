@@ -1,0 +1,391 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Hot-path DataLayer publisher (SPEC §6) — meta / node / readings / latest.
+
+Builds one ``batch_update`` changelist per cycle from already device-signed
+readings (ADR-0003). Pure planning is separated from I/O so tests never need
+a live Chia node.
+
+The Season ``attest:`` sealed path remains in ``main.py`` (HMAC today; migrates
+to ed25519 ``schema.sign_attest`` in a later step). This module is the *hot*
+path: hourly ``readings:`` permanence + live ``latest:`` pointer.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+from . import metrics as metrics_mod
+from . import schema
+from .config import CONFIG_PATH, load
+from .oracle import OracleClient, OracleError
+from .publish_watermark import PublishWatermark
+from .rpc import ChiaRpcError, DataLayerRpc
+
+WRITER_VERSION = "0.2.0"
+DEFAULT_WATERMARK_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "publish_watermark.db"
+)
+
+
+@dataclass
+class HourBatchInput:
+    """One closed hour of device-signed readings for a single Tree."""
+    node_id: str
+    season: int
+    hour: int
+    readings: list[dict]
+    # Optional node card fields (written when provided and key changed).
+    node_pubkey: str | None = None
+    board: str = "unknown"
+    fw: str = "unknown"
+    sensors: list[dict] = field(default_factory=list)
+    geohash: str = ""
+    first_seen_utc: str = ""
+    label: str | None = None
+    running_hours_online: int = 0
+    last_sealed_season: int | None = None
+
+
+@dataclass
+class PublishPlan:
+    """Result of planning a cycle — ready for DataLayer batch_update."""
+    changelist: list[dict]
+    # Hours that will be watermarked after a successful batch_update.
+    hours: list[tuple[str, int, int, str]] = field(default_factory=list)
+    # Human-readable skip reasons (node:season:hour → reason).
+    skipped: list[str] = field(default_factory=list)
+    meta_written: bool = False
+    nodes_written: list[str] = field(default_factory=list)
+
+
+def _upsert(changelist: list[dict], key_hex: str, value_hex: str, existing: str | None) -> bool:
+    """Append delete+insert if value changed. Returns True if a write is needed."""
+    if existing == value_hex:
+        return False
+    if existing is not None:
+        changelist.append({"action": "delete", "key": key_hex})
+    changelist.append({"action": "insert", "key": key_hex, "value": value_hex})
+    return True
+
+
+def plan_publish(
+    *,
+    batches: list[HourBatchInput],
+    season_pubkey: str,
+    writer_version: str = WRITER_VERSION,
+    created_at: str | None = None,
+    existing_values: dict[str, str | None] | None = None,
+    already_published: Callable[[str, int, int], bool] | None = None,
+) -> PublishPlan:
+    """Build a DataLayer changelist for the given hour batches.
+
+    ``existing_values`` maps key_hex → current value_hex (or None if missing).
+    When omitted, every planned key is treated as insert-only (no delete).
+
+    Only readings that already carry a device ``sig`` are accepted — the
+    publisher never re-signs device data (SPEC §2.3 / ADR-0003).
+    """
+    existing = existing_values or {}
+    is_pub = already_published or (lambda _n, _s, _h: False)
+    now = created_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    plan = PublishPlan(changelist=[])
+
+    # Always ensure meta:schema is present / current.
+    meta = schema.build_meta(
+        writer_version=writer_version,
+        created_at=now,
+        season_pubkey=season_pubkey,
+    )
+    mk = schema.meta_key()
+    mv = schema.value_hex(meta)
+    if _upsert(plan.changelist, mk, mv, existing.get(mk)):
+        plan.meta_written = True
+
+    for batch in batches:
+        node_id = batch.node_id.upper()
+        season = int(batch.season)
+        hour = int(batch.hour)
+
+        if hour < 0 or hour > 23:
+            plan.skipped.append(f"{node_id}:{season}:{hour}: invalid hour")
+            continue
+        if is_pub(node_id, season, hour):
+            plan.skipped.append(f"{node_id}:{season}:{hour}: already published")
+            continue
+
+        signed = [r for r in batch.readings if isinstance(r, dict) and r.get("sig")]
+        if not signed:
+            plan.skipped.append(
+                f"{node_id}:{season}:{hour}: no device-signed readings "
+                f"(firmware must attach SPEC device_reading with sig)"
+            )
+            continue
+
+        # Optional node card.
+        if batch.node_pubkey:
+            node_rec = schema.build_node(
+                node_id=node_id,
+                pubkey=batch.node_pubkey,
+                board=batch.board,
+                fw=batch.fw,
+                sensors=batch.sensors or [],
+                geohash=batch.geohash or "",
+                first_seen_utc=batch.first_seen_utc or now,
+                label=batch.label,
+            )
+            nk = schema.node_key(node_id)
+            nv = schema.value_hex(node_rec)
+            if _upsert(plan.changelist, nk, nv, existing.get(nk)):
+                plan.nodes_written.append(node_id)
+
+        readings_rec = schema.build_readings_batch(
+            node_id=node_id,
+            season=season,
+            hour=hour,
+            readings=signed,
+        )
+        rk = schema.readings_key(node_id, season, hour)
+        rv = schema.value_hex(readings_rec)
+        # readings: is append-only — never rewrite an existing hour.
+        if existing.get(rk) is not None:
+            plan.skipped.append(
+                f"{node_id}:{season}:{hour}: readings key already on chain (append-only)"
+            )
+            continue
+        plan.changelist.append({"action": "insert", "key": rk, "value": rv})
+
+        ordered = schema._sorted_readings(signed)
+        last = ordered[-1] if ordered else signed[-1]
+        latest_rec = schema.build_latest(
+            node_id=node_id,
+            season=season,
+            hour=hour,
+            last_sealed_season=batch.last_sealed_season,
+            running_hours_online=batch.running_hours_online or (hour + 1),
+            last_reading=last,
+            updated_at=now,
+        )
+        lk = schema.latest_key(node_id)
+        lv = schema.value_hex(latest_rec)
+        _upsert(plan.changelist, lk, lv, existing.get(lk))
+
+        plan.hours.append((node_id, season, hour, readings_rec["hour_root"]))
+
+    return plan
+
+
+def readings_from_oracle_payloads(
+    payloads: list[dict],
+    *,
+    node_id: str,
+) -> list[dict]:
+    """Pull device-signed SPEC readings out of oracle reading rows/payloads.
+
+    Accepts either raw POST bodies or ``ReadingResponse``-shaped dicts with a
+    nested ``payload`` field. Unsigned sensor blobs are ignored (not re-signed).
+    """
+    out: list[dict] = []
+    for row in payloads:
+        body = row.get("payload") if isinstance(row, dict) and "payload" in row else row
+        if not isinstance(body, dict):
+            continue
+        reading = metrics_mod.extract_device_reading(body)
+        if reading is None:
+            continue
+        # Normalize node_id to uppercase for consistency.
+        reading = {**reading, "node_id": reading.get("node_id", node_id).upper()}
+        if reading["node_id"] != node_id.upper():
+            continue
+        out.append(reading)
+    return out
+
+
+def hour_of_ts_ms(ts_ms: int) -> int:
+    """UTC hour-of-day (0–23) for a device epoch-millis timestamp."""
+    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).hour
+
+
+def season_hour_bounds_for_reading(ts_ms: int, season: int) -> tuple[int, int]:
+    """Return (season, hour) for a reading. Season is caller-provided (oracle)."""
+    return int(season), hour_of_ts_ms(int(ts_ms))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry for the hot-path publisher.
+
+    Usage:
+      python -m orchard_chia.datalayer publish
+      python -m orchard_chia.datalayer publish --dry-run
+    """
+    args = list(argv if argv is not None else sys.argv[1:])
+    dry_run = "--dry-run" in args
+
+    try:
+        cfg = load()
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+
+    if not cfg.data_layer.store_id and not dry_run:
+        print(
+            "ERROR: datalayer.store_id is empty in config.yaml.\n"
+            "Create a store: chia data create_data_store -m 0.0001",
+            file=sys.stderr,
+        )
+        return 2
+
+    season_pubkey = schema.pubkey_for_seed(cfg.signing_key_hex.lower())
+    watermark_path = Path(
+        os.environ.get("ORCHARD_PUBLISH_WATERMARK", str(DEFAULT_WATERMARK_PATH))
+    )
+    wm = PublishWatermark(watermark_path)
+
+    oracle = OracleClient(cfg.oracle.url)
+    try:
+        current_season = oracle.current_season()
+        nodes = oracle.list_nodes()
+    except OracleError as e:
+        print(f"ERROR: oracle unreachable: {e}", file=sys.stderr)
+        wm.close()
+        return 3
+
+    print(f"[orchard.publish] oracle:   {cfg.oracle.url}")
+    print(f"[orchard.publish] store_id: {cfg.data_layer.store_id or '(dry-run)'}")
+    print(f"[orchard.publish] season:   {current_season}")
+    print(f"[orchard.publish] trees:    {len(nodes)}")
+    print(f"[orchard.publish] season_pubkey: {season_pubkey[:16]}…")
+
+    # Gather closed-hour batches from oracle readings that already carry
+    # device signatures. Without them the planner will skip (honest no-op).
+    batches: list[HourBatchInput] = []
+    for node in nodes:
+        node_id = node["node_id"]
+        try:
+            rows = oracle.get_readings(node_id, limit=500)
+        except OracleError as e:
+            print(f"  WARN: readings {node_id[:8]}…: {e}", file=sys.stderr)
+            continue
+        if not rows:
+            continue
+        signed = readings_from_oracle_payloads(rows, node_id=node_id)
+        if not signed:
+            continue
+        # Group by (season, hour). Season from oracle root is current; for
+        # historical rows use tree_ts_ms only for the hour bucket and pin
+        # season to current until oracle returns per-row season.
+        by_sh: dict[tuple[int, int], list[dict]] = {}
+        for r in signed:
+            ts = int(r.get("ts_ms") or 0)
+            h = hour_of_ts_ms(ts) if ts else 0
+            # Prefer explicit season on the reading if present.
+            s = int(r.get("season") or current_season)
+            by_sh.setdefault((s, h), []).append(r)
+
+        sensors_public = [
+            {"name": n, "active": True}
+            for n in (node.get("sensors") or [])
+            if isinstance(n, str)
+        ]
+        for (s, h), group in sorted(by_sh.items()):
+            batches.append(
+                HourBatchInput(
+                    node_id=node_id,
+                    season=s,
+                    hour=h,
+                    readings=group,
+                    node_pubkey=node.get("device_pubkey") or node.get("pubkey"),
+                    board="unknown",
+                    fw=node.get("fw_version") or "unknown",
+                    sensors=sensors_public,
+                    geohash=node.get("geohash") or "",
+                    first_seen_utc=(
+                        node.get("registered_at")
+                        or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    ),
+                    label=node.get("label"),
+                    running_hours_online=h + 1,
+                    last_sealed_season=current_season - 1 if current_season > 1 else None,
+                )
+            )
+
+    # Resolve existing store values for keys we might touch (idempotency).
+    existing: dict[str, str | None] = {}
+    dl: DataLayerRpc | None = None
+    if not dry_run and cfg.data_layer.store_id:
+        dl = DataLayerRpc(
+            cfg.data_layer.host,
+            cfg.data_layer.port,
+            cfg.data_layer.cert_path,
+            cfg.data_layer.key_path,
+        )
+        keys_to_check = [schema.meta_key()]
+        for b in batches:
+            keys_to_check.append(schema.node_key(b.node_id))
+            keys_to_check.append(schema.readings_key(b.node_id, b.season, b.hour))
+            keys_to_check.append(schema.latest_key(b.node_id))
+        for k in dict.fromkeys(keys_to_check):
+            try:
+                existing[k] = dl.get_value(cfg.data_layer.store_id, k)
+            except ChiaRpcError:
+                existing[k] = None
+
+    plan = plan_publish(
+        batches=batches,
+        season_pubkey=season_pubkey,
+        existing_values=existing,
+        already_published=wm.is_published,
+    )
+
+    for sk in plan.skipped:
+        print(f"  skip: {sk}")
+    print(
+        f"[orchard.publish] plan: {len(plan.changelist)} ops, "
+        f"{len(plan.hours)} hour(s), meta={plan.meta_written}, "
+        f"nodes={plan.nodes_written}"
+    )
+
+    if not plan.changelist:
+        print("[orchard.publish] nothing to write")
+        wm.close()
+        return 0
+
+    if dry_run:
+        print("[orchard.publish] dry-run — not calling DataLayer")
+        for item in plan.changelist:
+            action = item["action"]
+            key_ascii = bytes.fromhex(item["key"]).decode("utf-8", errors="replace")
+            print(f"  {action:6} {key_ascii}")
+        wm.close()
+        return 0
+
+    assert dl is not None
+    try:
+        result = dl.batch_update(cfg.data_layer.store_id, plan.changelist)
+    except ChiaRpcError as e:
+        print(f"ERROR: DataLayer batch_update failed: {e}", file=sys.stderr)
+        wm.close()
+        return 5
+
+    txn_id = result.get("tx_id") or result.get("transaction_id") or "<unknown>"
+    print(f"[orchard.publish] batch_update accepted tx_id={txn_id}")
+
+    for node_id, season, hour, hour_root in plan.hours:
+        wm.record(
+            node_id=node_id,
+            season=season,
+            hour=hour,
+            hour_root=hour_root,
+            tx_id=txn_id,
+        )
+    wm.close()
+    print(f"[orchard.publish] watermarked {len(plan.hours)} hour(s) "
+          f"(config: {CONFIG_PATH})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

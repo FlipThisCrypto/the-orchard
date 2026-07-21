@@ -47,3 +47,18 @@ class OracleClient:
         """Single node record (incl. wallet_address). None on 404.
         Used by the payout to resolve each Tree's recipient wallet."""
         return self._get(f"/nodes/{node_id}")
+
+    def get_readings(self, node_id: str, limit: int = 500) -> list[dict]:
+        """Recent readings for a Tree (newest first). Used by the hot-path
+        DataLayer publisher to harvest device-signed SPEC readings.
+
+        Returns an empty list on 404 / empty. ``limit`` is clamped to the
+        oracle's max (500).
+        """
+        limit = max(1, min(int(limit), 500))
+        data = self._get(f"/readings/{node_id.upper()}", params={"limit": limit})
+        if data is None:
+            return []
+        if not isinstance(data, list):
+            raise OracleError(f"GET /readings/{node_id} returned non-list")
+        return data

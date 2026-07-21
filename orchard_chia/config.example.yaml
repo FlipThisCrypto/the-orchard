@@ -33,6 +33,13 @@ oracle:
 # Idempotent. Re-run as often as you like; only changed values are
 # pushed to DataLayer. Set `max_lookback_seasons` to cap how many
 # closed Seasons we look back per run (default null = all).
+#
+#   python -m orchard_chia.datalayer attest     # sealed Season attest:
+#   python -m orchard_chia.datalayer publish    # hot-path readings:/latest:
+#
+# Hot-path publish only writes hours that contain device-signed SPEC
+# readings (payload.device_reading with ed25519 sig). Without those the
+# publisher is a clean no-op. Watermark: orchard_chia/data/publish_watermark.db
 attestation:
   max_lookback_seasons: null      # null = no cap
   skip_empty_seasons: true        # don't attest seasons with 0 hours

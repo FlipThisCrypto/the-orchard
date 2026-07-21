@@ -1,6 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Entry point: `python -m chia.datalayer`."""
-from .main import main
+"""Entry points:
+
+  python -m orchard_chia.datalayer              # Season attest writer (legacy default)
+  python -m orchard_chia.datalayer attest       # same as default
+  python -m orchard_chia.datalayer publish      # hot-path readings publisher (ADR-0003)
+  python -m orchard_chia.datalayer publish --dry-run
+"""
+from __future__ import annotations
+
+import sys
+
+
+def _dispatch(argv: list[str]) -> int:
+    if not argv or argv[0] in ("attest", "attestation", "season"):
+        from .main import main
+        return int(main() or 0)
+
+    cmd = argv[0]
+    if cmd in ("publish", "hot", "readings"):
+        from .publish import main as publish_main
+        return int(publish_main(argv[1:]) or 0)
+
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+
+    print(
+        f"Unknown subcommand {cmd!r}. Use: attest | publish | --help",
+        file=sys.stderr,
+    )
+    return 2
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(_dispatch(sys.argv[1:]))
