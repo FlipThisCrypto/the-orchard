@@ -161,10 +161,20 @@ class DataLayerRpc:
     def get_value(self, store_id: str, key_hex: str) -> str | None:
         body = {"id": store_id, "key": key_hex}
         try:
+            # Reads use a shorter timeout path: still go through _post for
+            # retry, but get_value failures are soft (None) for scanners.
             data = self._post("get_value", body)
         except ChiaRpcError:
             return None
         return data.get("value")
+
+    def get_value_strict(self, store_id: str, key_hex: str) -> str:
+        """Like get_value but raises ChiaRpcError instead of returning None."""
+        data = self._post("get_value", {"id": store_id, "key": key_hex})
+        val = data.get("value")
+        if val is None:
+            raise ChiaRpcError(f"datalayer get_value missing value for key {key_hex[:16]}…")
+        return val
 
     def get_keys(self, store_id: str) -> list[str]:
         """All keys in the store, hex-encoded. Used by the payout
