@@ -1473,3 +1473,7 @@ def test_post_reading_learns_device_pubkey(client: TestClient):
     assert r.status_code == 202, r.text
     node = client.get(f"/nodes/{NODE_ID}").json()
     assert node["device_pubkey"] == pub
+def test_root_includes_datalayer_schema(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.json().get("datalayer_schema") == "1.0.0"
