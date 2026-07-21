@@ -7,8 +7,11 @@ Phase 6.6 adds session-aware scoping:
     returns ONLY the nodes owned by the session's verified address.
     Without auth, returns every node — so the public dashboard's
     Trees-list view keeps working and so do existing tunnel viewers.
-    Dashboard-side public-mode scrubbing already strips wallet_address
-    in that path; this route doesn't double-scrub.
+    Public / cross-operator callers get wallet_address scrubbed to null
+    at the oracle (defense-in-depth, so direct API consumers like the
+    worldview globe can't tie a Tree to its operator's wallet); owners
+    still see their own. Coarse geohash + sensor classes are public; the
+    Pass binding stays public (it's an on-chain credential).
 
   - GET /nodes/{id} : when authed and the node belongs to a different
     operator, returns 404 (not 403) — don't leak existence of a Tree
@@ -20,6 +23,7 @@ Phase 6.6 adds session-aware scoping:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -38,9 +42,50 @@ from ..session_deps import require_session as _require_session
 router = APIRouter()
 
 
+# Public location is intentionally COARSE: a ~5 km geohash cell (precision 5),
+# derived from the node's latest GPS reading. Precise lat/lon stays operator-
+# private (scrubbed in routes/readings.py); only the coarse cell is ever public.
+_GEOHASH_B32 = "0123456789bcdefghjkmnpqrstuvwxyz"
+_GEOHASH_BITS = (16, 8, 4, 2, 1)
+
+
+def _geohash_encode(lat: float, lon: float, precision: int = 5) -> str | None:
+    """Standard geohash encode. Returns None for out-of-range coordinates."""
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    lat_lo, lat_hi = -90.0, 90.0
+    lon_lo, lon_hi = -180.0, 180.0
+    out: list[str] = []
+    bit = 0
+    ch = 0
+    even = True
+    while len(out) < precision:
+        if even:
+            mid = (lon_lo + lon_hi) / 2
+            if lon > mid:
+                ch |= _GEOHASH_BITS[bit]
+                lon_lo = mid
+            else:
+                lon_hi = mid
+        else:
+            mid = (lat_lo + lat_hi) / 2
+            if lat > mid:
+                ch |= _GEOHASH_BITS[bit]
+                lat_lo = mid
+            else:
+                lat_hi = mid
+        even = not even
+        if bit < 4:
+            bit += 1
+        else:
+            out.append(_GEOHASH_B32[ch])
+            bit = 0
+            ch = 0
+    return "".join(out)
+
+
 class NodePublic(BaseModel):
     node_id: str
-    wallet_address: str | None
     label: str | None
     fw_version: str | None
     registered_at: datetime
@@ -49,24 +94,66 @@ class NodePublic(BaseModel):
     # ADR-0003: compressed secp256r1 pubkey — PUBLIC (required for anyone
     # to verify device-signed readings published to DataLayer).
     device_pubkey: str | None = None
-    # Phase 6.5: Pass binding. nft_id is the bech32 nft1... id of the
-    # Orchard Pass the operator's wallet held at registration time;
-    # pass_verified_at is when that verification ran. Both null on
-    # legacy registrations (no wallet provided).
+    # Public, coarse: a ~5 km geohash cell + the node's sensor/data classes.
+    # Shown to everyone — this is what the worldview globe renders.
+    geohash: str | None = None
+    sensors: list[str] = []
+    # wallet_address is operator-private: returned ONLY to the owning wallet
+    # session (or for legacy unowned nodes), scrubbed to null for the public /
+    # cross-operator callers so a Tree can't be tied to its operator's wallet.
+    wallet_address: str | None = None
+    # Pass binding stays PUBLIC: it's an on-chain credential the dashboard/site
+    # surface. (Caveat: a Pass NFT resolves to its owner on-chain, so hiding the
+    # wallet here is partial — see the worldview integration notes if full
+    # operator anonymity is ever required.)
     pass_nft_id: str | None = None
     pass_verified_at: datetime | None = None
 
 
-def _to_public(n: models.Node) -> NodePublic:
+def _latest_reading(db: Session, node_id: str) -> models.Reading | None:
+    return db.execute(
+        select(models.Reading)
+        .where(models.Reading.node_id == node_id)
+        .order_by(models.Reading.received_at.desc())
+        .limit(1)
+    ).scalars().first()
+
+
+def _to_public(
+    n: models.Node,
+    db: Session,
+    sess: sessions.Session | None = None,
+) -> NodePublic:
+    # owner == legacy unowned node OR the session wallet matches the node's
+    # wallet. Mirrors the GPS owner-check in routes/readings.py.
+    owner = n.wallet_address is None or (
+        sess is not None and sess.address == n.wallet_address
+    )
+    geohash: str | None = None
+    sensors: list[str] = []
+    latest = _latest_reading(db, n.node_id)
+    if latest is not None:
+        # Coarse cell derived from precise GPS — public. Precise lat/lon
+        # itself never leaves routes/readings.py (owner-only there).
+        if latest.gps_lat is not None and latest.gps_lon is not None:
+            geohash = _geohash_encode(latest.gps_lat, latest.gps_lon, 5)
+        try:
+            s = json.loads(latest.payload_json).get("sensors")
+            if isinstance(s, dict):
+                sensors = sorted(s.keys())
+        except (ValueError, TypeError):
+            sensors = []
     return NodePublic(
         node_id=n.node_id,
-        wallet_address=n.wallet_address,
         label=n.label,
         fw_version=n.fw_version,
         registered_at=n.registered_at,
         last_seen_at=n.last_seen_at,
         last_reading_at=n.last_reading_at,
         device_pubkey=n.device_pubkey,
+        geohash=geohash,
+        sensors=sensors,
+        wallet_address=n.wallet_address if owner else None,
         pass_nft_id=n.pass_nft_id,
         pass_verified_at=n.pass_verified_at,
     )
@@ -83,7 +170,7 @@ def list_nodes(
     if sess is not None:
         q = q.where(models.Node.wallet_address == sess.address)
     rows = db.execute(q.order_by(models.Node.registered_at.desc())).scalars().all()
-    return [_to_public(n) for n in rows]
+    return [_to_public(n, db, sess) for n in rows]
 
 
 @router.get("/nodes/{node_id}", response_model=NodePublic)
@@ -105,7 +192,7 @@ def get_node(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="unknown node_id",
         )
-    return _to_public(node)
+    return _to_public(node, db, sess)
 
 
 @router.delete("/nodes/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
