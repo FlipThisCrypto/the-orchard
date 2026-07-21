@@ -129,6 +129,19 @@ async def post_reading(
     if reading.fw_version:
         node.fw_version = reading.fw_version
 
+    # ADR-0003: learn device_pubkey from the Tree if registration omitted it.
+    # Only first write — never rotate (would break historical verification).
+    if not node.device_pubkey and isinstance(payload, dict):
+        cand = payload.get("device_pubkey") or payload.get("pubkey")
+        if not cand and isinstance(payload.get("device_reading"), dict):
+            cand = payload["device_reading"].get("pubkey")
+        if isinstance(cand, str):
+            s = cand.strip().lower()
+            if len(s) == 66 and s[:2] in ("02", "03") and all(
+                c in "0123456789abcdef" for c in s
+            ):
+                node.device_pubkey = s
+
     _bump_uptime_hour(db, node.node_id, now)
 
     db.commit()

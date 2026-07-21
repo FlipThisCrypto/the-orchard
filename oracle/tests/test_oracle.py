@@ -1454,3 +1454,22 @@ def test_beacon_cache_hits_second_call(client, monkeypatch):
     r2 = client.get("/beacon")
     assert r2.json()["cached"] is True
     assert r2.json()["block_anchor"] == "a1b2c3d4e5f60718"
+
+def test_post_reading_learns_device_pubkey(client: TestClient):
+    """If registration omitted device_pubkey, a later reading can set it once."""
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    pub = "02" + "ab" * 32
+    payload = {
+        "node_id": NODE_ID, "ts_ms": 99, "fw": "0.4.8",
+        "device_pubkey": pub,
+        "sensors": {"mq135": {"adc_raw": 1}},
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    r = client.post("/readings", content=body, headers={
+        "Content-Type": "application/json",
+        "X-Orchard-Node": NODE_ID,
+        "X-Orchard-Sig": _sign(body),
+    })
+    assert r.status_code == 202, r.text
+    node = client.get(f"/nodes/{NODE_ID}").json()
+    assert node["device_pubkey"] == pub
