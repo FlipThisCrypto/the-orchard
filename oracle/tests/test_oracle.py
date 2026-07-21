@@ -82,6 +82,16 @@ def test_root_identifies_service(client: TestClient):
     assert "current_season" in body
 
 
+def test_security_headers_on_responses(client: TestClient):
+    r = client.get("/health")
+    assert r.headers.get("X-Content-Type-Options") == "nosniff"
+    assert r.headers.get("X-Frame-Options") == "DENY"
+    assert r.headers.get("Referrer-Policy") == "no-referrer"
+    csp = r.headers.get("Content-Security-Policy", "")
+    assert "frame-ancestors 'none'" in csp
+    assert "default-src 'self'" in csp
+
+
 def test_register_rejects_all_zero_signing_key(client: TestClient):
     r = client.post(
         "/register",

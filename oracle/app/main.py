@@ -123,6 +123,35 @@ async def _rate_limit(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Baseline browser hardening for the hosted claim page + JSON APIs.
+
+    TLS/HSTS is the reverse proxy's job (Caddy/Cloudflare). These headers
+    are safe on loopback and production and do not weaken CORS/auth.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    # Claim HTML is same-origin; APIs are JSON. A tight default CSP still
+    # allows the WalletConnect script CDN used by claim_page.html.
+    if "content-security-policy" not in {k.lower() for k in response.headers.keys()}:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https:; "
+            "connect-src 'self' https: wss:; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'"
+        )
+    return response
+
+
 def main() -> None:
     """Entry point for `python -m oracle.app.main`."""
     import uvicorn
