@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import attest, config, confirm, ops_log, schema, seal
+from . import attest, config, confirm, exit_codes, ops_log, schema, seal
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
@@ -87,7 +87,7 @@ def main() -> int:
         cfg = config.load()
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
-        return 2
+        return exit_codes.USAGE
 
     if not cfg.data_layer.store_id:
         print(
@@ -97,7 +97,7 @@ def main() -> int:
             "Then put the returned `id` value into config.yaml.",
             file=sys.stderr,
         )
-        return 2
+        return exit_codes.USAGE
 
     with ops_log.ops_run("attest", store_id_set=True) as run:
         return _attest_body(cfg, run)
@@ -123,7 +123,7 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
     except OracleError as e:
         print(f"ERROR: oracle unreachable: {e}", file=sys.stderr)
         run.finish("error", error="OracleError", error_msg=str(e)[:200])
-        return 3
+        return exit_codes.ORACLE
     print(f"[orchard.attest] current_season: {current_season} (closed: 1..{current_season - 1})")
 
     if current_season < 2:
@@ -136,7 +136,7 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
     except OracleError as e:
         print(f"ERROR: oracle list_nodes failed: {e}", file=sys.stderr)
         run.finish("error", error="OracleError", error_msg=str(e)[:200])
-        return 3
+        return exit_codes.ORACLE
     print(f"[orchard.attest] registered Trees: {len(nodes)}")
     if not nodes:
         run.finish("noop", reason="no_trees", season=current_season)
@@ -146,7 +146,7 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
         block_height = fn.peak_height()
     except ChiaRpcError as e:
         print(f"ERROR: chia full-node unreachable: {e}", file=sys.stderr)
-        return 4
+        return exit_codes.CHIA
     print(f"[orchard.attest] chia peak height: {block_height}")
 
     # Determine Season range to process.
@@ -272,7 +272,7 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
             stats=dict(stats),
             rpc_attempts=getattr(dl, "last_retry_attempts", 1),
         )
-        return 5
+        return exit_codes.DATALAYER
     txn_id = result.get("tx_id") or result.get("transaction_id") or "<unknown>"
     written_at = datetime.now(timezone.utc)
     print(f"[orchard.attest] DataLayer batch_update accepted. tx_id={txn_id}")
@@ -302,7 +302,7 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
             confirm_mismatched=len(conf.mismatched),
             rpc_attempts=getattr(dl, "last_retry_attempts", 1),
         )
-        return 6
+        return exit_codes.CONFIRM
 
     # Report back to the oracle so its local DB tracks what's on chain.
     # Failures here don't roll back the DataLayer write — the chain
