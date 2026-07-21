@@ -19,6 +19,8 @@ def root() -> dict:
         "version": "0.1.0",
         "now_utc": datetime.now(timezone.utc).isoformat(),
         "current_season": seasons.current_season(),
+        # Orchard DataLayer publish schema (docs/datalayer/SPEC.md).
+        "datalayer_schema": "1.0.0",
     }
 
 
