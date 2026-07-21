@@ -233,7 +233,13 @@ class OracleClient:
 
     def announce(self, tree: VirtualTree, claim_code: str | None = None):
         """POST /provision/announce — first-boot claim-code handoff (T9)."""
-        code = claim_code or ("SIM" + tree.node_id[:5]).upper()
+        # Default code: Crockford alphabet only (no I/L/O/U), 8 chars.
+        if claim_code is None:
+            raw = (tree.node_id + "0" * 8).upper()
+            crock = "".join(c for c in raw if c in "0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+            code = (crock + "0" * 8)[:8]
+        else:
+            code = claim_code
         payload = {
             "node_id": tree.node_id,
             "signing_key_hex": tree.secret_hex,

@@ -145,7 +145,7 @@ def test_simulator_announce_and_poll_unclaimed(oracle_client):
     """Announce path (claim-code handoff) without completing wallet claim."""
     client, _ = oracle_client
     tree = VirtualTree.random(0)
-    code = "SIMTEST01"
+    code = "SIMC0DE1"  # Crockford alphabet (no I/L/O/U)
     r = client.announce(tree, claim_code=code)
     assert r.status_code == 201, r.text
     body = r.json()
