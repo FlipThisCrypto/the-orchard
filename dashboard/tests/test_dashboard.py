@@ -831,3 +831,10 @@ def test_auth_challenge_non_json_oracle_returns_502(client, monkeypatch):
     r = client.post("/api/auth/challenge")
     assert r.status_code == 502
     assert r.get_json()["ok"] is False
+
+def test_tree_page_oracle_error_is_404(client, monkeypatch):
+    def boom(node_id):
+        raise oracle_client.OracleError("down")
+    monkeypatch.setattr(oracle_client, "get_node", boom)
+    r = client.get("/tree/" + "AB" * 16)
+    assert r.status_code == 404
