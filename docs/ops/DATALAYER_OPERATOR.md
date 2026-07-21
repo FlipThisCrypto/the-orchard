@@ -90,3 +90,10 @@ Use Tree firmware **0.4.8+** so each POST includes `device_reading` (secp256r1).
 
 orchard_chia/data/oracle_signing_key.hex is the Season signer seed. Mode 0600 on POSIX; never commit. Compromise allows forged season attestations.
 
+
+## Specs
+
+- [SPEC](../datalayer/SPEC.md)
+- [ADR-0003](../decisions/0003-datalayer-verifiable-dataset.md)
+- [ADR-0007 secp256r1](../decisions/) (if present in tree)
+
