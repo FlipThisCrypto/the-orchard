@@ -73,6 +73,14 @@ const String& p256_pubkey_hex();
 // `out` is zeroed (an all-zero sig never verifies).
 void p256_sign(const uint8_t* data, size_t len, uint8_t out[kP256SigLen]);
 
+// Verify a 64-byte r‖s ECDSA/sha256 signature against an arbitrary
+// compressed SEC1 P-256 public key (33 bytes). Used by signed OTA (T7)
+// against the baked-in release public key — not the device identity key.
+// Returns true only when the signature is valid for sha256(`data`).
+bool p256_verify(const uint8_t pub[kP256PubLen],
+                 const uint8_t* data, size_t len,
+                 const uint8_t sig[kP256SigLen]);
+
 // Hex-encode a buffer, LOWERCASE (no separators). For sig/pubkey hex,
 // which the schema requires lowercase.
 String to_hex_lower(const uint8_t* buf, size_t len);

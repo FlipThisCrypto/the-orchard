@@ -71,6 +71,22 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def ping() -> tuple[bool, str]:
+    """Cheap readiness probe: open a connection and run ``SELECT 1``.
+
+    Returns ``(ok, detail)``. ``detail`` is a short operator-facing string
+    with no path, URL, or secrets — safe for public ``/health``.
+    """
+    from sqlalchemy import text
+
+    try:
+        with engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True, "ok"
+    except Exception as e:  # noqa: BLE001 — surface class name only
+        return False, f"{type(e).__name__}"
+
+
 def _sqlite_path_from_url(url: str) -> Path | None:
     """Return the on-disk SQLite path from a sqlite:/// URL, or None
     if the URL isn't sqlite-on-disk."""
@@ -229,3 +245,7 @@ def reset_for_tests() -> None:
     global _engine, _session_factory
     _engine = None
     _session_factory = None
+    # Keep process counters from bleeding across test cases.
+    from . import metrics
+
+    metrics.reset_for_tests()

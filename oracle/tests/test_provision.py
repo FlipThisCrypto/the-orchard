@@ -90,6 +90,23 @@ def test_announce_claim_poll_happy_path(prov):
         assert n.wallet_address == WALLET and n.pass_nft_id == PASS_NFT
 
 
+def test_announce_rejects_degenerate_signing_key(prov):
+    c, *_ = prov
+    r = c.post("/provision/announce", json={
+        "node_id": NODE_ID, "signing_key_hex": "00" * 32,
+        "claim_code": "ABCD2345", "label": "tree-1"})
+    assert r.status_code == 422
+
+
+def test_announce_rejects_non_crockford_claim_code(prov):
+    c, *_ = prov
+    # Contains I and O — not Crockford (ambiguous with 1/0).
+    r = c.post("/provision/announce", json={
+        "node_id": NODE_ID, "signing_key_hex": KEY_HEX,
+        "claim_code": "ABCDIO12", "label": "tree-1"})
+    assert r.status_code == 400
+
+
 def test_claim_unknown_code_404(prov):
     c, *_ = prov
     assert _claim(c, code="ZZZZ9999").status_code == 404

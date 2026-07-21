@@ -49,6 +49,15 @@ site — no separate service.
 `manifest.json` to the new tag. The proxy needs no change — it resolves any
 valid tag. (The full-flash merge recipe lives in the release workflow.)
 
+**Validate before deploy:**
+
+```bash
+# Shape only (no network):
+python tools/verify_flasher_manifest.py --offline
+# Confirm each release asset exists on GitHub:
+python tools/verify_flasher_manifest.py
+```
+
 esp-web-tools reads the connected chip's family and automatically picks
 the matching `builds[]` entry from `manifest.json` (ESP32 → WROOM image,
 ESP32-S3 → S3 image), so one install button serves both boards.

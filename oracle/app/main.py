@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import db
+from . import db, metrics
 from .config import settings
 from .ratelimit import FixedWindowLimiter
 from .routes import (
@@ -105,12 +105,51 @@ async def _rate_limit(request: Request, call_next):
             rule = ("auth", s.auth_rate_limit_per_min)
         elif path.startswith("/readings"):
             rule = ("readings", s.readings_rate_limit_per_min)
+        elif path.startswith("/provision"):
+            # ADR-0005: claim-code space is ~40 bits; per-IP throttle makes
+            # remote brute force impractical without touching the Tree.
+            rule = ("provision", s.provision_rate_limit_per_min)
+        elif path == "/register" or path.startswith("/register/"):
+            rule = ("register", s.register_rate_limit_per_min)
         if rule is not None and not _limiter_for(*rule).allow(host or "?"):
+            metrics.incr("rate_limited")
             return JSONResponse(
                 status_code=429,
                 content={"detail": "rate limit exceeded; slow down"},
+                # Fixed-window limiters reset on a ~60s boundary; tell polite
+                # clients to back off without revealing which bucket they hit.
+                headers={"Retry-After": "60"},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Baseline browser hardening for the hosted claim page + JSON APIs.
+
+    TLS/HSTS is the reverse proxy's job (Caddy/Cloudflare). These headers
+    are safe on loopback and production and do not weaken CORS/auth.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    # Claim HTML is same-origin; APIs are JSON. A tight default CSP still
+    # allows the WalletConnect script CDN used by claim_page.html.
+    if "content-security-policy" not in {k.lower() for k in response.headers.keys()}:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https:; "
+            "connect-src 'self' https: wss:; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'"
+        )
+    return response
 
 
 def main() -> None:

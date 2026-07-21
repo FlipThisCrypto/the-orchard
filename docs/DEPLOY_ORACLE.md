@@ -129,6 +129,16 @@ In `oracle/.env`, the critical production values:
 - `port = 8000`
 - `require_wallet_session = true`
 - `require_seq = true` once the whole fleet runs seq-capable firmware
+  (v0.4.8+ ships `seq`; hardware-verified path is **v0.5.1**. Safe to flip
+  on hosted oracle after confirming no pre-0.4.8 Trees remain.)
+- `max_reading_future_seconds` (default **300**) rejects device clocks far
+  ahead of the oracle; set `0` only if you must accept unsynced clocks
+- `max_reading_body_bytes` (default **65536**) hard-caps POST /readings
+- `provision_rate_limit_per_min` (default **30**) and
+  `register_rate_limit_per_min` (default **20**) throttle remote claim-code
+  and registration spam (loopback exempt)
+- `GET /health` exposes non-secret `flags` + process `metrics` (accepted /
+  replay rejections / rate_limited — counters only, no payloads)
   (v0.4.8+). It defaults **false** so a mixed-firmware fleet isn't locked out
   mid-rollout; flip it after every Tree is reflashed/OTA'd.
 - `db_url = sqlite:////opt/orchard/data/orchard.db` (note the **four** slashes —
@@ -291,6 +301,24 @@ the Season attestation writer and payout script. Contain the blast radius:
 
 ## Part 6 — Backups & monitoring (minimum viable)
 
+**Canonical runbook:** [`docs/ops/ORACLE_BACKUP_RESTORE.md`](ops/ORACLE_BACKUP_RESTORE.md)  
+**Tool:** `python -m tools.oracle_backup` (SQLite online backup API + integrity_check + restore-drill).
+
+```bash
+# On the oracle host, from the repo root:
+python -m tools.oracle_backup backup \
+  --db /opt/orchard/data/orchard.db \
+  --dest /opt/orchard/backups \
+  --keep 14
+
+# Off-box copy, then prove restore (never points at the live DB):
+python -m tools.oracle_backup restore-drill \
+  --backup /path/to/offbox/orchard-YYYYMMDD-HHMMSSZ.db \
+  --scratch /tmp/orchard-restore-scratch.db
+```
+
+Legacy one-liner (acceptable if the Python tool is not yet deployed on the box):
+
 ```bash
 # /etc/cron.daily/orchard-backup  (chmod +x)
 #!/bin/sh
@@ -304,8 +332,9 @@ find "$DEST" -name 'orchard-*.db' -mtime +14 -delete
 
 - Copy backups off-box (even `scp` to your desktop weekly). The DB **is** the
   uptime ledger — losing it loses unattested Season credit.
+- A backup that has never passed `restore-drill` is **not** a backup.
 - Also back up: `oracle/.env`, the oracle's attestation signing key, the
-  cloudflared tunnel credential JSON.
+  cloudflared tunnel credential JSON (`python -m tools.oracle_backup companion-list`).
 - Monitoring for PoC: a free uptime pinger (e.g. UptimeRobot) on
   `https://oracle.theorchard.network/health`, and `journalctl -u orchard-oracle`
   when something looks off. Defer real metrics to the hosted move.

@@ -21,6 +21,23 @@ def _url(path: str) -> str:
     return f"{base}{path}"
 
 
+def _json_or_error(r: requests.Response, what: str):
+    """Parse JSON, or raise OracleError if the body is empty/HTML/non-JSON.
+
+    Without this, a 200 from a wrong host (proxy splash page, empty body,
+    Cloudflare interstitial) surfaces as requests.JSONDecodeError and
+    crashes the dashboard page instead of the friendly "oracle unreachable"
+    path.
+    """
+    try:
+        return r.json()
+    except ValueError as e:
+        snippet = (r.text or "")[:120].replace("\n", " ")
+        raise OracleError(
+            f"{what} returned non-JSON body (status {r.status_code}): {snippet!r}"
+        ) from e
+
+
 def root() -> dict:
     try:
         r = requests.get(_url("/"), timeout=5)
@@ -28,32 +45,41 @@ def root() -> dict:
         raise OracleError(f"oracle unreachable: {e}") from e
     if r.status_code != 200:
         raise OracleError(f"oracle / returned {r.status_code}")
-    return r.json()
+    return _json_or_error(r, "oracle /")
 
 
 def list_nodes() -> list[dict]:
-    r = requests.get(_url("/nodes"), timeout=5)
+    try:
+        r = requests.get(_url("/nodes"), timeout=5)
+    except requests.RequestException as e:
+        raise OracleError(f"GET /nodes unreachable: {e}") from e
     if r.status_code != 200:
         raise OracleError(f"GET /nodes -> {r.status_code}: {r.text}")
-    return r.json()
+    return _json_or_error(r, "GET /nodes")
 
 
 def get_node(node_id: str) -> dict | None:
-    r = requests.get(_url(f"/nodes/{node_id}"), timeout=5)
+    try:
+        r = requests.get(_url(f"/nodes/{node_id}"), timeout=5)
+    except requests.RequestException as e:
+        raise OracleError(f"GET /nodes/{node_id} unreachable: {e}") from e
     if r.status_code == 404:
         return None
     if r.status_code != 200:
         raise OracleError(f"GET /nodes/{node_id} -> {r.status_code}: {r.text}")
-    return r.json()
+    return _json_or_error(r, f"GET /nodes/{node_id}")
 
 
 def list_readings(node_id: str, limit: int = 50) -> list[dict]:
-    r = requests.get(_url(f"/readings/{node_id}"), params={"limit": limit}, timeout=5)
+    try:
+        r = requests.get(_url(f"/readings/{node_id}"), params={"limit": limit}, timeout=5)
+    except requests.RequestException as e:
+        raise OracleError(f"GET /readings/{node_id} unreachable: {e}") from e
     if r.status_code == 404:
         return []
     if r.status_code != 200:
         raise OracleError(f"GET /readings/{node_id} -> {r.status_code}: {r.text}")
-    return r.json()
+    return _json_or_error(r, f"GET /readings/{node_id}")
 
 
 def register_node(
@@ -84,19 +110,25 @@ def register_node(
     headers: dict = {}
     if authorization:
         headers["Authorization"] = authorization
-    r = requests.post(_url("/register"), json=body, headers=headers, timeout=5)
+    try:
+        r = requests.post(_url("/register"), json=body, headers=headers, timeout=5)
+    except requests.RequestException as e:
+        raise OracleError(f"POST /register unreachable: {e}") from e
     if r.status_code not in (200, 201):
         raise OracleError(f"POST /register -> {r.status_code}: {r.text}")
-    return r.json()
+    return _json_or_error(r, "POST /register")
 
 
 def get_uptime(node_id: str, season: int) -> dict | None:
-    r = requests.get(_url(f"/uptime/{node_id}/{season}"), timeout=5)
+    try:
+        r = requests.get(_url(f"/uptime/{node_id}/{season}"), timeout=5)
+    except requests.RequestException as e:
+        raise OracleError(f"GET /uptime/{node_id}/{season} unreachable: {e}") from e
     if r.status_code == 404:
         return None
     if r.status_code != 200:
         raise OracleError(f"GET /uptime/{node_id}/{season} -> {r.status_code}: {r.text}")
-    return r.json()
+    return _json_or_error(r, f"GET /uptime/{node_id}/{season}")
 
 
 def latest_attestation(node_id: str) -> dict | None:
@@ -111,7 +143,7 @@ def latest_attestation(node_id: str) -> dict | None:
     if r.status_code != 200:
         raise OracleError(
             f"GET /attestations/{node_id}/latest -> {r.status_code}: {r.text}")
-    j = r.json()
+    j = _json_or_error(r, f"GET /attestations/{node_id}/latest")
     return j if j else None  # FastAPI may return null for None
 
 
@@ -130,7 +162,7 @@ def list_attestations(node_id: str, limit: int = 50) -> list[dict]:
     if r.status_code != 200:
         raise OracleError(
             f"GET /attestations/{node_id} -> {r.status_code}: {r.text}")
-    return r.json() or []
+    return _json_or_error(r, f"GET /attestations/{node_id}") or []
 
 
 def network_stats() -> dict:
@@ -143,4 +175,4 @@ def network_stats() -> dict:
         raise OracleError(f"GET /network/stats unreachable: {e}") from e
     if r.status_code != 200:
         raise OracleError(f"GET /network/stats -> {r.status_code}: {r.text}")
-    return r.json()
+    return _json_or_error(r, "GET /network/stats")

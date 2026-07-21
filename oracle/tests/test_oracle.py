@@ -82,6 +82,36 @@ def test_root_identifies_service(client: TestClient):
     assert "current_season" in body
 
 
+def test_security_headers_on_responses(client: TestClient):
+    r = client.get("/health")
+    assert r.headers.get("X-Content-Type-Options") == "nosniff"
+    assert r.headers.get("X-Frame-Options") == "DENY"
+    assert r.headers.get("Referrer-Policy") == "no-referrer"
+    csp = r.headers.get("Content-Security-Policy", "")
+    assert "frame-ancestors 'none'" in csp
+    assert "default-src 'self'" in csp
+
+
+def test_register_rejects_all_zero_signing_key(client: TestClient):
+    r = client.post(
+        "/register",
+        json={"node_id": NODE_ID, "signing_key_hex": "0" * 64, "label": "x"},
+    )
+    assert r.status_code == 422
+
+
+def test_register_rejects_oversized_label(client: TestClient):
+    r = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "label": "L" * 65,
+        },
+    )
+    assert r.status_code == 422
+
+
 def test_register_then_list(client: TestClient):
     r = client.post(
         "/register",
@@ -1178,6 +1208,26 @@ def test_delete_node_non_owner_returns_404(auth_client):
 
 # ---------------- 2026-06-09 security hardening ----------------
 
+def test_reading_rejects_body_node_id_mismatch(client: TestClient):
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    body = json.dumps({
+        "node_id": "DEADBEEFDEADBEEFDEADBEEFDEADBEEF",
+        "seq": 1,
+        "sensors": {},
+    }).encode("utf-8")
+    r = client.post(
+        "/readings",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Orchard-Node": NODE_ID,
+            "X-Orchard-Sig": _sign(body),
+        },
+    )
+    assert r.status_code == 400
+    assert "node_id" in r.json()["detail"]
+
+
 def test_reading_replay_is_deduped(client: TestClient):
     """H2: an exact replay of a signed reading is dropped — same id
     returned, no second row, no uptime double-count."""
@@ -1404,6 +1454,159 @@ def test_seq_not_enforced_when_flag_off(client: TestClient):
     assert _post_seq_reading(client, {"sensors": {}}).status_code == 202
 
 
+def test_seq_concurrent_posts_only_advance_monotonically(seq_client: TestClient):
+    """Guarded UPDATE must reject non-increasing seqs even under concurrent POSTs.
+
+    SQLite serializes writers, but the test still proves the *application*
+    contract: many distinct seqs race; only strictly-greater advances win;
+    losers are 409 (not double-accepted). Uses threads + the same in-memory
+    StaticPool engine the fixture already wires.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Seed last_seq = 10.
+    assert _post_seq_reading(seq_client, {"seq": 10, "sensors": {"seed": True}}).status_code == 202
+
+    def post_one(seq: int) -> int:
+        body = json.dumps({"seq": seq, "sensors": {"n": seq}}).encode("utf-8")
+        r = seq_client.post(
+            "/readings",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Orchard-Node": NODE_ID,
+                "X-Orchard-Sig": _sign(body),
+            },
+        )
+        return r.status_code
+
+    # Mix: below watermark (should 409), equal (409 as distinct body), above (202).
+    candidates = [5, 8, 10, 11, 12, 9, 15, 11, 20, 3]
+    codes: list[int] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futs = [pool.submit(post_one, s) for s in candidates]
+        for f in as_completed(futs):
+            codes.append(f.result())
+
+    accepted = codes.count(202)
+    conflicted = codes.count(409)
+    assert accepted + conflicted == len(candidates), codes
+    # At least the three strictly-greater first-winners (11,12,15,20 space)
+    # and several stale; exact count depends on race order among 11/12/15/20.
+    assert accepted >= 1
+    assert conflicted >= 1
+    # Final post of a still-higher seq must succeed (watermark advanced).
+    assert _post_seq_reading(seq_client, {"seq": 100, "sensors": {}}).status_code == 202
+    # And the old max cannot be re-used with a new body.
+    assert _post_seq_reading(seq_client, {"seq": 20, "sensors": {"x": 1}}).status_code == 409
+
+
+def test_health_exposes_public_flags(client: TestClient):
+    from oracle.app import metrics as metrics_mod
+
+    metrics_mod.reset_for_tests()
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["db"] == "ok"
+    flags = body["flags"]
+    assert "require_seq" in flags
+    assert "require_wallet_session" in flags
+    assert "max_reading_body_bytes" in flags
+    assert "max_reading_future_seconds" in flags
+    assert "provision_rate_limit_per_min" in flags
+    assert "register_rate_limit_per_min" in flags
+    metrics = body["metrics"]
+    assert metrics["readings_accepted"] == 0
+    assert metrics["readings_rejected_replay_seq"] == 0
+    assert "rate_limited" in metrics
+    # Never leak secrets via health.
+    dumped = json.dumps(body)
+    assert "session_secret" not in dumped
+    assert "writer_token" not in dumped
+    assert "db_url" not in dumped
+    assert "sqlite" not in dumped.lower()
+
+
+def test_health_returns_503_when_db_unreachable(client: TestClient, monkeypatch):
+    from oracle.app import db as db_mod
+
+    monkeypatch.setattr(db_mod, "ping", lambda: (False, "OperationalError"))
+    r = client.get("/health")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["ok"] is False
+    assert body["db"] == "OperationalError"
+    # Still no path/URL leakage in failure detail.
+    assert "/" not in body["db"]
+    assert "orchard.db" not in json.dumps(body)
+
+
+def test_metrics_count_accepted_and_replay(seq_client: TestClient):
+    from oracle.app import metrics as metrics_mod
+
+    metrics_mod.reset_for_tests()
+    assert _post_seq_reading(seq_client, {"seq": 1, "sensors": {}}).status_code == 202
+    assert _post_seq_reading(seq_client, {"seq": 1, "sensors": {"x": 1}}).status_code == 409
+    snap = metrics_mod.snapshot()
+    assert snap.get("readings_accepted", 0) >= 1
+    assert snap.get("readings_rejected_replay_seq", 0) >= 1
+    # Counters must not embed payload material.
+    assert "sensors" not in json.dumps(snap)
+
+
+def test_provision_rate_limit_remote_client(monkeypatch):
+    """Non-loopback peer is throttled on /provision (ADR-0005 brute-force)."""
+    monkeypatch.setenv("ORCHARD_ORACLE_REQUIRE_WALLET_SESSION", "false")
+    monkeypatch.setenv("ORCHARD_ORACLE_PROVISION_RATE_LIMIT_PER_MIN", "3")
+    reset_settings_for_tests()
+    reset_for_tests()
+    from oracle.app import metrics as metrics_mod
+    from oracle.app.main import _limiters
+
+    metrics_mod.reset_for_tests()
+    _limiters.clear()
+
+    test_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    TestSession = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(test_engine)
+
+    def override_get_db():
+        db = TestSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    # Starlette TestClient default peer is "testclient" (loopback-exempt).
+    # Force a public-looking peer so middleware rate limits apply.
+    with TestClient(app, client=("203.0.113.50", 50000)) as c:
+        body = {
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "claim_code": "ABCD2345",
+        }
+        codes = []
+        retry_after = None
+        for i in range(5):
+            body["claim_code"] = f"ABCD{i:04d}"
+            r = c.post("/provision/announce", json=body)
+            codes.append(r.status_code)
+            if r.status_code == 429:
+                retry_after = r.headers.get("Retry-After")
+    app.dependency_overrides.clear()
+    assert 429 in codes, codes
+    assert retry_after == "60"
+    assert metrics_mod.snapshot().get("rate_limited", 0) >= 1
+
+
 # ---------------- T6: reading freshness (max_reading_age_seconds) ----------
 #
 # Optional data-quality guard: reject readings whose signed UTC `ts` is older
@@ -1471,6 +1674,36 @@ def test_freshness_off_by_default_accepts_old_ts(client: TestClient):
     # Default fixture has max_reading_age_seconds=0 (off).
     client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
     assert _post_with_ts(client, _now_epoch() - 10_000).status_code == 202
+
+
+def test_future_ts_rejected_by_default_skew(client: TestClient):
+    """max_reading_future_seconds defaults to 300 — a day-ahead ts is 422."""
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    r = _post_with_ts(client, _now_epoch() + 86_400)
+    assert r.status_code == 422
+    assert "future" in r.json()["detail"]
+
+
+def test_near_future_ts_within_skew_accepted(client: TestClient):
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    # 60s ahead is inside the default 300s window.
+    assert _post_with_ts(client, _now_epoch() + 60).status_code == 202
+
+
+def test_oversized_reading_body_rejected(client: TestClient):
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    body = json.dumps({"sensors": {}, "pad": "X" * 70_000}).encode("utf-8")
+    r = client.post(
+        "/readings",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Orchard-Node": NODE_ID,
+            "X-Orchard-Sig": _sign(body),
+        },
+    )
+    assert r.status_code == 413
+    assert "exceeds limit" in r.json()["detail"]
 
 
 # ---------------- T14: payload schema version (ADR-0006) -------------------

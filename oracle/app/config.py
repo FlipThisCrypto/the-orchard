@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     # exempt; these bound remote LAN callers only. 0 disables a limit.
     auth_rate_limit_per_min: int = 30
     readings_rate_limit_per_min: int = 600
+    # Claim-code brute force + announce spam (ADR-0005). Provision paths
+    # are unauthenticated from the Tree side; claim is browser-side.
+    provision_rate_limit_per_min: int = 30
+    # /register key submission — keep low to slow node_id squatting.
+    register_rate_limit_per_min: int = 20
 
     # Phase 6.6 register hardening: /register requires a verified
     # wallet session by default. Closes the "anyone can claim someone
@@ -134,6 +139,17 @@ class Settings(BaseSettings):
     # (pre-SNTP firmware, or before first sync) are never rejected by it, so
     # a mixed fleet is safe. Turn it on (e.g. 900) once the fleet reports ts.
     max_reading_age_seconds: int = 0
+    # Future-skew guard: when > 0, reject a reading whose signed `ts` is more
+    # than this many seconds *ahead* of the oracle clock. Catches mis-set
+    # device clocks and crafty "future" submissions. Default 300 (5 min) is
+    # safe for normal NTP jitter; set 0 to disable. Only enforced when `ts`
+    # is present (same mixed-fleet rule as max_reading_age_seconds).
+    max_reading_future_seconds: int = 300
+    # Hard cap on POST /readings raw body size (bytes). Prevents a single
+    # client from stuffing multi-MB "sensor" payloads into the DB. Firmware
+    # readings are a few hundred bytes; 64 KiB leaves headroom for future
+    # multi-sensor payloads without inviting abuse.
+    max_reading_body_bytes: int = 65_536
 
     model_config = SettingsConfigDict(
         env_prefix="ORCHARD_ORACLE_",

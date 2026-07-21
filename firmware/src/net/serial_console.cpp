@@ -203,6 +203,22 @@ void dispatch_(const String& line) {
     // LAN host can't flash the device (C1 hardening).
     orchard::net::ota_arm(120000);
     Serial.println("OK ota armed 120s");
+  } else if (cmd == "OTA_REQUIRE_SIG") {
+    // T7: flip signature enforcement. Default false (warn mode). Only
+    // enable after release images are signed and this Tree runs a build
+    // that knows the release public key (docs/security/SIGNED_OTA.md).
+    String a = args;
+    a.trim();
+    if (a == "1" || a.equalsIgnoreCase("true") || a.equalsIgnoreCase("on")) {
+      orchard::net::ota_set_require_signature(true);
+      Serial.println("OK ota_require_signature=true");
+    } else if (a == "0" || a.equalsIgnoreCase("false") || a.equalsIgnoreCase("off")) {
+      orchard::net::ota_set_require_signature(false);
+      Serial.println("OK ota_require_signature=false");
+    } else {
+      Serial.printf("OK ota_require_signature=%s (usage: OTA_REQUIRE_SIG 0|1)\n",
+                    orchard::net::ota_require_signature() ? "true" : "false");
+    }
   } else if (cmd == "REBOOT") {
     Serial.println("OK rebooting");
     Serial.flush();

@@ -82,7 +82,40 @@ class RegisterRequest(BaseModel):
     def _key_hex(cls, v: str) -> str:
         if not _HEX64.match(v):
             raise ValueError("signing_key_hex must be 64 hex characters")
-        return v.upper()
+        key = v.upper()
+        # All-zero secrets make HMAC "auth" forgeable (sig is deterministic
+        # for empty entropy). Real Trees mint from hardware RNG.
+        if int(key, 16) == 0:
+            raise ValueError("signing_key_hex must not be all zeros")
+        return key
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = v.strip()
+        if not s:
+            return None
+        if len(s) > 64:
+            raise ValueError("label must be at most 64 characters")
+        if "\x00" in s:
+            raise ValueError("label must not contain NUL")
+        return s
+
+    @field_validator("fw_version")
+    @classmethod
+    def _fw(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = v.strip()
+        if not s:
+            return None
+        if len(s) > 32:
+            raise ValueError("fw_version must be at most 32 characters")
+        if "\x00" in s:
+            raise ValueError("fw_version must not contain NUL")
+        return s
 
     @field_validator("wallet_address")
     @classmethod

@@ -391,4 +391,40 @@ void p256_sign(const uint8_t* data, size_t len, uint8_t out[kP256SigLen]) {
   mbedtls_ecp_group_free(&grp);
 }
 
+bool p256_verify(const uint8_t pub[kP256PubLen],
+                 const uint8_t* data, size_t len,
+                 const uint8_t sig[kP256SigLen]) {
+  if (pub == nullptr || data == nullptr || sig == nullptr) return false;
+
+  uint8_t hash[32];
+  const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (mbedtls_md(md, data, len, hash) != 0) return false;
+
+  mbedtls_ecp_group grp;
+  mbedtls_ecp_point Q;
+  mbedtls_mpi r, s;
+  mbedtls_ecp_group_init(&grp);
+  mbedtls_ecp_point_init(&Q);
+  mbedtls_mpi_init(&r);
+  mbedtls_mpi_init(&s);
+
+  int rc = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+  if (rc == 0) {
+    rc = mbedtls_ecp_point_read_binary(&grp, &Q, pub, kP256PubLen);
+  }
+  if (rc == 0) rc = mbedtls_ecp_check_pubkey(&grp, &Q);
+  if (rc == 0) rc = mbedtls_mpi_read_binary(&r, sig, 32);
+  if (rc == 0) rc = mbedtls_mpi_read_binary(&s, sig + 32, 32);
+  if (rc == 0) {
+    // mbedtls_ecdsa_verify expects the digest length.
+    rc = mbedtls_ecdsa_verify(&grp, hash, sizeof(hash), &Q, &r, &s);
+  }
+
+  mbedtls_mpi_free(&s);
+  mbedtls_mpi_free(&r);
+  mbedtls_ecp_point_free(&Q);
+  mbedtls_ecp_group_free(&grp);
+  return rc == 0;
+}
+
 }  // namespace orchard::identity

@@ -45,9 +45,10 @@ router = APIRouter(prefix="/provision", tags=["provision"])
 # window, long enough that an operator can flash now and claim later.
 CLAIM_TTL = timedelta(hours=24)
 
-# A normalized code: dashes/spaces stripped, upper-cased. We validate shape +
-# case, not the exact alphabet (the firmware picks Crockford-base32).
-_CLAIM_RE = re.compile(r"^[0-9A-Z]{6,12}$")
+# Normalized code: dashes/spaces stripped, upper-cased. Crockford base32
+# alphabet only (no I L O U) — matches firmware claim_code derivation and
+# reduces look-alike operator mistakes (ADR-0005).
+_CLAIM_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{6,12}$")
 
 
 def _now() -> datetime:
@@ -83,7 +84,38 @@ class AnnounceRequest(BaseModel):
     def _key(cls, v: str) -> str:
         if not _HEX64.match(v):
             raise ValueError("signing_key_hex must be 64 hex characters")
-        return v.upper()
+        key = v.upper()
+        if int(key, 16) == 0:
+            raise ValueError("signing_key_hex must not be all zeros")
+        return key
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = v.strip()
+        if not s:
+            return None
+        if len(s) > 64:
+            raise ValueError("label must be at most 64 characters")
+        if "\x00" in s:
+            raise ValueError("label must not contain NUL")
+        return s
+
+    @field_validator("fw_version")
+    @classmethod
+    def _fw(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = v.strip()
+        if not s:
+            return None
+        if len(s) > 32:
+            raise ValueError("fw_version must be at most 32 characters")
+        if "\x00" in s:
+            raise ValueError("fw_version must not contain NUL")
+        return s
 
 
 class ClaimRequest(BaseModel):

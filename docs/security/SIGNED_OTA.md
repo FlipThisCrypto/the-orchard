@@ -100,33 +100,34 @@ baked into `firmware/include/` as `ORCHARD_OTA_RELEASE_PUBKEY`). Publishing a
 
 ## CI signing step (engineering, after OWNER step 2)
 
-In `.github/workflows/release.yml`, after the images are built and before they're
-uploaded, add a sign step that runs only when the secret is present:
+**Landed** in `.github/workflows/release.yml` + `tools/sign_release.py`:
 
-```yaml
-      - name: Sign OTA images
-        if: ${{ env.OTA_SIGNING_KEY != '' }}
-        env:
-          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
-        run: python tools/sign_release.py --key-env OTA_SIGNING_KEY dist/*.bin
-```
+- Loads the PEM from env `OTA_SIGNING_KEY` (never a committed file).
+- Emits `<image>.bin.sig` as 64-byte `r‖s` low-S over SHA-256(image).
+- Appends `.sig` digests to `SHA256SUMS.txt`.
+- If the secret is **missing**, prints `UNSIGNED` and exits 0 so forks and
+  pre-OWNER tags still publish (warn-mode rollout). Use `--require` only if you
+  want a hard fail for a production cut.
 
-`tools/sign_release.py` (follow-up PR) loads the key from the env var (never a
-file path in the repo), emits `<image>.sig` as 64-byte `r‖s` low-S, and appends
-the pair to `SHA256SUMS.txt`. Gating on `OTA_SIGNING_KEY != ''` means forks and
-pre-secret builds still succeed (just unsigned), matching the warn-mode rollout.
+Bake the compressed public key from OWNER step 1 into firmware as
+`ORCHARD_OTA_RELEASE_PUBKEY_HEX` in `firmware/include/ota_release_pubkey.h`
+(or via a `-D` build flag). The private key must **never** enter the repo.
 
-## Firmware implementation (follow-up PR scope)
+## Firmware implementation (status)
 
-- `firmware/include/` — add `ORCHARD_OTA_RELEASE_PUBKEY` (compressed hex from
-  OWNER step 1).
-- `firmware/src/net/ota.cpp` — hash the streamed upload; accept the detached
-  signature (multipart field or `X-Orchard-Ota-Sig` header); verify with the
-  existing P-256 verify path (mirror `identity::p256_sign`'s counterpart) before
-  `Update.end()` commits; abort + `403` on mismatch.
-- NVS flag `ota_require_signature` (default false) + a serial console command to
-  flip it, mirroring `require_seq`.
-- The dashboard's OTA push UI sends the `.sig` alongside the image.
+| Piece | Status |
+|-------|--------|
+| `firmware/include/ota_release_pubkey.h` | Landed — empty default (no key baked) |
+| Streaming SHA-256 of OTA upload | Landed in `firmware/src/net/ota.cpp` |
+| `X-Orchard-Ota-Sig` header (128 hex chars) | Landed |
+| Verify against release pubkey | Landed (mbedTLS ECDSA) |
+| Warn mode when invalid/missing | Landed (default) |
+| NVS `ota_require_signature` + `OTA_REQUIRE_SIG 0\|1` | Landed |
+| `identity::p256_verify` helper | Landed |
+| Release pubkey filled in | **OWNER** after keygen |
+| Dashboard OTA push sends `.sig` | Optional follow-up |
+
+Until the pubkey hex is non-empty, devices log that signature check is skipped.
 
 ## Verifying it works
 
