@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 
-from .. import metrics, seasons
+from .. import db, metrics, seasons
 from ..config import settings
 
 router = APIRouter()
@@ -44,10 +44,21 @@ def root() -> dict:
 
 
 @router.get("/health")
-def health() -> dict:
-    return {
-        "ok": True,
+def health(response: Response) -> dict:
+    """Readiness: process up **and** database answers ``SELECT 1``.
+
+    Uptime robots / Cloudflare / preflight should treat non-200 or
+    ``ok: false`` as down. On DB failure we return HTTP 503 so monitors
+    that only look at status codes also fail closed.
+    """
+    db_ok, db_detail = db.ping()
+    body = {
+        "ok": db_ok,
+        "db": db_detail,
         "flags": _public_flags(),
         # Counters only — no payloads, node_ids, or secrets (metrics.py).
         "metrics": metrics.as_public_dict(),
     }
+    if not db_ok:
+        response.status_code = 503
+    return body

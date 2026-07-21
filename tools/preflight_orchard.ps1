@@ -30,8 +30,11 @@ foreach ($c in $checks) {
                 $j = $r.Content | ConvertFrom-Json
                 if ($c.Name -eq 'health') {
                     if ($j.ok -ne $true) { $ok = $false; $extra = ' ok!=true' }
+                    elseif ($null -ne $j.db -and $j.db -ne 'ok') {
+                        $ok = $false; $extra = " db=$($j.db)"
+                    }
                     elseif ($null -ne $j.flags) {
-                        $extra = " require_seq=$($j.flags.require_seq) body_cap=$($j.flags.max_reading_body_bytes)"
+                        $extra = " db=$($j.db) require_seq=$($j.flags.require_seq) body_cap=$($j.flags.max_reading_body_bytes)"
                         if ($null -ne $j.metrics) {
                             $extra += " accepted=$($j.metrics.readings_accepted) replay_rej=$($j.metrics.readings_rejected_replay_seq)"
                         }

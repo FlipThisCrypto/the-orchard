@@ -1459,6 +1459,7 @@ def test_health_exposes_public_flags(client: TestClient):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
+    assert body["db"] == "ok"
     flags = body["flags"]
     assert "require_seq" in flags
     assert "require_wallet_session" in flags
@@ -1475,6 +1476,21 @@ def test_health_exposes_public_flags(client: TestClient):
     assert "session_secret" not in dumped
     assert "writer_token" not in dumped
     assert "db_url" not in dumped
+    assert "sqlite" not in dumped.lower()
+
+
+def test_health_returns_503_when_db_unreachable(client: TestClient, monkeypatch):
+    from oracle.app import db as db_mod
+
+    monkeypatch.setattr(db_mod, "ping", lambda: (False, "OperationalError"))
+    r = client.get("/health")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["ok"] is False
+    assert body["db"] == "OperationalError"
+    # Still no path/URL leakage in failure detail.
+    assert "/" not in body["db"]
+    assert "orchard.db" not in json.dumps(body)
 
 
 def test_metrics_count_accepted_and_replay(seq_client: TestClient):
