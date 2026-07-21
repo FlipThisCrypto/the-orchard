@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import metrics as metrics_mod
-from . import schedule, schema
+from . import ops_log, schedule, schema
 from .config import CONFIG_PATH, load
 from .oracle import OracleClient, OracleError
 from .publish_watermark import PublishWatermark
@@ -334,6 +334,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    with ops_log.ops_run(
+        "publish",
+        dry_run=dry_run,
+        lookback_hours=lookback,
+        store_id_set=bool(cfg.data_layer.store_id),
+    ) as run:
+        return _publish_body(cfg, dry_run=dry_run, lookback=lookback, run=run)
+
+
+def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> int:
     season_pubkey = schema.pubkey_for_seed(cfg.signing_key_hex.lower())
     watermark_path = Path(
         os.environ.get("ORCHARD_PUBLISH_WATERMARK", str(DEFAULT_WATERMARK_PATH))
@@ -347,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     except OracleError as e:
         print(f"ERROR: oracle unreachable: {e}", file=sys.stderr)
         wm.close()
+        run.finish("error", error="OracleError", error_msg=str(e)[:200])
         return 3
 
     closed = schedule.iter_closed_hours(lookback_hours=lookback)
@@ -362,6 +373,13 @@ def main(argv: list[str] | None = None) -> int:
         f"{last.hour if last is not None else '--':0>2} "
         f"({last.start_utc.isoformat() if last else 'none'})"
     )
+    run.note(
+        "context",
+        season=current_season,
+        trees=len(nodes),
+        closed_hours=len(closed),
+        latest_closed_hour=last.hour if last else None,
+    )
 
     # Closed hours only, windowed harvest, skip watermarked (SPEC §6).
     batches, harvest_notes = harvest_closed_hour_batches(
@@ -371,10 +389,15 @@ def main(argv: list[str] | None = None) -> int:
         already_published=wm.is_published,
         current_season=current_season,
     )
-    for n in harvest_notes:
-        # Keep watermarked skips quiet unless verbose; surface gaps.
-        if "watermarked" not in n:
-            print(f"  harvest: {n}")
+    gap_notes = [n for n in harvest_notes if "watermarked" not in n]
+    for n in gap_notes:
+        print(f"  harvest: {n}")
+    run.note(
+        "harvest",
+        batches=len(batches),
+        harvest_gaps=len(gap_notes),
+        watermark_skips=sum(1 for n in harvest_notes if "watermarked" in n),
+    )
 
     # Resolve existing store values for keys we might touch (idempotency).
     existing: dict[str, str | None] = {}
@@ -415,6 +438,12 @@ def main(argv: list[str] | None = None) -> int:
     if not plan.changelist:
         print("[orchard.publish] nothing to write")
         wm.close()
+        run.finish(
+            "noop",
+            plan_ops=0,
+            plan_hours=0,
+            skips=len(plan.skipped),
+        )
         return 0
 
     if dry_run:
@@ -424,6 +453,12 @@ def main(argv: list[str] | None = None) -> int:
             key_ascii = bytes.fromhex(item["key"]).decode("utf-8", errors="replace")
             print(f"  {action:6} {key_ascii}")
         wm.close()
+        run.finish(
+            "dry_run",
+            plan_ops=len(plan.changelist),
+            plan_hours=len(plan.hours),
+            meta_written=plan.meta_written,
+        )
         return 0
 
     assert dl is not None
@@ -432,6 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     except ChiaRpcError as e:
         print(f"ERROR: DataLayer batch_update failed: {e}", file=sys.stderr)
         wm.close()
+        run.finish("error", error="ChiaRpcError", error_msg=str(e)[:200])
         return 5
 
     txn_id = result.get("tx_id") or result.get("transaction_id") or "<unknown>"
@@ -448,6 +484,15 @@ def main(argv: list[str] | None = None) -> int:
     wm.close()
     print(f"[orchard.publish] watermarked {len(plan.hours)} hour(s) "
           f"(config: {CONFIG_PATH})")
+    run.finish(
+        "ok",
+        plan_ops=len(plan.changelist),
+        plan_hours=len(plan.hours),
+        meta_written=plan.meta_written,
+        nodes_written=len(plan.nodes_written),
+        # Only short prefix — full tx ids can be long hex.
+        tx_id_prefix=(txn_id[:16] if isinstance(txn_id, str) else None),
+    )
     return 0
 
 

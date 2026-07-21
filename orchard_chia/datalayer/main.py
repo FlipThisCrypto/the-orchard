@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import attest, config, schema, seal
+from . import attest, config, ops_log, schema, seal
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
@@ -99,6 +99,11 @@ def main() -> int:
         )
         return 2
 
+    with ops_log.ops_run("attest", store_id_set=True) as run:
+        return _attest_body(cfg, run)
+
+
+def _attest_body(cfg, run: ops_log.OpsRun) -> int:
     oracle = OracleClient(cfg.oracle.url)
     fn = FullNodeRpc(
         cfg.full_node.host, cfg.full_node.port,
@@ -117,20 +122,24 @@ def main() -> int:
         current_season = oracle.current_season()
     except OracleError as e:
         print(f"ERROR: oracle unreachable: {e}", file=sys.stderr)
+        run.finish("error", error="OracleError", error_msg=str(e)[:200])
         return 3
     print(f"[orchard.attest] current_season: {current_season} (closed: 1..{current_season - 1})")
 
     if current_season < 2:
         print("[orchard.attest] No closed Seasons yet. Nothing to attest.")
+        run.finish("noop", reason="no_closed_seasons", season=current_season)
         return 0
 
     try:
         nodes = oracle.list_nodes()
     except OracleError as e:
         print(f"ERROR: oracle list_nodes failed: {e}", file=sys.stderr)
+        run.finish("error", error="OracleError", error_msg=str(e)[:200])
         return 3
     print(f"[orchard.attest] registered Trees: {len(nodes)}")
     if not nodes:
+        run.finish("noop", reason="no_trees", season=current_season)
         return 0
 
     try:
@@ -248,6 +257,7 @@ def main() -> int:
 
     if not changelist:
         print(f"[orchard.attest] Nothing to update ({dict(stats)})")
+        run.finish("noop", stats=dict(stats), season=current_season)
         return 0
 
     print(f"[orchard.attest] sending {len(changelist)} changelist items to DataLayer ...")
@@ -255,6 +265,7 @@ def main() -> int:
         result = dl.batch_update(cfg.data_layer.store_id, changelist)
     except ChiaRpcError as e:
         print(f"ERROR: DataLayer batch_update failed: {e}", file=sys.stderr)
+        run.finish("error", error="ChiaRpcError", error_msg=str(e)[:200], stats=dict(stats))
         return 5
     txn_id = result.get("tx_id") or result.get("transaction_id") or "<unknown>"
     written_at = datetime.now(timezone.utc)
@@ -271,6 +282,13 @@ def main() -> int:
         pending=pending,
         tx_id=txn_id,
         written_at=written_at,
+    )
+    run.finish(
+        "ok",
+        stats=dict(stats),
+        pending=len(pending),
+        season=current_season,
+        tx_id_prefix=(txn_id[:16] if isinstance(txn_id, str) else None),
     )
     return 0
 
