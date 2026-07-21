@@ -19,16 +19,18 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import metrics as metrics_mod
-from . import schema
+from . import schedule, schema
 from .config import CONFIG_PATH, load
 from .oracle import OracleClient, OracleError
 from .publish_watermark import PublishWatermark
 from .rpc import ChiaRpcError, DataLayerRpc
 
-WRITER_VERSION = "0.2.0"
+WRITER_VERSION = "0.2.1"
 DEFAULT_WATERMARK_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "publish_watermark.db"
 )
+# How many closed hours to scan when catching up after downtime.
+DEFAULT_LOOKBACK_HOURS = 48
 
 
 @dataclass
@@ -214,15 +216,109 @@ def season_hour_bounds_for_reading(ts_ms: int, season: int) -> tuple[int, int]:
     return int(season), hour_of_ts_ms(int(ts_ms))
 
 
+def _lookback_hours(args: list[str]) -> int:
+    for i, a in enumerate(args):
+        if a == "--lookback-hours" and i + 1 < len(args):
+            try:
+                return max(1, min(int(args[i + 1]), 24 * 14))
+            except ValueError:
+                return DEFAULT_LOOKBACK_HOURS
+    env = os.environ.get("ORCHARD_PUBLISH_LOOKBACK_HOURS", "").strip()
+    if env:
+        try:
+            return max(1, min(int(env), 24 * 14))
+        except ValueError:
+            pass
+    return DEFAULT_LOOKBACK_HOURS
+
+
+def harvest_closed_hour_batches(
+    oracle: OracleClient,
+    nodes: list[dict],
+    closed_hours: list[schedule.ClosedHour],
+    *,
+    already_published: Callable[[str, int, int], bool],
+    current_season: int,
+) -> tuple[list[HourBatchInput], list[str]]:
+    """Fetch device-signed readings for closed hours not yet watermarked.
+
+    Uses oracle ``since_ms``/``until_ms`` so each hour is a bounded window
+    rather than a full-history scan (Round 2: operational scale).
+    """
+    batches: list[HourBatchInput] = []
+    notes: list[str] = []
+    for node in nodes:
+        node_id = node["node_id"]
+        sensors_public = [
+            {"name": n, "active": True}
+            for n in (node.get("sensors") or [])
+            if isinstance(n, str)
+        ]
+        first_seen = (
+            node.get("registered_at")
+            or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+        for ch in closed_hours:
+            if already_published(node_id, ch.season, ch.hour):
+                notes.append(
+                    f"{node_id[:8]}…:{ch.season}:{ch.hour:02d}: watermarked"
+                )
+                continue
+            try:
+                rows = oracle.get_readings(
+                    node_id,
+                    limit=2000,
+                    since_ms=ch.start_ms,
+                    until_ms=ch.end_ms,
+                )
+            except OracleError as e:
+                notes.append(f"{node_id[:8]}…:{ch.season}:{ch.hour:02d}: oracle {e}")
+                continue
+            signed = readings_from_oracle_payloads(rows or [], node_id=node_id)
+            # Keep only readings whose ts falls in this closed hour
+            # (defense if tree_ts_ms nulls fall outside the SQL window).
+            in_window = [
+                r for r in signed
+                if ch.start_ms <= int(r.get("ts_ms") or 0) < ch.end_ms
+            ]
+            if not in_window:
+                notes.append(
+                    f"{node_id[:8]}…:{ch.season}:{ch.hour:02d}: no device-signed rows"
+                )
+                continue
+            batches.append(
+                HourBatchInput(
+                    node_id=node_id,
+                    season=ch.season,
+                    hour=ch.hour,
+                    readings=in_window,
+                    node_pubkey=node.get("device_pubkey") or node.get("pubkey"),
+                    board="unknown",
+                    fw=node.get("fw_version") or "unknown",
+                    sensors=sensors_public,
+                    geohash=node.get("geohash") or "",
+                    first_seen_utc=first_seen,
+                    label=node.get("label"),
+                    running_hours_online=ch.hour + 1,
+                    last_sealed_season=(
+                        current_season - 1 if current_season > 1 else None
+                    ),
+                )
+            )
+    return batches, notes
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry for the hot-path publisher.
 
     Usage:
       python -m orchard_chia.datalayer publish
       python -m orchard_chia.datalayer publish --dry-run
+      python -m orchard_chia.datalayer publish --lookback-hours 72
     """
     args = list(argv if argv is not None else sys.argv[1:])
     dry_run = "--dry-run" in args
+    lookback = _lookback_hours(args)
 
     try:
         cfg = load()
@@ -253,64 +349,32 @@ def main(argv: list[str] | None = None) -> int:
         wm.close()
         return 3
 
+    closed = schedule.iter_closed_hours(lookback_hours=lookback)
+    last = closed[-1] if closed else None
     print(f"[orchard.publish] oracle:   {cfg.oracle.url}")
     print(f"[orchard.publish] store_id: {cfg.data_layer.store_id or '(dry-run)'}")
     print(f"[orchard.publish] season:   {current_season}")
     print(f"[orchard.publish] trees:    {len(nodes)}")
     print(f"[orchard.publish] season_pubkey: {season_pubkey[:16]}…")
+    print(
+        f"[orchard.publish] closed hours: lookback={lookback} "
+        f"latest={last.season if last else '-'}/"
+        f"{last.hour if last is not None else '--':0>2} "
+        f"({last.start_utc.isoformat() if last else 'none'})"
+    )
 
-    # Gather closed-hour batches from oracle readings that already carry
-    # device signatures. Without them the planner will skip (honest no-op).
-    batches: list[HourBatchInput] = []
-    for node in nodes:
-        node_id = node["node_id"]
-        try:
-            rows = oracle.get_readings(node_id, limit=500)
-        except OracleError as e:
-            print(f"  WARN: readings {node_id[:8]}…: {e}", file=sys.stderr)
-            continue
-        if not rows:
-            continue
-        signed = readings_from_oracle_payloads(rows, node_id=node_id)
-        if not signed:
-            continue
-        # Group by (season, hour). Season from oracle root is current; for
-        # historical rows use tree_ts_ms only for the hour bucket and pin
-        # season to current until oracle returns per-row season.
-        by_sh: dict[tuple[int, int], list[dict]] = {}
-        for r in signed:
-            ts = int(r.get("ts_ms") or 0)
-            h = hour_of_ts_ms(ts) if ts else 0
-            # Prefer explicit season on the reading if present.
-            s = int(r.get("season") or current_season)
-            by_sh.setdefault((s, h), []).append(r)
-
-        sensors_public = [
-            {"name": n, "active": True}
-            for n in (node.get("sensors") or [])
-            if isinstance(n, str)
-        ]
-        for (s, h), group in sorted(by_sh.items()):
-            batches.append(
-                HourBatchInput(
-                    node_id=node_id,
-                    season=s,
-                    hour=h,
-                    readings=group,
-                    node_pubkey=node.get("device_pubkey") or node.get("pubkey"),
-                    board="unknown",
-                    fw=node.get("fw_version") or "unknown",
-                    sensors=sensors_public,
-                    geohash=node.get("geohash") or "",
-                    first_seen_utc=(
-                        node.get("registered_at")
-                        or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    ),
-                    label=node.get("label"),
-                    running_hours_online=h + 1,
-                    last_sealed_season=current_season - 1 if current_season > 1 else None,
-                )
-            )
+    # Closed hours only, windowed harvest, skip watermarked (SPEC §6).
+    batches, harvest_notes = harvest_closed_hour_batches(
+        oracle,
+        nodes,
+        closed,
+        already_published=wm.is_published,
+        current_season=current_season,
+    )
+    for n in harvest_notes:
+        # Keep watermarked skips quiet unless verbose; surface gaps.
+        if "watermarked" not in n:
+            print(f"  harvest: {n}")
 
     # Resolve existing store values for keys we might touch (idempotency).
     existing: dict[str, str | None] = {}
