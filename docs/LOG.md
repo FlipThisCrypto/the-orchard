@@ -790,3 +790,8 @@ So GPS hasn't actually been wired into the chip *at all* â€” anything we thought
 - **Reward distribution v1:** manual batched CAT spend bundle from Richard's wallet, no Chialisp claim contract yet.
 - **DataLayer scope v1:** daily uptime attestations only. Raw sensor data stays in the local oracle SQLite DB.
 - **NFT credential:** new collection to be designed and minted. One NFT per wallet, enforced at registration time.
+
+## 2026-07-21 — 50-iteration DataLayer hardening pass
+
+Sequential improvements: dashboard oracle resilience, preflight/reconcile CLIs, closed-hour publish (earlier), ops journals, beacon cache, post-write confirm, RPC retry, operator runbook, exit codes, verify --json, and related tests. Branch: datalayer-verifiable-dataset.
+
