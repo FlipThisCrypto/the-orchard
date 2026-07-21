@@ -85,3 +85,8 @@ Exit 1 if any oracle **overclaim** (hours_online > verified_hours).
 
 Use Tree firmware **0.4.8+** so each POST includes `device_reading` (secp256r1). Older trees only HMAC-auth to the oracle and cannot publish verifiable readings.
 
+
+## Secrets
+
+orchard_chia/data/oracle_signing_key.hex is the Season signer seed. Mode 0600 on POSIX; never commit. Compromise allows forged season attestations.
+
