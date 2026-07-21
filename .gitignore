@@ -121,3 +121,8 @@ nft/metadata/mintgarden-results/
 
 # --- Claude / dev tooling local state ---
 .claude/
+
+orchard_chia/data/
+orchard_chia/**/ops/*.jsonl
+orchard_chia/**/ops/*.jsonl.1
+
