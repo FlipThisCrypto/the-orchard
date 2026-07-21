@@ -100,6 +100,18 @@ def test_register_rejects_all_zero_signing_key(client: TestClient):
     assert r.status_code == 422
 
 
+def test_register_rejects_oversized_label(client: TestClient):
+    r = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "label": "L" * 65,
+        },
+    )
+    assert r.status_code == 422
+
+
 def test_register_then_list(client: TestClient):
     r = client.post(
         "/register",
