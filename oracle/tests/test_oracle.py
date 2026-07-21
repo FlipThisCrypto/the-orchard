@@ -1196,6 +1196,26 @@ def test_delete_node_non_owner_returns_404(auth_client):
 
 # ---------------- 2026-06-09 security hardening ----------------
 
+def test_reading_rejects_body_node_id_mismatch(client: TestClient):
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    body = json.dumps({
+        "node_id": "DEADBEEFDEADBEEFDEADBEEFDEADBEEF",
+        "seq": 1,
+        "sensors": {},
+    }).encode("utf-8")
+    r = client.post(
+        "/readings",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Orchard-Node": NODE_ID,
+            "X-Orchard-Sig": _sign(body),
+        },
+    )
+    assert r.status_code == 400
+    assert "node_id" in r.json()["detail"]
+
+
 def test_reading_replay_is_deduped(client: TestClient):
     """H2: an exact replay of a signed reading is dropped — same id
     returned, no second row, no uptime double-count."""

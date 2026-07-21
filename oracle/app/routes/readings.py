@@ -131,6 +131,19 @@ async def post_reading(
         metrics.incr("readings_rejected_bad_json")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"invalid JSON: {e}")
 
+    # If the signed body declares a node_id, it must match the authenticated
+    # header identity. Otherwise a Tree could HMAC-sign a body that claims to
+    # be a different node while authenticating as itself (confuses operators
+    # and pollutes another Tree's reading stream if ever mis-routed).
+    if isinstance(payload, dict) and "node_id" in payload:
+        body_nid = payload.get("node_id")
+        if not isinstance(body_nid, str) or body_nid.upper() != node.node_id:
+            metrics.incr("readings_rejected_node_mismatch")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="body node_id does not match X-Orchard-Node",
+            )
+
     # ---- Replay protection (docs/replay-protection.md, T3) ----------
     # `seq` lives inside the HMAC-covered body, so it can't be forged
     # or bumped on a captured packet. Strictly increasing per Tree.

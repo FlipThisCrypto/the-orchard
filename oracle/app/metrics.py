@@ -45,6 +45,7 @@ def as_public_dict() -> dict[str, Any]:
         "readings_rejected_stale_ts",
         "readings_rejected_future_ts",
         "readings_rejected_bad_json",
+        "readings_rejected_node_mismatch",
         "rate_limited",
     )
     snap = snapshot()
