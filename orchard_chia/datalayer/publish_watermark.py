@@ -93,6 +93,14 @@ class PublishWatermark:
         )
         self._conn.commit()
 
+    def last_tx(self, node_id: str, season: int, hour: int) -> str | None:
+        cur = self._conn.execute(
+            'SELECT tx_id FROM published_hours WHERE node_id=? AND season=? AND hour=?',
+            (node_id.upper(), int(season), int(hour)),
+        )
+        row = cur.fetchone()
+        return row['tx_id'] if row else None
+
     def count(self) -> int:
         cur = self._conn.execute('SELECT COUNT(*) AS n FROM published_hours')
         return int(cur.fetchone()[0])
