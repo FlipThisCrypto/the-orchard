@@ -53,3 +53,14 @@ def test_ops_log_strips_long_hex_secrets(tmp_path: Path, monkeypatch):
     text = (tmp_path / "publish.jsonl").read_text(encoding="utf-8")
     assert secret not in text
     assert "fine" in text
+
+def test_ops_log_rotates_when_oversize(tmp_path, monkeypatch):
+    monkeypatch.setenv("ORCHARD_OPS_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(ops_log, "_MAX_BYTES", 50)
+    path = tmp_path / "publish.jsonl"
+    path.write_text("x" * 80, encoding="utf-8")
+    with ops_log.ops_run("publish") as run:
+        run.finish("ok")
+    assert (tmp_path / "publish.jsonl.1").exists()
+    assert path.exists()
+    assert "finish" in path.read_text(encoding="utf-8")

@@ -85,11 +85,29 @@ def _safe(v: Any) -> bool:
     return False
 
 
+# Rotate when a journal exceeds this many bytes (default 5 MiB).
+_MAX_BYTES = int(os.environ.get("ORCHARD_OPS_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+
+
+def _rotate_if_needed(path: Path) -> None:
+    """Rename oversized journal to ``.1`` (single generation) then start fresh."""
+    try:
+        if not path.is_file() or path.stat().st_size < _MAX_BYTES:
+            return
+        rotated = path.with_suffix(path.suffix + ".1")
+        if rotated.exists():
+            rotated.unlink()
+        path.replace(rotated)
+    except OSError:
+        pass
+
+
 def _append(path: Path | None, row: dict[str, Any]) -> None:
     if path is None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_if_needed(path)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
     except OSError as e:
