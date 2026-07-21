@@ -94,7 +94,14 @@ def cmd_live(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    hours = [int(args.hour)] if args.hour is not None else None
+    from ..datalayer.parse import parse_hour, parse_season
+
+    try:
+        season_n = parse_season(args.season)
+        hours = [parse_hour(args.hour)] if args.hour is not None else None
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     rpc = DataLayerRpc(
         cfg.data_layer.host,
         cfg.data_layer.port,
@@ -106,7 +113,7 @@ def cmd_live(args: argparse.Namespace) -> int:
             rpc,
             store_id,
             node_id=args.node_id,
-            season=int(args.season),
+            season=season_n,
             hours=hours,
         )
     except fetch.FetchError as e:
@@ -118,20 +125,20 @@ def cmd_live(args: argparse.Namespace) -> int:
 
     print(
         f"[live] store={store_id[:16]}… node={args.node_id[:8]}… "
-        f"season={int(args.season)} hours="
+        f"season={season_n} hours="
         f"{hours if hours is not None else 'auto'}"
     )
     rep = verify.verify_bundle(**bundle)
 
     # SPEC §7.1 — DataLayer inclusion / permanence (RPC-level).
     proof_keys = [
-        schema.readings_key(args.node_id, int(args.season), int(h))
+        schema.readings_key(args.node_id, season_n, int(h))
         for h in rep.hours
     ]
     if not proof_keys and bundle.get("readings_records"):
         proof_keys = [
             schema.readings_key(
-                args.node_id, int(args.season), int(r["hour"])
+                args.node_id, season_n, int(r["hour"])
             )
             for r in bundle["readings_records"]
         ]
