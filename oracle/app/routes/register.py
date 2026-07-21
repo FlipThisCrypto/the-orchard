@@ -49,6 +49,8 @@ log = logging.getLogger("orchard.oracle.register")
 
 _HEX32 = re.compile(r"^[0-9A-Fa-f]{32}$")  # 16 bytes / node_id
 _HEX64 = re.compile(r"^[0-9A-Fa-f]{64}$")  # 32 bytes / signing key
+# Compressed SEC1 secp256r1 pubkey: 02/03 + 32 bytes → 66 hex (ADR-0007).
+_HEX66_P256 = re.compile(r"^(?:02|03)[0-9A-Fa-f]{64}$")
 # bech32m XCH address: hrp "xch1" + base32 payload. Don't try to
 # fully validate bech32 here — that's the wallet's job. Just sanity-
 # check the prefix and a reasonable length so a typo doesn't get fed
@@ -59,6 +61,14 @@ _XCH_ADDR = re.compile(r"^xch1[0-9a-z]{50,80}$")
 class RegisterRequest(BaseModel):
     node_id: str = Field(..., description="32 hex chars (16 bytes)")
     signing_key_hex: str = Field(..., description="64 hex chars (32 bytes HMAC secret)")
+    device_pubkey: str | None = Field(
+        None,
+        description=(
+            "Optional compressed secp256r1 public key (66 hex, 02/03 prefix). "
+            "From the Tree's PUBKEY / HW_INFO serial command. Published to "
+            "DataLayer as node:<id>.pubkey for public reading verification."
+        ),
+    )
     wallet_address: str | None = Field(
         None,
         description=(
@@ -83,6 +93,19 @@ class RegisterRequest(BaseModel):
         if not _HEX64.match(v):
             raise ValueError("signing_key_hex must be 64 hex characters")
         return v.upper()
+
+    @field_validator("device_pubkey")
+    @classmethod
+    def _device_pubkey(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        s = v.strip().lower()
+        if not _HEX66_P256.match(s):
+            raise ValueError(
+                "device_pubkey must be a compressed secp256r1 SEC1 point: "
+                "66 hex chars starting with 02 or 03"
+            )
+        return s
 
     @field_validator("wallet_address")
     @classmethod
@@ -244,6 +267,21 @@ def register(
             existing.label = req.label
         if req.fw_version is not None:
             existing.fw_version = req.fw_version
+        # Device pubkey is sticky once set; allow first write or same-value
+        # refresh. Refuse a different key (would break historical verification).
+        if req.device_pubkey is not None:
+            if (
+                existing.device_pubkey
+                and existing.device_pubkey.lower() != req.device_pubkey.lower()
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "node_id already registered with a different device_pubkey "
+                        "— refuse to rotate provenance key"
+                    ),
+                )
+            existing.device_pubkey = req.device_pubkey
         db.commit()
         db.refresh(existing)
         return RegisterResponse(
@@ -257,6 +295,7 @@ def register(
     node = models.Node(
         node_id=req.node_id,
         signing_key_hex=req.signing_key_hex,
+        device_pubkey=req.device_pubkey,
         wallet_address=wallet_address,
         label=req.label,
         fw_version=req.fw_version,

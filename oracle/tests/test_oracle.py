@@ -1298,3 +1298,70 @@ def test_attestations_require_writer_token(writer_token_client: TestClient):
     # Correct token -> 201.
     assert c.post("/attestations", json=body,
                   headers={"X-Orchard-Writer-Token": "testsecret"}).status_code == 201
+
+def test_register_device_pubkey_and_nodes_expose(client: TestClient):
+    """ADR-0003: device_pubkey is stored at register and public on /nodes."""
+    pub = "02" + "ab" * 32
+    r = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "device_pubkey": pub,
+        },
+    )
+    assert r.status_code == 201, r.text
+    nodes = client.get("/nodes").json()
+    assert nodes[0]["device_pubkey"] == pub
+    one = client.get(f"/nodes/{NODE_ID}").json()
+    assert one["device_pubkey"] == pub
+
+    # Same key re-register ok; different key conflicts.
+    ok = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "device_pubkey": pub,
+        },
+    )
+    assert ok.status_code == 201
+    bad = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "device_pubkey": "03" + "cd" * 32,
+        },
+    )
+    assert bad.status_code == 409
+
+
+def test_beacon_placeholder_and_env(client: TestClient, monkeypatch):
+    r = client.get("/beacon")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["block_anchor"] == "0" * 16
+    assert body["ok"] is False
+
+    monkeypatch.setenv("ORCHARD_BEACON_BLOCK_ANCHOR", "a1b2c3d4e5f6071899")
+    monkeypatch.setenv("ORCHARD_BEACON_BLOCK_HEIGHT", "42")
+    r2 = client.get("/beacon")
+    assert r2.status_code == 200
+    b2 = r2.json()
+    assert b2["ok"] is True
+    assert b2["block_anchor"] == "a1b2c3d4e5f60718"
+    assert b2["block_height"] == 42
+    assert b2["source"] == "env"
+
+
+def test_register_rejects_bad_device_pubkey(client: TestClient):
+    r = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "device_pubkey": "01" + "aa" * 32,  # bad prefix
+        },
+    )
+    assert r.status_code == 422

@@ -18,7 +18,17 @@ from fastapi.responses import JSONResponse
 from . import db
 from .config import settings
 from .ratelimit import FixedWindowLimiter
-from .routes import attestations, auth, health, network, nodes, readings, register, uptime
+from .routes import (
+    attestations,
+    auth,
+    beacon,
+    health,
+    network,
+    nodes,
+    readings,
+    register,
+    uptime,
+)
 from .session_deps import LOOPBACK_HOSTS
 
 
@@ -47,6 +57,7 @@ app.include_router(nodes.router)
 app.include_router(uptime.router)
 app.include_router(attestations.router)
 app.include_router(network.router)
+app.include_router(beacon.router)
 
 
 # --- Rate limiting (2026-06-09 hardening) ---------------------------------

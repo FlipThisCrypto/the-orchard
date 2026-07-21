@@ -42,6 +42,12 @@ class Node(Base):
     node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     signing_key_hex: Mapped[str] = mapped_column(String(64), nullable=False)
 
+    # ADR-0003 / ADR-0007: compressed secp256r1 public key (33 bytes → 66 hex,
+    # lowercase). Published in DataLayer node:<id>.pubkey so anyone can verify
+    # device-signed readings without trusting the oracle. Nullable so legacy
+    # Trees registered before device keys remain loadable.
+    device_pubkey: Mapped[str | None] = mapped_column(String(66), nullable=True)
+
     wallet_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
     label: Mapped[str | None] = mapped_column(String(128), nullable=True)
     fw_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
