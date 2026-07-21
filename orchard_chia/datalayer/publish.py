@@ -23,6 +23,7 @@ from . import ops_log, schedule, schema
 from .config import CONFIG_PATH, load
 from .oracle import OracleClient, OracleError
 from .publish_watermark import PublishWatermark
+from . import exit_codes
 from .rpc import ChiaRpcError, DataLayerRpc
 
 WRITER_VERSION = "0.2.1"
@@ -324,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load()
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
-        return 2
+        return exit_codes.USAGE
 
     if not cfg.data_layer.store_id and not dry_run:
         print(
@@ -332,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
             "Create a store: chia data create_data_store -m 0.0001",
             file=sys.stderr,
         )
-        return 2
+        return exit_codes.USAGE
 
     with ops_log.ops_run(
         "publish",
@@ -358,7 +359,7 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
         print(f"ERROR: oracle unreachable: {e}", file=sys.stderr)
         wm.close()
         run.finish("error", error="OracleError", error_msg=str(e)[:200])
-        return 3
+        return exit_codes.ORACLE
 
     closed = schedule.iter_closed_hours(lookback_hours=lookback)
     last = closed[-1] if closed else None
@@ -473,7 +474,7 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
             error_msg=str(e)[:200],
             rpc_attempts=getattr(dl, "last_retry_attempts", 1),
         )
-        return 5
+        return exit_codes.DATALAYER
 
     txn_id = result.get("tx_id") or result.get("transaction_id") or "<unknown>"
     print(f"[orchard.publish] batch_update accepted tx_id={txn_id}")
@@ -503,7 +504,7 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
             confirm_mismatched=len(conf.mismatched),
             rpc_attempts=getattr(dl, "last_retry_attempts", 1),
         )
-        return 6
+        return exit_codes.CONFIRM
 
     for node_id, season, hour, hour_root in plan.hours:
         wm.record(
