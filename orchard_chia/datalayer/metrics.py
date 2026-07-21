@@ -73,10 +73,19 @@ def metrics_from_sensors(sensors: dict | None) -> dict[str, int | bool]:
         if t is not None:
             out["temperature_mc"] = int(round(t * 1000))
 
-    # MQ-135 gas
+    # MQ-135 gas — firmware uses adc_raw (float average); accept aliases.
     mq = sensors.get("mq135") if isinstance(sensors.get("mq135"), dict) else None
     if mq:
-        adc = _as_int(mq.get("adc") if "adc" in mq else mq.get("raw"))
+        adc = None
+        for key in ("adc_raw", "adc", "raw"):
+            if key in mq:
+                raw = _as_float(mq.get(key))
+                if raw is not None:
+                    adc = int(round(raw))
+                    break
+                adc = _as_int(mq.get(key))
+                if adc is not None:
+                    break
         if adc is not None:
             out["gas_adc_raw"] = adc
             # SPEC: gas_mv = round(gas_adc_raw * 3300 / 4095)

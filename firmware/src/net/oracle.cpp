@@ -6,6 +6,7 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "device_reading.h"
 #include "identity.h"
 #include "version.h"
 
@@ -51,7 +52,15 @@ bool oracle_post_reading(JsonDocument& payload) {
   // Add identity fields.
   payload["node_id"] = identity::node_id_hex();
   payload["fw"]      = orchard::kFirmwareVersion;
-  payload["ts_ms"]   = (uint32_t)millis();  // monotonic; oracle gets UTC via gps.utc
+  // Wall-clock ts preferred; attach_device_reading overwrites when GPS/SNTP
+  // provides one. millis() is only a last-resort placeholder.
+  if (!payload["ts_ms"].is<int64_t>() && !payload["ts_ms"].is<int>()) {
+    payload["ts_ms"] = static_cast<int64_t>(millis());
+  }
+
+  // ADR-0003: attach secp256r1-signed SPEC reading for DataLayer publish.
+  // Failure is non-fatal — sensors blob + HMAC transport still work.
+  orchard::attach_device_reading(payload);
 
   String body;
   serializeJson(payload, body);

@@ -29,7 +29,7 @@ def _signed_reading(ts_ms: int = 1_749_480_000_123, temp_mc: int = 21400) -> dic
 def test_metrics_from_bme_and_mq():
     sensors = {
         "bme280": {"temperature_c": 21.4, "humidity_pct": 48.2, "pressure_hpa": 1012.60},
-        "mq135": {"adc": 1234},
+        "mq135": {"adc_raw": 1234.4},  # firmware field name (averaged float)
         "gps": {"fix": True, "sats": 7, "lat": 40.1, "lon": -74.2},
     }
     m = metrics.metrics_from_sensors(sensors)
