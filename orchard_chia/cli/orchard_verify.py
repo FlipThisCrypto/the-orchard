@@ -17,7 +17,7 @@ import json
 import sys
 from pathlib import Path
 
-from ..datalayer import config, fetch, schema, verify
+from ..datalayer import config, fetch, inclusion, schema, verify
 from ..datalayer.rpc import ChiaRpcError, DataLayerRpc
 
 
@@ -122,6 +122,29 @@ def cmd_live(args: argparse.Namespace) -> int:
         f"{hours if hours is not None else 'auto'}"
     )
     rep = verify.verify_bundle(**bundle)
+
+    # SPEC §7.1 — DataLayer inclusion / permanence (RPC-level).
+    proof_keys = [
+        schema.readings_key(args.node_id, int(args.season), int(h))
+        for h in rep.hours
+    ]
+    if not proof_keys and bundle.get("readings_records"):
+        proof_keys = [
+            schema.readings_key(
+                args.node_id, int(args.season), int(r["hour"])
+            )
+            for r in bundle["readings_records"]
+        ]
+    incl = inclusion.check_inclusion(rpc, store_id, proof_keys)
+    rep.checks.insert(
+        0,
+        verify.Check(
+            "DataLayer inclusion proof",
+            incl.ok,
+            incl.detail,
+        ),
+    )
+
     _print_report(rep)
     return 0 if rep.valid else 1
 

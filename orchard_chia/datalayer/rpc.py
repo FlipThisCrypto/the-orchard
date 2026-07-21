@@ -138,3 +138,22 @@ class DataLayerRpc:
         except ChiaRpcError:
             return []
         return data.get("keys", [])
+
+    def get_root(self, store_id: str) -> dict:
+        """Current on-chain root hash + confirmed status for a store.
+
+        Typical response fields (Chia DataLayer RPC):
+            success, hash (root hex), confirmed, timestamp
+        """
+        return self._post("get_root", {"id": store_id})
+
+    def get_proof(self, store_id: str, keys_hex: list[str]) -> dict:
+        """Inclusion proof for one or more keys under the store root.
+
+        ``keys`` are hex-encoded DataLayer keys (same form as batch_update).
+        Used by orchard-verify live for SPEC §7 permanence/inclusion.
+        """
+        return self._post(
+            "get_proof",
+            {"id": store_id, "keys": list(keys_hex)},
+        )
