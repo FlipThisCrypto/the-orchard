@@ -666,11 +666,14 @@ def test_api_auth_challenge_forwards_to_oracle(client, monkeypatch):
     import requests
     class FakeResp:
         status_code = 200
+        content = b'{"nonce":"deadbeef"}'
+        text = '{"nonce":"deadbeef"}'
         def json(self): return {"nonce": "deadbeef", "expires_at": 1, "message": "x"}
-    def fake_post(url, timeout, **kw):
+    def fake_request(method, url, json=None, timeout=None, **kw):
+        assert method == "POST"
         assert url.endswith("/auth/challenge"), url
         return FakeResp()
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "request", fake_request)
     r = client.post("/api/auth/challenge")
     assert r.status_code == 200
     assert r.get_json()["nonce"] == "deadbeef"
@@ -682,12 +685,14 @@ def test_api_auth_verify_forwards_body(client, monkeypatch):
     captured = {}
     class FakeResp:
         status_code = 200
+        content = b'{"session_token":"T"}'
+        text = '{"session_token":"T"}'
         def json(self): return {"session_token": "T", "address": "xch1...", "expires_at": 1}
-    def fake_post(url, json=None, timeout=None, **kw):
+    def fake_request(method, url, json=None, timeout=None, **kw):
         captured["url"] = url
         captured["body"] = json
         return FakeResp()
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "request", fake_request)
     r = client.post(
         "/api/auth/verify",
         json={"address": "xch1abc", "public_key": "ab"*48,
