@@ -74,7 +74,10 @@ Reads each registered Tree's per-Season uptime from the oracle and writes a sign
 - Value: hex-encoded UTF-8 of canonical JSON (sorted keys, no whitespace).
 - Signature scheme: HMAC-SHA256 with the oracle's per-instance secret (see "Signing key" below).
 
-In v1, `data_hash` is a placeholder hash over `(node_id, season, hours_online)`. v1.1 will swap it for a Merkle root over the per-hour reading buckets, so a Keeper-class validator can request the raw data and re-verify.
+Sealed `attest:` records now use `schema.sign_attest` (secp256r1). When
+`readings:` hours exist, `season_root` / `verified_hours` come from public
+Merkle material (`seal.py`); otherwise an uptime-derived placeholder remains
+for empty seasons. See `docs/ops/DATALAYER_OPERATOR.md`.
 
 ### Quick start
 
