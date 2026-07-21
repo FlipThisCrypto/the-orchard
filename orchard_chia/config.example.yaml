@@ -44,6 +44,11 @@ attestation:
   max_lookback_seasons: null      # null = no cap
   skip_empty_seasons: true        # don't attest seasons with 0 hours
 
+# Hot-path publisher (optional env overrides also work):
+#   ORCHARD_PUBLISH_LOOKBACK_HOURS=48
+#   ORCHARD_OPS_LOG_DIR=...
+#   ORCHARD_DL_RPC_MAX_ATTEMPTS=4
+
 # ----- Chia full node (read-only — we just need peak block height) --
 full_node:
   host: "127.0.0.1"
