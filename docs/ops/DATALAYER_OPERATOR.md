@@ -80,3 +80,8 @@ Exit 1 if any oracle **overclaim** (hours_online > verified_hours).
 2. Publish every hour at :05.
 3. Attest once daily after 00:10 UTC.
 4. Reconcile daily; page on exit 1.
+
+## Firmware
+
+Use Tree firmware **0.4.8+** so each POST includes `device_reading` (secp256r1). Older trees only HMAC-auth to the oracle and cannot publish verifiable readings.
+
