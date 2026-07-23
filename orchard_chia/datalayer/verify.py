@@ -76,6 +76,34 @@ class Report:
         }
 
 
+def verification_badge(
+    report: "Report",
+    *,
+    sealed: bool = True,
+    stale: bool = False,
+    unverifiable: bool = False,
+) -> str:
+    """The SPEC §8 public verification badge, derived from a verify Report.
+
+    - ``Unverified`` — store/proof unreachable; nothing could be asserted
+      (pass ``unverifiable=True`` when live inclusion was cannot-verify).
+    - ``Stale``      — no reading within the staleness window (node offline).
+    - ``Verified``   — a sealed Season whose checks all passed.
+    - ``Live``       — current Season in progress; checks pass, not yet sealed.
+    - ``Partial``    — at least one check failed (e.g. an oracle over-count, or a
+                       reading that didn't verify).
+
+    ``unverifiable`` takes precedence (we assert nothing), then ``stale``.
+    """
+    if unverifiable:
+        return "Unverified"
+    if stale:
+        return "Stale"
+    if report.valid:
+        return "Verified" if sealed else "Live"
+    return "Partial"
+
+
 @dataclass
 class ReadingCheck:
     """Result of verifying a single reading against its hour record."""
