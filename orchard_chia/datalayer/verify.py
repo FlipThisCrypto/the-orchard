@@ -95,6 +95,30 @@ def verify_bundle(
 
     checks: list[Check] = []
 
+    # 0. Bundle consistency — every record must be about the SAME node·season,
+    # so a bundle can't be stitched from a node card, attest, and readings that
+    # actually belong to different nodes/seasons.
+    nid = str(node.get("node_id", "")).upper()
+    consistency: list[str] = []
+    if not nid:
+        consistency.append("node card has no node_id")
+    if str(attest.get("node_id", "")).upper() != nid:
+        consistency.append("attest node_id != node card")
+    a_season = attest.get("season")
+    for rec in readings_records:
+        if str(rec.get("node_id", "")).upper() != nid:
+            consistency.append(f"readings hour {rec.get('hour')} node_id != node card")
+        if a_season is not None and rec.get("season") != a_season:
+            consistency.append(f"readings hour {rec.get('hour')} season != attest")
+        if any(str(r.get("node_id", "")).upper() != nid for r in rec.get("readings", [])):
+            consistency.append(f"a reading in hour {rec.get('hour')} has a foreign node_id")
+    checks.append(Check(
+        "Records agree on node and season",
+        bool(nid) and not consistency,
+        "all records share one node·season"
+        if not consistency else "; ".join(consistency[:3]),
+    ))
+
     # 1. Device provenance — every reading signed by the node's published key.
     bad_sig = [
         r for rec in readings_records for r in rec.get("readings", [])
