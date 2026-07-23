@@ -11,10 +11,23 @@ operator-facing RPC-level gate used by ``orchard-verify live``.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
 from .rpc import ChiaRpcError, DataLayerRpc
+
+
+def key_clvm_hash(key_hex: str) -> str:
+    """CLVM hash of a DataLayer key: ``sha256(0x01 || key_bytes)``, lowercase hex.
+
+    ``get_proof`` returns only the CLVM hashes of keys/values (not the plaintext
+    bytes), to keep proofs small. To decide whether a proof covers one of the
+    keys we asked for, we recompute that key's CLVM hash and compare. The 0x01
+    prefix is the CLVM atom-hash rule (chia-blockchain PR #16845;
+    docs/datalayer/reference/CHIA_DATALAYER_RPC.md §4).
+    """
+    return hashlib.sha256(b"\x01" + bytes.fromhex(key_hex)).hexdigest()
 
 
 @dataclass
@@ -95,41 +108,53 @@ def check_inclusion(
     )
 
 
-def _count_proven_keys(proof_resp: dict[str, Any], keys: list[str]) -> int:
-    """Best-effort count of keys present in a get_proof response.
+def proof_entries(proof_resp: dict[str, Any]) -> list[dict]:
+    """Per-key proof objects from a ``get_proof`` response.
 
-    Chia RPC shapes have varied across versions — accept common layouts:
-      - proof_resp["proof"] is a list of per-key objects with "key"
-      - proof_resp["proofs"] dict keyed by key hex
-      - proof_resp["key_value_hashes"] / nested structures
-    When the response succeeds and has a non-empty proof blob but no
-    enumerable keys, count all requested keys as proven (RPC already
-    scoped the request).
+    Documented shape (CHIA_DATALAYER_RPC.md §4):
+        {"proof": {"coin_id", "inner_puzzle_hash",
+                   "store_proofs": {"store_id", "proofs": [ {...}, ... ]}}}
+    Each entry has ``key_clvm_hash``, ``value_clvm_hash``, ``node_hash``,
+    ``layers``. Tolerant of ``store_proofs`` appearing at the top level in case
+    a client version flattens it.
+    """
+    proof = proof_resp.get("proof")
+    store_proofs: Any = None
+    if isinstance(proof, dict):
+        store_proofs = proof.get("store_proofs")
+    if store_proofs is None:
+        store_proofs = proof_resp.get("store_proofs")
+    if isinstance(store_proofs, dict):
+        proofs = store_proofs.get("proofs")
+        if isinstance(proofs, list):
+            return [p for p in proofs if isinstance(p, dict)]
+    return []
+
+
+def _count_proven_keys(proof_resp: dict[str, Any], keys: list[str]) -> int:
+    """How many of ``keys`` the proof actually covers.
+
+    A key is proven iff its CLVM hash (``key_clvm_hash``, §4) appears among the
+    proof entries. We never assume a non-empty blob proves an unmatched key —
+    that blanket fallback previously reported inclusion nothing verified.
     """
     if not proof_resp.get("success", True):
         return 0
 
-    proofs = proof_resp.get("proofs")
-    if isinstance(proofs, dict):
-        return sum(1 for k in keys if k in proofs or k.lower() in proofs)
+    proven_hashes = {
+        str(e.get("key_clvm_hash", "")).lower()
+        for e in proof_entries(proof_resp)
+        if e.get("key_clvm_hash")
+    }
+    if not proven_hashes:
+        return 0
 
-    proof = proof_resp.get("proof")
-    if isinstance(proof, list):
-        found = 0
-        for item in proof:
-            if not isinstance(item, dict):
-                continue
-            k = item.get("key") or item.get("key_hex")
-            if isinstance(k, str) and (k in keys or k.lower() in {x.lower() for x in keys}):
-                found += 1
-        if found:
-            return found
-        # List present but keys not labeled — RPC accepted the request.
-        if proof:
-            return len(keys)
-
-    # Generic success with any proof-ish payload.
-    for field in ("proof", "proof_tree", "clvm_proof", "proof_info"):
-        if proof_resp.get(field):
-            return len(keys)
-    return 0
+    count = 0
+    for k in keys:
+        try:
+            h = key_clvm_hash(k)
+        except ValueError:
+            continue  # not valid hex — cannot correspond to a stored key
+        if h in proven_hashes:
+            count += 1
+    return count
