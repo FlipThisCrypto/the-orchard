@@ -791,7 +791,33 @@ So GPS hasn't actually been wired into the chip *at all* — anything we thought
 - **DataLayer scope v1:** daily uptime attestations only. Raw sensor data stays in the local oracle SQLite DB.
 - **NFT credential:** new collection to be designed and minted. One NFT per wallet, enforced at registration time.
 
-## 2026-07-21 � 50-iteration DataLayer hardening pass
+## 2026-07-21 � 50-iteration DataLayer hardening pass
 
 Sequential improvements: dashboard oracle resilience, preflight/reconcile CLIs, closed-hour publish (earlier), ops journals, beacon cache, post-write confirm, RPC retry, operator runbook, exit codes, verify --json, and related tests. Branch: datalayer-verifiable-dataset.
+
+## 2026-07-23 — DataLayer integration round (grounded in official Chia docs)
+
+A second sequential round focused on the Chia DataLayer integration, grounded in
+the official DataLayer/full-node RPC docs (vendored at
+`docs/datalayer/reference/CHIA_DATALAYER_RPC.md`). Highlights:
+
+- **Correctness vs. real Chia RPC:** fixed `get_proof` param (`store_id` not
+  `id`); rewrote inclusion parsing to the real `proof.store_proofs.proofs[]`
+  shape, matching keys by CLVM hash; wired `verify_proof`/`current_root`; paginate
+  `get_keys` (no silent truncation); retry 408/429.
+- **Verification hardening:** live inclusion now requires a **confirmed** root,
+  proves + value-binds every verdict-bearing key (`meta`/`node`/`attest`/
+  `readings`), and distinguishes cannot-verify (exit 2) from INVALID (exit 1);
+  Merkle-proves every reading; record consistency + schema/scheme checks;
+  anti-backdate anchor presence check + chain-lookup kernel; never-raise fixes
+  (null pubkey, malformed hour).
+- **Tenet-aligned rewards:** payout now pays on the verifiable `verified_hours`
+  (falls back to `hours_online`), surfacing over-counts in the report.
+- **New surfaces:** `orchard-verify reading` (per-reading verify with on-chain
+  inclusion), `verify_reading_in_hour`, `verification_badge` (SPEC §8), plus a
+  configurable on-chain `fee`.
+- **Docs & guards:** vendored RPC reference, `VERIFY_API.md`, refreshed operator
+  runbook + SPEC §12 checklist, golden-vectors drift guard, e2e live tests.
+  Test suite 188 → 295. Documented a known reading↔hour-bucket replay limitation
+  (SPEC §3). Branch: datalayer-verifiable-dataset.
 
