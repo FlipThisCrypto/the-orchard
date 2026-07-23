@@ -123,21 +123,39 @@ def verify_bundle(
              f"malformed block anchor",
     ))
 
-    # 2. Inclusion — prove one reading sits under its hour_root via a Merkle path.
+    # 2. Inclusion — prove EVERY reading sits under its hour_root via its own
+    #    Merkle path, so any single reading is provably in the tree (not just a
+    #    sampled leaf). Exercises odd-level promotion and ordering for real data.
     proof_ok, proof_detail = False, "no readings to prove"
     if readings_records:
-        rec0 = readings_records[0]
-        ordered = schema._sorted_readings(rec0.get("readings", []))
-        if ordered:
-            leaves = [schema.reading_leaf(r) for r in ordered]
+        proven = 0
+        failures: list[str] = []
+        for rec in readings_records:
+            ordered = schema._sorted_readings(rec.get("readings", []))
+            if not ordered:
+                continue
             try:
-                path = merkle.merkle_proof(leaves, 0)
-                proof_ok = merkle.verify_proof(
-                    leaves[0], path, bytes.fromhex(rec0["hour_root"])
-                )
-                proof_detail = f"leaf 0 of hour {int(rec0['hour']):02d} via {len(path)}-step path"
-            except (ValueError, IndexError) as e:
-                proof_detail = f"proof error: {e}"
+                root = bytes.fromhex(rec["hour_root"])
+            except (ValueError, KeyError, TypeError):
+                failures.append(f"hour {rec.get('hour')}: bad hour_root")
+                continue
+            leaves = [schema.reading_leaf(r) for r in ordered]
+            for i in range(len(leaves)):
+                try:
+                    path = merkle.merkle_proof(leaves, i)
+                    if merkle.verify_proof(leaves[i], path, root):
+                        proven += 1
+                    else:
+                        failures.append(f"hour {int(rec['hour']):02d} leaf {i}")
+                except (ValueError, IndexError) as e:
+                    failures.append(f"hour {rec.get('hour')} leaf {i}: {e}")
+        proof_ok = proven > 0 and not failures
+        if proof_ok:
+            proof_detail = f"{proven} reading(s) each proven to their hour_root"
+        elif failures:
+            proof_detail = (
+                f"{len(failures)} Merkle path failure(s): {failures[:3]}"
+            )
     checks.append(Check("Reading Merkle proof verified", proof_ok, proof_detail))
 
     # 3. Hour roots — each record's stored hour_root equals a recompute.

@@ -67,6 +67,17 @@ def test_changed_merkle_proof_fails():
     assert "Reading Merkle proof verified" in _failed_names(rep)
 
 
+def test_merkle_proof_covers_every_reading():
+    b = _bundle()
+    n = len(b["readings_records"][0]["readings"])
+    assert n >= 2  # vectors carry several readings
+    rep = verify.verify_bundle(**b)
+    mk = next(c for c in rep.checks if c.name == "Reading Merkle proof verified")
+    assert mk.ok is True
+    # Detail reports each reading proven, not a single sampled leaf.
+    assert f"{n} reading(s) each proven" in mk.detail
+
+
 def test_changed_season_score_fails():
     b = _bundle()
     b["attest"]["season_score"] = b["attest"]["season_score"] + 1
