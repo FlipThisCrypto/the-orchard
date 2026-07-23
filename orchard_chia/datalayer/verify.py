@@ -87,13 +87,33 @@ def verify_bundle(
     node_pub = node.get("pubkey", "")
     oracle_pub = ((meta or {}).get("signer") or {}).get("season_pubkey")
 
+    # Sanitize: a readings record must have an integer hour to be placed in the
+    # season tree. Malformed records are flagged as a failed check below rather
+    # than crashing (verify_bundle never raises on bad data).
+    valid_records: list[dict] = []
+    malformed_hours = 0
+    for rec in readings_records:
+        try:
+            int(rec["hour"])
+        except (KeyError, TypeError, ValueError):
+            malformed_hours += 1
+            continue
+        valid_records.append(rec)
+
     by_hour: dict[int, list[dict]] = {
-        int(rec["hour"]): rec.get("readings", []) for rec in readings_records
+        int(rec["hour"]): rec.get("readings", []) for rec in valid_records
     }
     hours = sorted(by_hour)
     all_readings = [r for rec in readings_records for r in rec.get("readings", [])]
 
     checks: list[Check] = []
+
+    checks.append(Check(
+        "Readings records well-formed",
+        malformed_hours == 0,
+        "all records have an integer hour" if malformed_hours == 0
+        else f"{malformed_hours} readings record(s) with a missing/invalid hour",
+    ))
 
     # 0. Bundle consistency — every record must be about the SAME node·season,
     # so a bundle can't be stitched from a node card, attest, and readings that
@@ -172,10 +192,10 @@ def verify_bundle(
     #    Merkle path, so any single reading is provably in the tree (not just a
     #    sampled leaf). Exercises odd-level promotion and ordering for real data.
     proof_ok, proof_detail = False, "no readings to prove"
-    if readings_records:
+    if valid_records:
         proven = 0
         failures: list[str] = []
-        for rec in readings_records:
+        for rec in valid_records:
             ordered = schema._sorted_readings(rec.get("readings", []))
             if not ordered:
                 continue
@@ -205,7 +225,7 @@ def verify_bundle(
 
     # 3. Hour roots — each record's stored hour_root equals a recompute.
     hr_bad = [
-        int(rec["hour"]) for rec in readings_records
+        int(rec["hour"]) for rec in valid_records
         if schema.hour_root(rec.get("readings", [])) != rec.get("hour_root")
     ]
     checks.append(Check(

@@ -36,7 +36,7 @@ def _failed_names(rep) -> set[str]:
 def test_vectors_bundle_is_valid():
     rep = verify.verify_bundle(**_bundle())
     assert rep.valid is True
-    assert len(rep.checks) == 10
+    assert len(rep.checks) == 11
     assert _failed_names(rep) == set()
     assert "Anti-backdate anchor present" in {c.name for c in rep.checks}
     assert "Records agree on node and season" in {c.name for c in rep.checks}
@@ -127,6 +127,23 @@ def test_changed_oracle_signature_fails():
     rep = verify.verify_bundle(**b)
     assert rep.valid is False
     assert "Oracle season signature verified" in _failed_names(rep)
+
+
+def test_malformed_hour_record_does_not_crash():
+    # A readings record with a non-integer hour must yield INVALID, not crash.
+    b = _bundle()
+    b["readings_records"][0]["hour"] = "not-an-hour"
+    rep = verify.verify_bundle(**b)  # must not raise
+    assert rep.valid is False
+    assert "Readings records well-formed" in _failed_names(rep)
+
+
+def test_missing_hour_record_does_not_crash():
+    b = _bundle()
+    del b["readings_records"][0]["hour"]
+    rep = verify.verify_bundle(**b)
+    assert rep.valid is False
+    assert "Readings records well-formed" in _failed_names(rep)
 
 
 def test_null_node_pubkey_does_not_crash():
