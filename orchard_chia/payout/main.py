@@ -136,7 +136,9 @@ def _attestations_to_plan(
             })
             continue
 
-        # 4. Compute reward.
+        # 4. Compute reward on the verifiable metric (verified_hours when
+        #    present), and record the hours actually paid on — not a claim.
+        hours_paid, basis = calculator.paid_hours(s.signed)
         mojos = calculator.juice_mojos_for_attestation(
             s.signed, daily_rate=daily_rate,
         )
@@ -144,7 +146,8 @@ def _attestations_to_plan(
             "node_id":         s.node_id,
             "season":          s.season,
             "wallet_address":  wallet_address,
-            "hours":           int(s.signed.get("hours_online", 0)),
+            "hours":           hours_paid,
+            "hours_basis":     basis,
             "mojos":           mojos,
             "status":          "ready" if mojos > 0 else "skipped:zero",
         })

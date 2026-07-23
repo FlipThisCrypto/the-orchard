@@ -58,6 +58,37 @@ def test_invalid_rate_raises():
             {"hours_online": 12}, daily_rate=-1.0)
 
 
+def test_prefers_verified_hours_when_present():
+    # Oracle claims 24 but only 20 hours are publicly verifiable → pay on 20.
+    attest = {"hours_online": 24, "verified_hours": 20}
+    # 20/24 * 1.0 = 0.8333 $JUICE ≈ 833 mojos
+    assert calculator.juice_mojos_for_attestation(attest, daily_rate=1.0) == 833
+
+
+def test_overclaim_not_rewarded():
+    honest = {"hours_online": 24, "verified_hours": 24}
+    overclaim = {"hours_online": 24, "verified_hours": 12}
+    assert calculator.juice_mojos_for_attestation(honest, daily_rate=1.0) == 1000
+    assert calculator.juice_mojos_for_attestation(overclaim, daily_rate=1.0) == 500
+
+
+def test_falls_back_to_hours_online_when_no_verified():
+    attest = {"hours_online": 24}  # older record, no verified_hours
+    assert calculator.juice_mojos_for_attestation(attest, daily_rate=1.0) == 1000
+
+
+def test_prefer_verified_can_be_disabled():
+    attest = {"hours_online": 24, "verified_hours": 12}
+    assert calculator.juice_mojos_for_attestation(
+        attest, daily_rate=1.0, prefer_verified=False) == 1000
+
+
+def test_verified_hours_out_of_range_raises():
+    with pytest.raises(ValueError, match="verified_hours"):
+        calculator.juice_mojos_for_attestation(
+            {"hours_online": 10, "verified_hours": 99}, daily_rate=1.0)
+
+
 def test_aggregate_by_wallet_sums_correctly():
     rows = [
         {"wallet_address": "xch1a", "mojos": 1000},
