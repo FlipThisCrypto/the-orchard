@@ -65,3 +65,51 @@ def test_tampered_hour_root_fails():
 def test_bad_data_does_not_raise():
     assert verify.verify_reading_in_hour(None, PUB, {}).ok is False
     assert verify.verify_reading_in_hour({}, None, None).ok is False
+
+
+# --- CLI core: _fetch_and_verify_reading ---------------------------------- #
+
+class _FakeRpc:
+    def __init__(self, store):
+        self.store = store
+
+    def get_value(self, store_id, key_hex):
+        return self.store.get(key_hex)
+
+
+def _live_store():
+    r0 = _reading(1000)
+    rec = _hour([r0])
+    node = schema.build_node(
+        node_id=NODE, pubkey=PUB, board="t", fw="0.4.8", sensors=[],
+        geohash="dr5ru", first_seen_utc="2026-05-28T20:43:27Z",
+    )
+    return {
+        schema.node_key(NODE): schema.value_hex(node),
+        schema.readings_key(NODE, 5, 13): schema.value_hex(rec),
+    }, r0
+
+
+def test_cli_fetch_and_verify_reading_ok():
+    from orchard_chia.cli.orchard_verify import _fetch_and_verify_reading
+    store, r0 = _live_store()
+    check, err = _fetch_and_verify_reading(_FakeRpc(store), "s", NODE, 5, 13, 1000)
+    assert err is None
+    assert check.ok is True
+
+
+def test_cli_fetch_ts_not_found():
+    from orchard_chia.cli.orchard_verify import _fetch_and_verify_reading
+    store, _ = _live_store()
+    check, err = _fetch_and_verify_reading(_FakeRpc(store), "s", NODE, 5, 13, 999999)
+    assert check is None
+    assert "ts_ms" in err
+
+
+def test_cli_fetch_missing_node():
+    from orchard_chia.cli.orchard_verify import _fetch_and_verify_reading
+    store, _ = _live_store()
+    del store[schema.node_key(NODE)]
+    check, err = _fetch_and_verify_reading(_FakeRpc(store), "s", NODE, 5, 13, 1000)
+    assert check is None
+    assert "node" in err

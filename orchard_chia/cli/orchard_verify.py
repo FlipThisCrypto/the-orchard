@@ -211,6 +211,79 @@ def cmd_live(args: argparse.Namespace) -> int:
     return code
 
 
+def _fetch_and_verify_reading(
+    rpc, store_id: str, node_id: str, season: int, hour: int, ts_ms: int
+) -> tuple[verify.ReadingCheck | None, str | None]:
+    """Fetch the node pubkey + hour record and verify one reading by ts_ms.
+
+    Returns (ReadingCheck, None) on success or (None, error) if the node/hour/
+    reading can't be found. Pure over the RPC interface (testable with a fake).
+    """
+    node = schema.parse_value(rpc.get_value(store_id, schema.node_key(node_id)))
+    if not node:
+        return None, f"node:{node_id} not found in store"
+    rec = schema.parse_value(
+        rpc.get_value(store_id, schema.readings_key(node_id, season, hour))
+    )
+    if not rec:
+        return None, f"readings hour {hour:02d} not found for season {season}"
+    match = next(
+        (r for r in rec.get("readings", []) if int(r.get("ts_ms", -1)) == int(ts_ms)),
+        None,
+    )
+    if match is None:
+        return None, f"no reading with ts_ms={ts_ms} in hour {hour:02d}"
+    return verify.verify_reading_in_hour(match, node.get("pubkey", ""), rec), None
+
+
+def cmd_reading(args: argparse.Namespace) -> int:
+    """Verify a single reading (SPEC §8) from the live store by ts_ms."""
+    try:
+        cfg = config.load()
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    store_id = args.store_id or cfg.data_layer.store_id
+    if not store_id:
+        print("error: --store-id required (or set datalayer.store_id)", file=sys.stderr)
+        return 2
+
+    from ..datalayer.parse import parse_hour, parse_season
+
+    try:
+        season_n = parse_season(args.season)
+        hour_n = parse_hour(args.hour)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    rpc = DataLayerRpc(
+        cfg.data_layer.host, cfg.data_layer.port,
+        cfg.data_layer.cert_path, cfg.data_layer.key_path,
+    )
+    try:
+        check, err = _fetch_and_verify_reading(
+            rpc, store_id, args.node_id, season_n, hour_n, int(args.ts_ms)
+        )
+    except ChiaRpcError as e:
+        print(f"error: DataLayer RPC failed: {e}", file=sys.stderr)
+        return 2
+    if err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
+
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(check.as_dict(), indent=2, sort_keys=True))
+    else:
+        ok, fail = _marks()
+        print("Orchard Verify — single reading\n")
+        print(f"{ok if check.signature_ok else fail} Device signature")
+        print(f"{ok if check.in_hour_tree else fail} Merkle membership in hour tree")
+        print(f"{ok if check.hour_root_ok else fail} Hour root matches recompute")
+        print(f"\nResult: {'VALID' if check.ok else 'INVALID'}")
+    return 0 if check.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="orchard-verify",
@@ -242,6 +315,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live.add_argument("--json", action="store_true", help="emit Report.as_dict JSON")
     live.set_defaults(func=cmd_live)
+
+    rd = sub.add_parser(
+        "reading",
+        help="verify a single reading (by ts_ms) from the live store (SPEC §8)",
+    )
+    rd.add_argument("--store-id", default=None,
+                    help="DataLayer store id (default: config.yaml datalayer.store_id)")
+    rd.add_argument("--node-id", required=True)
+    rd.add_argument("--season", required=True, type=int)
+    rd.add_argument("--hour", required=True, type=int)
+    rd.add_argument("--ts-ms", required=True, type=int, dest="ts_ms",
+                    help="device epoch-millis timestamp identifying the reading")
+    rd.add_argument("--json", action="store_true", help="emit ReadingCheck JSON")
+    rd.set_defaults(func=cmd_reading)
     return p
 
 
