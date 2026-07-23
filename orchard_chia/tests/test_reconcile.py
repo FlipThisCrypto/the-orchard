@@ -45,6 +45,47 @@ def test_reconcile_overclaim():
     assert row.hours_online == 24
 
 
+def test_reconcile_main_exits_datalayer_when_store_unreachable(monkeypatch):
+    from orchard_chia.datalayer import exit_codes
+    from orchard_chia.datalayer.config import (
+        AttestationConfig, Config, DataLayerConfig, FullNodeConfig, OracleConfig,
+    )
+    from orchard_chia.datalayer.rpc import ChiaRpcError
+
+    fake = Config(
+        network="test",
+        full_node=FullNodeConfig("127.0.0.1", 8555, "c", "k"),
+        data_layer=DataLayerConfig("127.0.0.1", 8562, "c", "k", "ab" * 32),
+        oracle=OracleConfig("http://x"),
+        attestation=AttestationConfig(),
+        signing_key_hex="ab" * 32,
+    )
+    monkeypatch.setattr(reconcile.config, "load", lambda: fake)
+
+    class FakeOracle:
+        def __init__(self, url):
+            pass
+
+        def current_season(self):
+            return 3
+
+        def list_nodes(self):
+            return [{"node_id": NODE}]
+
+    monkeypatch.setattr(reconcile, "OracleClient", FakeOracle)
+
+    class DownDl:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_root(self, store_id):
+            raise ChiaRpcError("connection refused")
+
+    monkeypatch.setattr(reconcile, "DataLayerRpc", DownDl)
+
+    assert reconcile.main([]) == exit_codes.DATALAYER
+
+
 def test_reconcile_match():
     r = schema.sign_reading(
         {

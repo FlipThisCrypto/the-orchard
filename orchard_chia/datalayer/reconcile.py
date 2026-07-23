@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
-from . import config, seal
+from . import config, exit_codes, seal
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc
 
@@ -133,10 +133,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg = config.load()
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
-        return 2
+        return exit_codes.USAGE
     if not cfg.data_layer.store_id:
         print("ERROR: datalayer.store_id empty", file=sys.stderr)
-        return 2
+        return exit_codes.USAGE
 
     oracle = OracleClient(cfg.oracle.url)
     try:
@@ -144,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         nodes = oracle.list_nodes()
     except OracleError as e:
         print(f"ERROR: oracle: {e}", file=sys.stderr)
-        return 3
+        return exit_codes.ORACLE
 
     if season is None:
         season = max(1, current - 1)  # last closed
@@ -155,6 +155,15 @@ def main(argv: list[str] | None = None) -> int:
         cfg.data_layer.cert_path,
         cfg.data_layer.key_path,
     )
+
+    # Fail loudly if DataLayer is unreachable: otherwise load_season_readings
+    # soft-fails to [] for every node, all rows read as "no_dl", and reconcile
+    # exits 0 ("no overclaims") — a silent outage masquerading as healthy.
+    try:
+        dl.get_root(cfg.data_layer.store_id)
+    except ChiaRpcError as e:
+        print(f"ERROR: DataLayer unreachable — cannot reconcile: {e}", file=sys.stderr)
+        return exit_codes.DATALAYER
 
     print(f"Orchard reconcile — season {season} (current={current})")
     print(f"{'node':32}  {'oracle':>6}  {'verified':>8}  status")
@@ -180,8 +189,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print(f"overclaims: {over}")
-    # Exit 1 if any overclaim so cron/alerting can page.
-    return 1 if over else 0
+    # Exit RECONCILE (1) if any overclaim so cron/alerting can page.
+    return exit_codes.RECONCILE if over else exit_codes.OK
 
 
 if __name__ == "__main__":
