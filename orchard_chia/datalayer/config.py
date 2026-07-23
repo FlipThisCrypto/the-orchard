@@ -35,6 +35,10 @@ class DataLayerConfig:
     cert_path: str
     key_path: str
     store_id: str
+    # On-chain transaction fee for batch_update writes, in mojos (1 XCH =
+    # 1e12 mojos). 0 = node default; raise it if writes stall unconfirmed
+    # under mempool congestion. See datalayer/rpc.py::batch_update.
+    fee: int = 0
 
 
 @dataclass
@@ -92,6 +96,7 @@ def load() -> Config:
             cert_path=_expand(dl.get("cert_path", "")),
             key_path=_expand(dl.get("key_path", "")),
             store_id=dl.get("store_id", ""),
+            fee=int(dl.get("fee", 0) or 0),
         ),
         oracle=OracleConfig(
             url=orcl.get("url", "http://127.0.0.1:8000"),

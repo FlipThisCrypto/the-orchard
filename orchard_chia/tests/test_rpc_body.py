@@ -54,4 +54,21 @@ def test_batch_update_uses_id():
     rpc = _capturing_rpc(cap)
     changelist = [{"action": "insert", "key": "aa", "value": "bb"}]
     rpc.batch_update("STORE", changelist)
+    # No fee by default → body unchanged from the historical shape.
     assert cap["body"] == {"id": "STORE", "changelist": changelist}
+
+
+def test_batch_update_includes_fee_when_set():
+    cap: dict = {}
+    rpc = _capturing_rpc(cap)
+    changelist = [{"action": "insert", "key": "aa", "value": "bb"}]
+    rpc.batch_update("STORE", changelist, fee=100_000_000)
+    assert cap["body"]["fee"] == 100_000_000
+    assert cap["body"]["id"] == "STORE"
+
+
+def test_batch_update_local_stage_sets_submit_flag():
+    cap: dict = {}
+    rpc = _capturing_rpc(cap)
+    rpc.batch_update("STORE", [], submit_on_chain=False)
+    assert cap["body"]["submit_on_chain"] is False

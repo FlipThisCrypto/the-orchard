@@ -66,6 +66,10 @@ datalayer:
   cert_path: "~/.chia/mainnet/config/ssl/data_layer/private_data_layer.crt"
   key_path:  "~/.chia/mainnet/config/ssl/data_layer/private_data_layer.key"
   store_id: ""
+  # On-chain fee for each batch_update, in mojos (1 XCH = 1_000_000_000_000).
+  # 0 works when the mempool is quiet; if publishes stall unconfirmed, raise
+  # this (e.g. 100000000 = 0.0001 XCH) so the write makes it into a block.
+  fee: 0
 
 # ----- Chia reference wallet (used by Phase 7 payout) ----------------
 wallet:

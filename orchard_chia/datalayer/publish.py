@@ -464,7 +464,11 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
 
     assert dl is not None
     try:
-        result = dl.batch_update(cfg.data_layer.store_id, plan.changelist)
+        result = dl.batch_update(
+            cfg.data_layer.store_id,
+            plan.changelist,
+            fee=cfg.data_layer.fee or None,
+        )
     except ChiaRpcError as e:
         print(f"ERROR: DataLayer batch_update failed: {e}", file=sys.stderr)
         wm.close()

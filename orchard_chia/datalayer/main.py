@@ -262,7 +262,9 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
 
     print(f"[orchard.attest] sending {len(changelist)} changelist items to DataLayer ...")
     try:
-        result = dl.batch_update(cfg.data_layer.store_id, changelist)
+        result = dl.batch_update(
+            cfg.data_layer.store_id, changelist, fee=cfg.data_layer.fee or None
+        )
     except ChiaRpcError as e:
         print(f"ERROR: DataLayer batch_update failed: {e}", file=sys.stderr)
         run.finish(

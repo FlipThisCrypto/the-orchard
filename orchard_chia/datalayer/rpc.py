@@ -148,14 +148,35 @@ class DataLayerRpc:
         self.last_retried = result.retried
         return result.value
 
-    def batch_update(self, store_id: str, changelist: list[dict]) -> dict:
+    def batch_update(
+        self,
+        store_id: str,
+        changelist: list[dict],
+        *,
+        fee: int | None = None,
+        submit_on_chain: bool = True,
+    ) -> dict:
         """Apply a list of insert/delete operations to a DataLayer store.
 
         ``changelist`` items look like:
             {"action": "insert", "key": "<hex>", "value": "<hex>"}
             {"action": "delete", "key": "<hex>"}
+
+        ``fee`` is the transaction fee in **mojos** (1 XCH = 1e12 mojos). A
+        higher fee helps the update's transaction get into a block when the
+        mempool is congested — a 0-fee tx can stall indefinitely, after which
+        our post-write confirm never sees the inserts and the watermark can't
+        advance. Omitted (``None``) preserves the node's default (0). ``fee`` is
+        only added to the request when set. See CHIA_DATALAYER_RPC.md §3.
+
+        ``submit_on_chain=False`` stages the change locally without a
+        transaction (default ``True`` submits on-chain).
         """
-        body = {"id": store_id, "changelist": changelist}
+        body: dict[str, Any] = {"id": store_id, "changelist": changelist}
+        if fee is not None:
+            body["fee"] = int(fee)
+        if not submit_on_chain:
+            body["submit_on_chain"] = False
         return self._post("batch_update", body)
 
     def get_value(self, store_id: str, key_hex: str) -> str | None:
