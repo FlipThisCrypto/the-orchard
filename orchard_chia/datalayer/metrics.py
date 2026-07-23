@@ -116,28 +116,41 @@ def metrics_from_sensors(sensors: dict | None) -> dict[str, int | bool]:
     return out
 
 
+# The exact keys of a signed SPEC reading (§2.3). The device signs
+# canonical(reading-without-sig) over precisely these, so a published reading
+# must contain ONLY these — any stray field changes the canonical bytes and
+# breaks every verifier's device-signature check.
+_SPEC_READING_KEYS = ("node_id", "ts_ms", "block_anchor", "metrics", "sig")
+
+
+def _canonical_reading(d: dict) -> dict:
+    """Keep only the signed SPEC reading keys present in ``d``."""
+    return {k: d[k] for k in _SPEC_READING_KEYS if k in d}
+
+
 def extract_device_reading(payload: dict | None) -> dict | None:
     """Return a SPEC reading object if the oracle payload already carries one.
 
     Supported shapes (first match wins):
       1. ``payload["device_reading"]`` — nested full reading (preferred).
       2. ``payload`` itself has ``metrics`` + ``sig`` + ``ts_ms`` — already SPEC.
+
+    In BOTH shapes the result is stripped to the canonical signed keys so a
+    transport/extra field can't ride along and invalidate the signature.
     """
     if not isinstance(payload, dict):
         return None
 
     nested = payload.get("device_reading")
     if isinstance(nested, dict) and nested.get("sig") and nested.get("metrics") is not None:
-        return dict(nested)
+        return _canonical_reading(nested)
 
     if (
         payload.get("sig")
         and isinstance(payload.get("metrics"), dict)
         and payload.get("ts_ms") is not None
     ):
-        # Strip non-SPEC top-level transport fields if present.
-        keys = ("node_id", "ts_ms", "block_anchor", "metrics", "sig")
-        return {k: payload[k] for k in keys if k in payload}
+        return _canonical_reading(payload)
 
     return None
 
