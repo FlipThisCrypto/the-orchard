@@ -31,11 +31,21 @@ class OracleClient:
         return r.json()
 
     def root(self) -> dict:
-        return self._get("/")
+        info = self._get("/")
+        if not isinstance(info, dict):
+            raise OracleError("oracle root returned no JSON object (404 or bad body)")
+        return info
 
     def current_season(self) -> int:
         info = self.root()
-        return int(info["current_season"])
+        try:
+            return int(info["current_season"])
+        except (KeyError, TypeError, ValueError) as e:
+            # Turn a malformed oracle payload into OracleError so callers'
+            # existing `except OracleError` handles it instead of crashing.
+            raise OracleError(
+                f"oracle root missing/invalid current_season: {e}"
+            ) from e
 
     def list_nodes(self) -> list[dict]:
         return self._get("/nodes") or []
