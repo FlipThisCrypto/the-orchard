@@ -146,7 +146,15 @@ def cmd_live(args: argparse.Namespace) -> int:
             )
             for r in bundle["readings_records"]
         ]
-    incl = inclusion.check_inclusion(rpc, store_id, proof_keys)
+    # Bind each proven readings key to the exact on-chain value we verified.
+    expected_values = {
+        schema.readings_key(args.node_id, season_n, int(r["hour"])): schema.value_hex(r)
+        for r in bundle.get("readings_records", [])
+        if "hour" in r
+    }
+    incl = inclusion.check_inclusion(
+        rpc, store_id, proof_keys, expected_values=expected_values
+    )
     rep.checks.insert(
         0,
         verify.Check(

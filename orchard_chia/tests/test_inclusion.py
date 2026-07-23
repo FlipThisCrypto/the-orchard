@@ -170,6 +170,72 @@ def test_inclusion_mismatched_hash_not_proven():
     assert rep.keys_proven == 0
 
 
+def _proof_for_kv(kv: dict):
+    """get_proof response whose entries carry the real value_clvm_hash for
+    each key's value hex (kv: key_hex -> value_hex)."""
+    return {
+        "success": True,
+        "proof": {
+            "coin_id": "de" * 32,
+            "inner_puzzle_hash": "ad" * 32,
+            "store_proofs": {
+                "store_id": "11" * 32,
+                "proofs": [
+                    {
+                        "key_clvm_hash": CLVM[k],
+                        "value_clvm_hash": inclusion.clvm_hash(v),
+                        "node_hash": "ee" * 32,
+                        "layers": [],
+                    }
+                    for k, v in kv.items()
+                ],
+            },
+        },
+    }
+
+
+def test_inclusion_binds_matching_value():
+    rpc = FakeRpc(
+        root={"success": True, "hash": "ab" * 32, "confirmed": True},
+        proof=_proof_for_kv({"aa": "1234"}),
+        current_root=True,
+    )
+    rep = inclusion.check_inclusion(
+        rpc, "store", ["aa"], expected_values={"aa": "1234"}
+    )
+    assert rep.ok is True
+    assert rep.values_bound == 1
+    assert "value(s) bound" in rep.detail
+
+
+def test_inclusion_rejects_value_mismatch():
+    # Proof proves key aa with the value hash of "1234", but the record we are
+    # verifying has value "deadbeef" — tampering / stale mirror.
+    rpc = FakeRpc(
+        root={"success": True, "hash": "ab" * 32, "confirmed": True},
+        proof=_proof_for_kv({"aa": "1234"}),
+        current_root=True,
+    )
+    rep = inclusion.check_inclusion(
+        rpc, "store", ["aa"], expected_values={"aa": "deadbeef"}
+    )
+    assert rep.ok is False
+    assert "value differs" in rep.detail
+    assert rep.values_bound == 0
+
+
+def test_inclusion_without_expected_values_is_key_only():
+    # No expected_values => backward-compatible key-only inclusion (values_bound 0).
+    rpc = FakeRpc(
+        root={"success": True, "hash": "ab" * 32, "confirmed": True},
+        proof=_proof_for_kv({"aa": "1234"}),
+        current_root=True,
+    )
+    rep = inclusion.check_inclusion(rpc, "store", ["aa"])
+    assert rep.ok is True
+    assert rep.values_bound == 0
+
+
 def test_inclusion_get_root_error():
     rpc = FakeRpc(root_err="down")
     rep = inclusion.check_inclusion(rpc, "store", ["aa"])

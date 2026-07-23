@@ -30,6 +30,10 @@ def key_clvm_hash(key_hex: str) -> str:
     return hashlib.sha256(b"\x01" + bytes.fromhex(key_hex)).hexdigest()
 
 
+# A DataLayer value is hashed by the same CLVM atom rule as a key.
+clvm_hash = key_clvm_hash
+
+
 @dataclass
 class InclusionReport:
     ok: bool
@@ -38,6 +42,7 @@ class InclusionReport:
     confirmed: bool | None = None
     keys_proven: int = 0
     current_root: bool | None = None
+    values_bound: int = 0
 
 
 def proof_envelope(proof_resp: dict[str, Any]) -> dict | None:
@@ -63,8 +68,18 @@ def check_inclusion(
     rpc: DataLayerRpc,
     store_id: str,
     key_hex_list: list[str],
+    *,
+    expected_values: dict[str, str] | None = None,
 ) -> InclusionReport:
-    """Return whether DataLayer reports a confirmed root + proof for keys."""
+    """Return whether DataLayer reports a confirmed root + proof for keys.
+
+    When ``expected_values`` (a ``key_hex -> value_hex`` map) is given, inclusion
+    additionally binds each proven key to that value: the proof's
+    ``value_clvm_hash`` must equal ``clvm_hash(expected_value)``. This closes the
+    gap where a key can be proven on-chain while its stored value differs from
+    the record actually being verified — i.e. it ties the proof to the data, not
+    just the key. Omit it to keep the key-only check (backward compatible).
+    """
     if not key_hex_list:
         return InclusionReport(ok=False, detail="no keys to prove")
 
@@ -158,16 +173,55 @@ def check_inclusion(
             keys_proven=proven,
             current_root=False,
         )
+
+    # Bind the proof to the actual data: the on-chain value_clvm_hash for each
+    # proven key must match the value of the record we are verifying. Without
+    # this, a valid key proof says nothing about whether the stored value is the
+    # one being displayed.
+    values_bound = 0
+    if expected_values:
+        val_by_keyhash = proof_value_hashes(proof_resp)
+        mismatched: list[str] = []
+        for k in key_hex_list:
+            exp = expected_values.get(k)
+            if exp is None:
+                continue
+            try:
+                on_chain = val_by_keyhash.get(key_clvm_hash(k))
+                want = clvm_hash(exp)
+            except ValueError:
+                mismatched.append(k)
+                continue
+            if on_chain == want:
+                values_bound += 1
+            else:
+                mismatched.append(k)
+        if mismatched:
+            return InclusionReport(
+                ok=False,
+                detail=(
+                    f"{len(mismatched)} key(s) proven but on-chain value differs "
+                    f"from the record being verified (tampered or stale mirror)"
+                ),
+                root_hash=root_s,
+                confirmed=conf,
+                keys_proven=proven,
+                current_root=True,
+                values_bound=values_bound,
+            )
+
+    bound_note = f", {values_bound} value(s) bound" if expected_values else ""
     return InclusionReport(
         ok=True,
         detail=(
             f"{proven} key(s) verified against current root {root_s[:16]}… "
-            f"confirmed={conf}"
+            f"confirmed={conf}{bound_note}"
         ),
         root_hash=root_s,
         confirmed=conf,
         keys_proven=proven,
         current_root=True,
+        values_bound=values_bound,
     )
 
 
@@ -192,6 +246,18 @@ def proof_entries(proof_resp: dict[str, Any]) -> list[dict]:
         if isinstance(proofs, list):
             return [p for p in proofs if isinstance(p, dict)]
     return []
+
+
+def proof_value_hashes(proof_resp: dict[str, Any]) -> dict[str, str]:
+    """Map ``key_clvm_hash -> value_clvm_hash`` from a ``get_proof`` response,
+    lowercased. Used to bind a proven key to its stored value's hash."""
+    out: dict[str, str] = {}
+    for e in proof_entries(proof_resp):
+        k = str(e.get("key_clvm_hash", "")).lower()
+        v = str(e.get("value_clvm_hash", "")).lower()
+        if k:
+            out[k] = v
+    return out
 
 
 def _count_proven_keys(proof_resp: dict[str, Any], keys: list[str]) -> int:
