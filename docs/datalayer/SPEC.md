@@ -246,6 +246,24 @@ recomputable from public data**, or it breaks the tenet and may not enter the
 score. Tier/identity multipliers that depend on private state belong in a
 *separate, clearly-labeled* payout adjustment, not in the verifiable score.
 
+> **Known limitation — reading↔hour-bucket binding (open).** `verified_hours`
+> counts an hour bucket as verified if it holds **any** signature-valid reading,
+> but does **not** currently check that the reading's `ts_ms` actually falls in
+> that UTC hour. A device signs `{node_id, ts_ms, block_anchor, metrics}`; the
+> signature is valid regardless of which `readings:<…>:<HOUR>` bucket the writer
+> files it under. So an oracle could copy one genuine reading into all 24 hour
+> buckets and forge 100 % uptime — the recomputed score would still "verify."
+> (The golden vectors reflect this: their `ts_ms` maps to UTC hour 14 while the
+> record sits in bucket 13, so the invariant is demonstrably not enforced today.)
+>
+> **Mitigations (need a design decision, hence not silently applied):**
+> (a) verifier rejects any reading whose `hour_of_ts_ms(ts_ms)` ≠ bucket hour
+>     (and `season_number_for(ts_ms)` ≠ bucket season); (b) the per-hour Merkle
+>     leaf domain-separates on `(season, hour)` so a leaf can't move buckets.
+> Either changes the frozen cross-language vectors (byte-pinned for firmware),
+> so it must be coordinated with a schema/vectors bump — tracked here rather
+> than patched under an autonomous change.
+
 ---
 
 ## 4. Signing
