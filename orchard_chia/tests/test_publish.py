@@ -141,6 +141,38 @@ def test_plan_append_only_skips_existing_readings_key():
     assert any("append-only" in s for s in plan.skipped)
 
 
+def test_plan_skips_readings_without_pubkey():
+    # Signed readings but no pubkey in the batch and no node: card on chain →
+    # the readings would be unverifiable, so they must not be published.
+    signed = _signed_reading()
+    plan = publish.plan_publish(
+        batches=[
+            publish.HourBatchInput(
+                node_id=NODE, season=6, hour=1, readings=[signed], node_pubkey=None
+            )
+        ],
+        season_pubkey=PUB,
+    )
+    assert plan.hours == []
+    assert any("no device pubkey" in s for s in plan.skipped)
+
+
+def test_plan_publishes_pubkeyless_batch_when_node_card_exists():
+    # No pubkey in the batch, but a node: card is already on chain → the pubkey
+    # is available to verifiers, so readings may be published.
+    signed = _signed_reading()
+    plan = publish.plan_publish(
+        batches=[
+            publish.HourBatchInput(
+                node_id=NODE, season=6, hour=2, readings=[signed], node_pubkey=None
+            )
+        ],
+        season_pubkey=PUB,
+        existing_values={schema.node_key(NODE): "abcd"},  # card present
+    )
+    assert len(plan.hours) == 1
+
+
 def test_plan_idempotent_meta_when_unchanged():
     meta = schema.build_meta(
         writer_version=publish.WRITER_VERSION,

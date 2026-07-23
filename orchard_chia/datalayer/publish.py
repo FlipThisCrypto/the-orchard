@@ -159,6 +159,16 @@ def plan_publish(
                 f"{node_id}:{season}:{hour}: readings key already on chain (append-only)"
             )
             continue
+        # A reading is unverifiable without the node's pubkey on chain. Only
+        # publish if we're writing the node: card now (pubkey in this batch) or
+        # one already exists in the store — else we'd persist data no one can
+        # verify (the tenet). This is the first hour a pubkey-less node hits.
+        if not batch.node_pubkey and existing.get(schema.node_key(node_id)) is None:
+            plan.skipped.append(
+                f"{node_id}:{season}:{hour}: no device pubkey on chain — "
+                f"readings would be unverifiable"
+            )
+            continue
         plan.changelist.append({"action": "insert", "key": rk, "value": rv})
 
         ordered = schema._sorted_readings(signed)
