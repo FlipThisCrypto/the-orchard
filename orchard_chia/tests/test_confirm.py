@@ -73,4 +73,5 @@ def test_confirm_catches_tail_failure_with_small_sample():
     inserts = [(str(i), str(i)) for i in range(100)]
     r = confirm.confirm_inserts(Fake(), "s", inserts, max_checks=8)
     assert not r.ok
-    assert "99" in r.missing
+    # Exactly the final insert is missing; a prefix-only sample would report ok.
+    assert len(r.missing) == 1
