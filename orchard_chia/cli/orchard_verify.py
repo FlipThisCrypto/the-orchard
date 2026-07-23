@@ -38,7 +38,11 @@ def _print_report(
 ) -> None:
     if as_json:
         import json
-        print(json.dumps(rep.as_dict(), indent=2, sort_keys=True))
+        d = rep.as_dict()
+        # Expose the tri-state verdict so automation can tell CANNOT-VERIFY
+        # (retry) from INVALID (fraud); `valid` alone collapses both to false.
+        d["result"] = result_label or ("VALID" if rep.valid else "INVALID")
+        print(json.dumps(d, indent=2, sort_keys=True))
         return
     ok, fail = _marks()
     print("Orchard Verify\n")
