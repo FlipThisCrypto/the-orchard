@@ -198,14 +198,42 @@ class DataLayerRpc:
         return val
 
     def get_keys(self, store_id: str) -> list[str]:
-        """All keys in the store, hex-encoded. Used by the payout
-        reader to discover every attestation that's been published."""
-        body = {"id": store_id}
+        """All keys in the store, hex-encoded, across every page.
+
+        DataLayer caps a single ``get_keys`` response at ``max_page_size``
+        (default 40 MB). For a large store an un-paginated read silently
+        truncates — which would make the payout reader miss ``attest:`` keys
+        (operators underpaid) and the verifier miss reading hours. So page
+        explicitly: fetch page 1, then follow ``total_pages`` to the end,
+        concatenating (CHIA_DATALAYER_RPC.md §2).
+
+        Backward-safe: a node that returns no ``total_pages`` held everything in
+        one response, so we stop after page 1; a node that rejects the ``page``
+        param falls back to an un-paginated read. Soft-fails to ``[]`` only when
+        the store is unreachable on the first read (used by scanners). A failure
+        *partway through* pagination raises rather than returning a truncated set.
+        """
         try:
-            data = self._post("get_keys", body)
+            first = self._post("get_keys", {"id": store_id, "page": 1})
         except ChiaRpcError:
-            return []
-        return data.get("keys", [])
+            # Node may reject the page param (or be unreachable) — try plain.
+            try:
+                data = self._post("get_keys", {"id": store_id})
+            except ChiaRpcError:
+                return []
+            return list(data.get("keys", []))
+
+        keys = list(first.get("keys", []))
+        try:
+            total = int(first.get("total_pages"))
+        except (TypeError, ValueError):
+            return keys  # no pagination info — one response held everything
+        for page in range(2, total + 1):
+            # Do NOT swallow errors here: a mid-pagination failure must not look
+            # like a complete (but truncated) key set.
+            data = self._post("get_keys", {"id": store_id, "page": page})
+            keys.extend(data.get("keys", []))
+        return keys
 
     def get_root(self, store_id: str) -> dict:
         """Current on-chain root hash + confirmed status for a store.
