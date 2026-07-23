@@ -101,6 +101,31 @@ def test_changed_merkle_proof_fails():
     assert "Reading Merkle proof verified" in _failed_names(rep)
 
 
+def test_partial_bundle_skips_season_checks():
+    # A single-hour slice: season root/verified-hours/score can't recompute from
+    # one hour, so a full-season verify would fail check 4. Partial mode skips
+    # those and still verifies the present hour.
+    b = _bundle()
+    names_full = {c.name for c in verify.verify_bundle(**b).checks}
+    rep_partial = verify.verify_bundle(**b, expect_full_season=False)
+    names_partial = {c.name for c in rep_partial.checks}
+    assert "Season root verified" in names_full
+    assert "Season root verified" not in names_partial
+    assert "Verified hours recomputed" not in names_partial
+    assert "Season score recomputed" not in names_partial
+    # The per-hour checks still run and pass on good data.
+    assert rep_partial.valid is True
+    assert "Reading Merkle proof verified" in names_partial
+
+
+def test_partial_bundle_still_catches_tampered_reading():
+    b = _bundle()
+    b["readings_records"][0]["readings"][0]["metrics"]["temperature_mc"] = 99999
+    rep = verify.verify_bundle(**b, expect_full_season=False)
+    assert rep.valid is False
+    assert "Device signature verified" in _failed_names(rep)
+
+
 def test_merkle_proof_covers_every_reading():
     b = _bundle()
     n = len(b["readings_records"][0]["readings"])

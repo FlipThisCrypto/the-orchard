@@ -132,11 +132,18 @@ def verify_reading_in_hour(
 
 
 def verify_bundle(
-    *, meta: dict, node: dict, attest: dict, readings_records: list[dict]
+    *, meta: dict, node: dict, attest: dict, readings_records: list[dict],
+    expect_full_season: bool = True,
 ) -> Report:
-    """Run the seven checks (SPEC §7) over a bundle. Never raises on bad data —
-    a failure is a failed Check, so tampering shows up as ``INVALID`` rather than
-    a crash."""
+    """Run the checks (SPEC §7) over a bundle. Never raises on bad data — a
+    failure is a failed Check, so tampering shows up as ``INVALID`` rather than a
+    crash.
+
+    ``expect_full_season=False`` marks the bundle as a KNOWN partial slice (e.g.
+    a single hour). The season-level checks — season root, verified hours,
+    season score — need every hour to recompute, so they are skipped rather than
+    reported as failures; the per-hour and signature checks still run. The caller
+    should label the result as partial (it is not a full-season VALID)."""
     node = node or {}
     attest = attest or {}
     node_pub = node.get("pubkey", "")
@@ -289,28 +296,32 @@ def verify_bundle(
         if not hr_bad else f"mismatch at hour(s) {hr_bad}",
     ))
 
-    # 4. Season root — recompute from the present hours; must equal attest.
-    recomputed_sr = schema.season_root({h: schema.hour_root(by_hour[h]) for h in by_hour})
-    sr_ok = recomputed_sr == attest.get("season_root") == attest.get("data_hash")
-    checks.append(Check(
-        "Season root verified", sr_ok,
-        f"{recomputed_sr[:16]}… over hour(s) {hours}"
-        if sr_ok else "season root mismatch (tampered, or a partial bundle)",
-    ))
+    # 4-6. Season-level checks need EVERY hour to recompute, so they only run
+    # for a full-season bundle. For a known partial slice they are skipped (not
+    # failed) — see expect_full_season.
+    if expect_full_season:
+        # 4. Season root — recompute from the present hours; must equal attest.
+        recomputed_sr = schema.season_root({h: schema.hour_root(by_hour[h]) for h in by_hour})
+        sr_ok = recomputed_sr == attest.get("season_root") == attest.get("data_hash")
+        checks.append(Check(
+            "Season root verified", sr_ok,
+            f"{recomputed_sr[:16]}… over hour(s) {hours}"
+            if sr_ok else "season root mismatch (tampered, or a partial bundle)",
+        ))
 
-    # 5. Verified hours — recompute from public signed readings.
-    vh = schema.verified_hours(by_hour, node_pub)
-    checks.append(Check(
-        "Verified hours recomputed", vh == attest.get("verified_hours"),
-        f"recomputed={vh} claimed={attest.get('verified_hours')}",
-    ))
+        # 5. Verified hours — recompute from public signed readings.
+        vh = schema.verified_hours(by_hour, node_pub)
+        checks.append(Check(
+            "Verified hours recomputed", vh == attest.get("verified_hours"),
+            f"recomputed={vh} claimed={attest.get('verified_hours')}",
+        ))
 
-    # 6. Season score — the verifiable reward metric.
-    ss = schema.season_score(vh)
-    checks.append(Check(
-        "Season score recomputed", ss == attest.get("season_score"),
-        f"recomputed={ss} claimed={attest.get('season_score')}",
-    ))
+        # 6. Season score — the verifiable reward metric.
+        ss = schema.season_score(vh)
+        checks.append(Check(
+            "Season score recomputed", ss == attest.get("season_score"),
+            f"recomputed={ss} claimed={attest.get('season_score')}",
+        ))
 
     # 7. Oracle season signature — against the pubkey published in meta.
     if not oracle_pub:

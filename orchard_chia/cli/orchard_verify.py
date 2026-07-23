@@ -187,7 +187,10 @@ def cmd_live(args: argparse.Namespace) -> int:
         f"season={season_n} hours="
         f"{hours if hours is not None else 'auto'}"
     )
-    rep = verify.verify_bundle(**bundle)
+    # A single --hour is a KNOWN partial slice: the season-level checks can't be
+    # recomputed from one hour, so skip them rather than misreport tampering.
+    partial = args.hour is not None
+    rep = verify.verify_bundle(**bundle, expect_full_season=not partial)
 
     # SPEC §7.1 — DataLayer inclusion / permanence (RPC-level). Prove and
     # value-bind every key the verdict trusts: meta (oracle pubkey), node
@@ -206,7 +209,10 @@ def cmd_live(args: argparse.Namespace) -> int:
     )
 
     code = _live_exit_code(rep, incl)
-    label = {0: "VALID", 1: "INVALID", 2: "CANNOT-VERIFY"}[code]
+    base = {0: "VALID", 1: "INVALID", 2: "CANNOT-VERIFY"}[code]
+    # Never claim a bare "VALID" for a partial slice — it verified only the
+    # present hour, not the whole season.
+    label = f"{base} (partial: hour {args.hour:02d})" if partial else base
     _print_report(rep, as_json=bool(getattr(args, "json", False)), result_label=label)
     return code
 
