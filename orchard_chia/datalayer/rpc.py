@@ -199,8 +199,13 @@ class DataLayerRpc:
 
         ``keys`` are hex-encoded DataLayer keys (same form as batch_update).
         Used by orchard-verify live for SPEC §7 permanence/inclusion.
+
+        NOTE: this is the one DataLayer endpoint whose store-ID parameter is
+        named ``store_id`` rather than ``id`` — every other endpoint here uses
+        ``id``. Sending ``id`` makes a real node ignore the store and the call
+        fails. See docs/datalayer/reference/CHIA_DATALAYER_RPC.md §4.
         """
         return self._post(
             "get_proof",
-            {"id": store_id, "keys": list(keys_hex)},
+            {"store_id": store_id, "keys": list(keys_hex)},
         )
