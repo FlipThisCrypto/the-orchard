@@ -30,12 +30,19 @@ CREATE INDEX IF NOT EXISTS idx_published_node_season
 """
 
 
+DEFAULT_BUSY_TIMEOUT_MS = 5000
+
+
 class PublishWatermark:
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path)
         self._conn.row_factory = sqlite3.Row
+        # Wait for a held lock rather than crashing with "database is locked"
+        # when an overlapping publisher run (cron firing while a slow run is
+        # still going) touches the same file.
+        self._conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
         self._conn.executescript(SCHEMA)
         self._conn.commit()
 
