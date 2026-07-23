@@ -39,6 +39,7 @@ class OpsRun:
     fields: dict[str, Any] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     _path: Path | None = field(default=None, repr=False)
+    _finished: bool = field(default=False, repr=False)
 
     def note(self, event: str, **kwargs: Any) -> None:
         """Append a mid-run event (also written immediately for crash safety)."""
@@ -54,6 +55,7 @@ class OpsRun:
 
     def finish(self, status: str, **kwargs: Any) -> None:
         """Terminal event: status is ok | error | dry_run | noop."""
+        self._finished = True
         duration_ms = int((time.monotonic() - self.t0) * 1000)
         row = {
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -140,3 +142,8 @@ def ops_run(job: str, **fields: Any) -> Iterator[OpsRun]:
     except Exception as e:
         run.finish("error", error=type(e).__name__, error_msg=str(e)[:200])
         raise
+    else:
+        # Clean exit but the caller never finalized — write a terminal event so
+        # the journal never has an orphan 'start' that looks like a crash.
+        if not run._finished:
+            run.finish("incomplete")

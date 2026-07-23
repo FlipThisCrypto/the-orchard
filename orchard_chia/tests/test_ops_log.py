@@ -45,6 +45,34 @@ def test_ops_run_records_error_on_exception(tmp_path: Path, monkeypatch):
     assert lines[-1]["error"] == "RuntimeError"
 
 
+def test_ops_run_auto_finishes_when_caller_forgets(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ORCHARD_OPS_LOG_DIR", str(tmp_path))
+    with ops_log.ops_run("publish", trees=1) as run:
+        run.note("mid")
+        # caller never calls run.finish()
+
+    lines = [
+        json.loads(x)
+        for x in (tmp_path / "publish.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert lines[-1]["event"] == "finish"
+    assert lines[-1]["status"] == "incomplete"
+
+
+def test_ops_run_does_not_double_finish(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ORCHARD_OPS_LOG_DIR", str(tmp_path))
+    with ops_log.ops_run("publish") as run:
+        run.finish("ok")
+
+    lines = [
+        json.loads(x)
+        for x in (tmp_path / "publish.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    finishes = [ln for ln in lines if ln["event"] == "finish"]
+    assert len(finishes) == 1
+    assert finishes[0]["status"] == "ok"
+
+
 def test_ops_log_strips_long_hex_secrets(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ORCHARD_OPS_LOG_DIR", str(tmp_path))
     secret = "ab" * 32
