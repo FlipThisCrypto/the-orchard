@@ -34,7 +34,11 @@ def _marks() -> tuple[str, str]:
 
 
 def _print_report(
-    rep: verify.Report, *, as_json: bool = False, result_label: str | None = None
+    rep: verify.Report,
+    *,
+    as_json: bool = False,
+    result_label: str | None = None,
+    badge: str | None = None,
 ) -> None:
     if as_json:
         import json
@@ -42,6 +46,8 @@ def _print_report(
         # Expose the tri-state verdict so automation can tell CANNOT-VERIFY
         # (retry) from INVALID (fraud); `valid` alone collapses both to false.
         d["result"] = result_label or ("VALID" if rep.valid else "INVALID")
+        if badge is not None:
+            d["badge"] = badge  # SPEC §8 public badge
         print(json.dumps(d, indent=2, sort_keys=True))
         return
     ok, fail = _marks()
@@ -60,6 +66,8 @@ def _print_report(
     print()
     label = result_label or ("VALID" if rep.valid else "INVALID")
     print(f"Result: {label}")
+    if badge is not None:
+        print(f"Badge:  {badge}")
 
 
 INCLUSION_CHECK_NAME = "DataLayer inclusion proof"
@@ -129,7 +137,8 @@ def cmd_vectors(args: argparse.Namespace) -> int:
         print(f"error: malformed vectors file: {e}", file=sys.stderr)
         return 2
     rep = verify.verify_bundle(**bundle)
-    _print_report(rep, as_json=bool(getattr(args, "json", False)))
+    badge = verify.verification_badge(rep, sealed=True)
+    _print_report(rep, as_json=bool(getattr(args, "json", False)), badge=badge)
     return 0 if rep.valid else 1
 
 
@@ -213,7 +222,15 @@ def cmd_live(args: argparse.Namespace) -> int:
     # Never claim a bare "VALID" for a partial slice — it verified only the
     # present hour, not the whole season.
     label = f"{base} (partial: hour {args.hour:02d})" if partial else base
-    _print_report(rep, as_json=bool(getattr(args, "json", False)), result_label=label)
+    # SPEC §8 badge: 'Live' for a healthy partial/in-progress slice, 'Verified'
+    # for a full-season pass, 'Unverified' when inclusion was cannot-verify.
+    badge = verify.verification_badge(
+        rep, sealed=not partial, unverifiable=(code == 2)
+    )
+    _print_report(
+        rep, as_json=bool(getattr(args, "json", False)),
+        result_label=label, badge=badge,
+    )
     return code
 
 

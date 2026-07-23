@@ -11,6 +11,7 @@ def test_cli_vectors_json(capsys):
     assert rc == 0
     assert '"valid": true' in out or '"valid":true' in out
     assert '"result": "VALID"' in out
+    assert '"badge": "Verified"' in out
 
 
 def test_json_result_label_tri_state(capsys):
