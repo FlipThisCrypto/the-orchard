@@ -51,3 +51,26 @@ def test_confirm_empty_ok():
     r = confirm.confirm_inserts(Fake(), "s", [])
     assert r.ok
     assert r.checked == 0
+
+
+def test_spread_sample_includes_first_and_last():
+    inserts = [(str(i), str(i)) for i in range(100)]
+    sample = confirm._spread_sample(inserts, 5)
+    assert len(sample) <= 6  # n plus the forced last
+    assert inserts[0] in sample
+    assert inserts[-1] in sample
+
+
+def test_confirm_catches_tail_failure_with_small_sample():
+    # 100 inserts, but the LAST one never applied. A prefix-only sample of 8
+    # would miss it; the spread sample must catch it.
+    store = {str(i): str(i) for i in range(99)}  # index 99 missing
+
+    class Fake:
+        def get_value(self, store_id, key_hex):
+            return store.get(key_hex)
+
+    inserts = [(str(i), str(i)) for i in range(100)]
+    r = confirm.confirm_inserts(Fake(), "s", inserts, max_checks=8)
+    assert not r.ok
+    assert "99" in r.missing

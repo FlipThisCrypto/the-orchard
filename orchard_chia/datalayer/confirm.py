@@ -72,7 +72,7 @@ def confirm_inserts(
             max_checks = int(os.environ.get('ORCHARD_DL_CONFIRM_MAX', '32') or '32')
         except ValueError:
             max_checks = 32
-    sample = inserts[: max(1, int(max_checks))]
+    sample = _spread_sample(inserts, max(1, int(max_checks)))
     missing: list[str] = []
     mismatched: list[str] = []
 
@@ -100,6 +100,20 @@ def confirm_inserts(
         missing=missing,
         detail=detail,
     )
+
+
+def _spread_sample(inserts: list[tuple[str, str]], n: int) -> list[tuple[str, str]]:
+    """Up to ``n`` inserts spread evenly across the batch (not just the prefix),
+    always including the last one, so a systematic apply-failure in the tail is
+    caught — at the same RPC cost as a prefix sample.
+    """
+    total = len(inserts)
+    if total <= n:
+        return list(inserts)
+    step = total / n
+    idxs = {int(i * step) for i in range(n)}
+    idxs.add(total - 1)  # always check the final insert
+    return [inserts[i] for i in sorted(idxs)]
 
 
 def _key_label(key_hex: str) -> str:
