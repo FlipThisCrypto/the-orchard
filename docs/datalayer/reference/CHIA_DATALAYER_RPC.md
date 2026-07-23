@@ -243,30 +243,25 @@ Where our code touches each endpoint, and the gaps this reference exposes.
 | `get_value` | `rpc.py::get_value` / `get_value_strict` | OK. |
 | `get_keys` | `rpc.py::get_keys` | OK. Does not paginate — fine below the 40 MB page cap; revisit at scale. |
 | `get_root` | `rpc.py::get_root`, `datalayer/inclusion.py` | OK. `hash` is the correct field; the `root_hash`/`root` fallbacks in `inclusion.py` are dead branches (Chia returns `hash`). |
-| `get_proof` | `rpc.py::get_proof`, `inclusion.py::check_inclusion` | **BUGS — see below.** |
-| `verify_proof` | *(none)* | **Missing.** This is the primitive `orchard-verify live` is stubbed on (SPEC §7 check 1 / §12 "wire on-chain `get_proof`"). |
+| `get_proof` | `rpc.py::get_proof`, `inclusion.py::check_inclusion` | OK (param + parsing fixed — see below). |
+| `verify_proof` | `rpc.py::verify_proof`, `inclusion.py::check_inclusion` | OK — inclusion now requires `current_root` (SPEC §7 check 1). |
 
-**Confirmed defects (fix in later iterations, cite this doc):**
+**Defects this reference exposed — all now closed:**
 
-1. **`get_proof` sends the wrong param name.** `rpc.py::get_proof` posts
-   `{"id": store_id, "keys": [...]}`. The endpoint requires **`store_id`**, so the
-   call fails (or the store ID is silently ignored) against a real node.
-2. **`inclusion.py` parses a response shape Chia never returns.**
-   `_count_proven_keys` looks for a top-level `proofs` dict or a `proof` *list* of
-   per-key objects carrying `key`. The real response is
-   `proof.store_proofs.proofs[]`, a *list under a nested object*, and each entry
-   carries `key_clvm_hash` — **not** the plaintext key. Matching therefore needs
-   the CLVM-hash rule (§4): `sha256(0x01 || key_bytes)`. Today the function
-   reaches its "list present but keys not labeled → count all as proven" fallback,
-   i.e. it can report inclusion it never actually checked.
-3. **No `verify_proof` call.** Inclusion is only ever asserted at the RPC-envelope
-   level (`get_root` returned a hash, `get_proof` returned *something*). True
-   inclusion — proof chains to the current published root — requires `verify_proof`
-   and its `current_root` flag. Until wired, the *Verified* badge overstates its
-   guarantee.
+1. ~~**`get_proof` sends the wrong param name.**~~ Was posting `{"id": ...}`; the
+   endpoint requires **`store_id`**. Fixed 2026-07-23 (commit `13622aa`), pinned
+   by `test_rpc_body.py`.
+2. ~~**`inclusion.py` parses a response shape Chia never returns.**~~ The old
+   `_count_proven_keys` guessed at a top-level `proofs` dict / `proof` list and,
+   failing that, counted every key as proven. Rewritten against
+   `proof.store_proofs.proofs[]`, matching keys by CLVM hash `sha256(0x01 ||
+   key_bytes)`; no blanket fallback. Fixed 2026-07-23 (commit `296afa0`).
+3. ~~**No `verify_proof` call.**~~ `check_inclusion` now calls `verify_proof` and
+   requires `current_root == true`; a moved root or unreachable endpoint reports
+   an honest cannot-verify rather than a false *Verified*. Fixed 2026-07-23.
 
-These three are the backbone of turning `orchard-verify live` from a stub into a
-real on-chain check.
+Together these turned `orchard-verify live`'s inclusion step from an RPC-envelope
+gesture into a real on-chain "unchanged under the current root" check.
 
 ---
 

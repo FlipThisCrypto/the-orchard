@@ -209,3 +209,22 @@ class DataLayerRpc:
             "get_proof",
             {"store_id": store_id, "keys": list(keys_hex)},
         )
+
+    def verify_proof(
+        self, coin_id: str, inner_puzzle_hash: str, store_proofs: dict
+    ) -> dict:
+        """Verify a ``get_proof`` result against the current on-chain root.
+
+        Needs only a single root lookup — no store sync or subscription — so a
+        stranger with any full node can run it. The response's ``current_root``
+        (bool) is the meaningful bit: ``True`` ⇒ the proof chains to the
+        currently published root. See docs/datalayer/reference/CHIA_DATALAYER_RPC.md §4.
+        """
+        return self._post(
+            "verify_proof",
+            {
+                "coin_id": coin_id,
+                "inner_puzzle_hash": inner_puzzle_hash,
+                "store_proofs": store_proofs,
+            },
+        )

@@ -37,6 +37,26 @@ class InclusionReport:
     root_hash: str | None = None
     confirmed: bool | None = None
     keys_proven: int = 0
+    current_root: bool | None = None
+
+
+def proof_envelope(proof_resp: dict[str, Any]) -> dict | None:
+    """The ``coin_id`` / ``inner_puzzle_hash`` / ``store_proofs`` a ``get_proof``
+    response carries — exactly the arguments ``verify_proof`` needs. Returns
+    ``None`` if any are missing (an unusable proof)."""
+    proof = proof_resp.get("proof")
+    if not isinstance(proof, dict):
+        return None
+    coin_id = proof.get("coin_id")
+    iph = proof.get("inner_puzzle_hash")
+    store_proofs = proof.get("store_proofs")
+    if coin_id is None or iph is None or store_proofs is None:
+        return None
+    return {
+        "coin_id": coin_id,
+        "inner_puzzle_hash": iph,
+        "store_proofs": store_proofs,
+    }
 
 
 def check_inclusion(
@@ -96,15 +116,58 @@ def check_inclusion(
             confirmed=conf,
             keys_proven=proven,
         )
+
+    # Keys are covered — now prove the proof chains to the CURRENT on-chain root.
+    # get_root returning a hash is not enough; only verify_proof's current_root
+    # attests the data is under the published root right now (SPEC §7 check 1).
+    env = proof_envelope(proof_resp)
+    if env is None:
+        return InclusionReport(
+            ok=False,
+            detail="proof missing coin_id/inner_puzzle_hash/store_proofs; "
+                   "cannot call verify_proof",
+            root_hash=root_s,
+            confirmed=conf,
+            keys_proven=proven,
+        )
+    try:
+        vp = rpc.verify_proof(
+            env["coin_id"], env["inner_puzzle_hash"], env["store_proofs"]
+        )
+    except ChiaRpcError as e:
+        return InclusionReport(
+            ok=False,
+            detail=f"verify_proof failed: {e}",
+            root_hash=root_s,
+            confirmed=conf,
+            keys_proven=proven,
+        )
+
+    current_root = bool(vp.get("current_root"))
+    if not current_root:
+        # Proof was valid when generated but the root has since moved — we
+        # cannot assert present inclusion. Honest 'cannot-verify-now'.
+        return InclusionReport(
+            ok=False,
+            detail=(
+                f"{proven} key(s) proven but root moved since proof "
+                f"(current_root=false); re-fetch to confirm"
+            ),
+            root_hash=root_s,
+            confirmed=conf,
+            keys_proven=proven,
+            current_root=False,
+        )
     return InclusionReport(
         ok=True,
         detail=(
-            f"{proven} key(s) under root {root_s[:16]}… "
+            f"{proven} key(s) verified against current root {root_s[:16]}… "
             f"confirmed={conf}"
         ),
         root_hash=root_s,
         confirmed=conf,
         keys_proven=proven,
+        current_root=True,
     )
 
 
