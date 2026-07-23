@@ -61,6 +61,10 @@ Uses published hour roots when present; otherwise uptime placeholder. Journal: `
 ```powershell
 python -m orchard_chia.cli.orchard_verify vectors orchard_chia/datalayer/testdata/vectors.json
 python -m orchard_chia.cli.orchard_verify live --node-id <ID> --season <N>
+# single hour (partial: season-level checks are skipped, result labelled partial):
+python -m orchard_chia.cli.orchard_verify live --node-id <ID> --season <N> --hour <0-23>
+# one reading by its device timestamp (SPEC §8 per-reading verify):
+python -m orchard_chia.cli.orchard_verify reading --node-id <ID> --season <N> --hour <H> --ts-ms <T>
 ```
 
 **Exit codes (both modes):**
@@ -75,6 +79,12 @@ python -m orchard_chia.cli.orchard_verify live --node-id <ID> --season <N>
 `readings`) against a **confirmed** store root via `get_proof` + `verify_proof`
 (`current_root`). The anti-backdate anchor is checked for presence/format;
 the on-chain anchor→block lookup is still a deferred live step.
+
+`live --hour <H>` verifies a single hour: the season-level checks (season root,
+verified hours, score) need every hour, so they are **skipped**, and the result
+is labelled `(partial: hour NN)` — a partial slice never reports a bare VALID.
+`reading` verifies one datum: device signature, Merkle membership in its hour
+tree, and hour-root recompute (exit 0/1/2 as above).
 
 ## Honesty check
 
