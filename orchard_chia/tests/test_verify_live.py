@@ -124,6 +124,30 @@ def test_cmd_live_happy_path_valid(monkeypatch, capsys):
     assert "Result: VALID" in out
 
 
+def test_cmd_reading_verifies_with_inclusion(monkeypatch, capsys):
+    _wire(monkeypatch, _store())
+    rc = cli.main([
+        "reading", "--node-id", NODE, "--season", "5", "--hour", "13",
+        "--ts-ms", "1749480000123",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "On-chain inclusion" in out
+    assert "Result: VALID" in out
+
+
+def test_cmd_reading_tampered_mirror_fails(monkeypatch, capsys):
+    # Reading verifies locally but the proof commits a different value for the
+    # readings key → inclusion value-bind fails → INVALID.
+    _wire(monkeypatch, _store(), bad_value_keys={schema.readings_key(NODE, 5, 13)})
+    rc = cli.main([
+        "reading", "--node-id", NODE, "--season", "5", "--hour", "13",
+        "--ts-ms", "1749480000123",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+
+
 def test_cmd_live_tampered_mirror_value_bind_fails(monkeypatch, capsys):
     # Offline data reads valid, but the proof commits to a different value hash
     # for the readings key (tampered/stale mirror). Inclusion value-bind must

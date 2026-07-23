@@ -236,27 +236,36 @@ def cmd_live(args: argparse.Namespace) -> int:
 
 def _fetch_and_verify_reading(
     rpc, store_id: str, node_id: str, season: int, hour: int, ts_ms: int
-) -> tuple[verify.ReadingCheck | None, str | None]:
+) -> tuple[verify.ReadingCheck | None, str | None, dict]:
     """Fetch the node pubkey + hour record and verify one reading by ts_ms.
 
-    Returns (ReadingCheck, None) on success or (None, error) if the node/hour/
-    reading can't be found. Pure over the RPC interface (testable with a fake).
+    Returns (ReadingCheck, None, ctx) on success or (None, error, {}) if the
+    node/hour/reading can't be found. ``ctx`` carries the fetched node and
+    readings records + their canonical value hexes so the caller can prove
+    on-chain inclusion. Pure over the RPC interface (testable with a fake).
     """
     node = schema.parse_value(rpc.get_value(store_id, schema.node_key(node_id)))
     if not node:
-        return None, f"node:{node_id} not found in store"
+        return None, f"node:{node_id} not found in store", {}
     rec = schema.parse_value(
         rpc.get_value(store_id, schema.readings_key(node_id, season, hour))
     )
     if not rec:
-        return None, f"readings hour {hour:02d} not found for season {season}"
+        return None, f"readings hour {hour:02d} not found for season {season}", {}
     match = next(
         (r for r in rec.get("readings", []) if int(r.get("ts_ms", -1)) == int(ts_ms)),
         None,
     )
     if match is None:
-        return None, f"no reading with ts_ms={ts_ms} in hour {hour:02d}"
-    return verify.verify_reading_in_hour(match, node.get("pubkey", ""), rec), None
+        return None, f"no reading with ts_ms={ts_ms} in hour {hour:02d}", {}
+    check = verify.verify_reading_in_hour(match, node.get("pubkey", ""), rec)
+    ctx = {
+        "proof_pairs": {
+            schema.node_key(node_id): schema.value_hex(node),
+            schema.readings_key(node_id, season, hour): schema.value_hex(rec),
+        }
+    }
+    return check, None, ctx
 
 
 def cmd_reading(args: argparse.Namespace) -> int:
@@ -285,9 +294,15 @@ def cmd_reading(args: argparse.Namespace) -> int:
         cfg.data_layer.cert_path, cfg.data_layer.key_path,
     )
     try:
-        check, err = _fetch_and_verify_reading(
+        check, err, ctx = _fetch_and_verify_reading(
             rpc, store_id, args.node_id, season_n, hour_n, int(args.ts_ms)
         )
+        # Prove the fetched data is on chain (confirmed root + value-bound),
+        # so the verdict doesn't merely trust the RPC's get_value.
+        incl = inclusion.check_inclusion(
+            rpc, store_id, list(ctx["proof_pairs"]),
+            expected_values=ctx["proof_pairs"],
+        ) if ctx else None
     except ChiaRpcError as e:
         print(f"error: DataLayer RPC failed: {e}", file=sys.stderr)
         return 2
@@ -295,16 +310,32 @@ def cmd_reading(args: argparse.Namespace) -> int:
         print(f"error: {err}", file=sys.stderr)
         return 2
 
+    incl_ok = bool(incl and incl.ok)
+    local_ok = check.ok
+    # A cannot-verify inclusion (RPC/unconfirmed/stale) is exit 2; a value
+    # mismatch (tampering) or a failed local check is exit 1.
+    if local_ok and incl_ok:
+        code, result = 0, "VALID"
+    elif incl is not None and incl.cannot_verify and local_ok:
+        code, result = 2, "CANNOT-VERIFY"
+    else:
+        code, result = 1, "INVALID"
+
     if bool(getattr(args, "json", False)):
-        print(json.dumps(check.as_dict(), indent=2, sort_keys=True))
+        out = check.as_dict()
+        out["inclusion_ok"] = incl_ok
+        out["inclusion_detail"] = incl.detail if incl else "not checked"
+        out["result"] = result
+        print(json.dumps(out, indent=2, sort_keys=True))
     else:
         ok, fail = _marks()
         print("Orchard Verify — single reading\n")
         print(f"{ok if check.signature_ok else fail} Device signature")
         print(f"{ok if check.in_hour_tree else fail} Merkle membership in hour tree")
         print(f"{ok if check.hour_root_ok else fail} Hour root matches recompute")
-        print(f"\nResult: {'VALID' if check.ok else 'INVALID'}")
-    return 0 if check.ok else 1
+        print(f"{ok if incl_ok else fail} On-chain inclusion  ({incl.detail if incl else 'n/a'})")
+        print(f"\nResult: {result}")
+    return code
 
 
 def build_parser() -> argparse.ArgumentParser:

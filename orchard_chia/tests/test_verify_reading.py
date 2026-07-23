@@ -93,23 +93,27 @@ def _live_store():
 def test_cli_fetch_and_verify_reading_ok():
     from orchard_chia.cli.orchard_verify import _fetch_and_verify_reading
     store, r0 = _live_store()
-    check, err = _fetch_and_verify_reading(_FakeRpc(store), "s", NODE, 5, 13, 1000)
+    check, err, ctx = _fetch_and_verify_reading(_FakeRpc(store), "s", NODE, 5, 13, 1000)
     assert err is None
     assert check.ok is True
+    # ctx carries the value-bind pairs for the on-chain inclusion step.
+    assert schema.node_key(NODE) in ctx["proof_pairs"]
+    assert schema.readings_key(NODE, 5, 13) in ctx["proof_pairs"]
 
 
 def test_cli_fetch_ts_not_found():
     from orchard_chia.cli.orchard_verify import _fetch_and_verify_reading
     store, _ = _live_store()
-    check, err = _fetch_and_verify_reading(_FakeRpc(store), "s", NODE, 5, 13, 999999)
+    check, err, ctx = _fetch_and_verify_reading(_FakeRpc(store), "s", NODE, 5, 13, 999999)
     assert check is None
     assert "ts_ms" in err
+    assert ctx == {}
 
 
 def test_cli_fetch_missing_node():
     from orchard_chia.cli.orchard_verify import _fetch_and_verify_reading
     store, _ = _live_store()
     del store[schema.node_key(NODE)]
-    check, err = _fetch_and_verify_reading(_FakeRpc(store), "s", NODE, 5, 13, 1000)
+    check, err, ctx = _fetch_and_verify_reading(_FakeRpc(store), "s", NODE, 5, 13, 1000)
     assert check is None
     assert "node" in err
