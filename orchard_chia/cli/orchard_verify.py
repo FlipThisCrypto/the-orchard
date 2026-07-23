@@ -72,11 +72,17 @@ def _print_report(
 
 INCLUSION_CHECK_NAME = "DataLayer inclusion proof"
 
-# Offline checks whose failure means "we can't verify this store" rather than
-# "the data is fraudulent" — a store on a schema major / signer scheme this
-# verifier doesn't implement. Everything else offline is a definitive
+# Offline checks whose failure means "we can't verify this store/dimension"
+# rather than "the data is fraudulent". Everything else offline is a definitive
 # contradiction (bad sig / Merkle / roots / score / consistency).
-_CANNOT_VERIFY_OFFLINE_CHECKS = frozenset({"Schema and signer scheme supported"})
+#   - schema/scheme: a schema major / signer scheme this verifier can't speak.
+#   - anti-backdate anchor: an unanchored (placeholder) reading — current
+#     firmware doesn't yet fetch /beacon, so the anti-backdate dimension simply
+#     can't be established; that is not fraud, so don't flag it as INVALID.
+_CANNOT_VERIFY_OFFLINE_CHECKS = frozenset({
+    "Schema and signer scheme supported",
+    "Anti-backdate anchor present",
+})
 
 
 def _live_exit_code(rep: verify.Report, incl: inclusion.InclusionReport) -> int:

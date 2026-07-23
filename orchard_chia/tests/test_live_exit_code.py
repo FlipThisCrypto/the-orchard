@@ -62,6 +62,21 @@ def test_unsupported_scheme_is_cannot_verify():
     assert cli._live_exit_code(rep, incl) == 2
 
 
+def test_unanchored_reading_is_cannot_verify():
+    # Current firmware sends placeholder anchors; an unanchored reading is
+    # cannot-verify (anti-backdate can't be established), not fraud.
+    rep = verify.Report(
+        node_id="N", season=1,
+        checks=[
+            verify.Check(cli.INCLUSION_CHECK_NAME, True, ""),
+            verify.Check("Anti-backdate anchor present", False, "placeholder"),
+            verify.Check("Device signature verified", True, ""),
+        ],
+    )
+    incl = InclusionReport(ok=True, detail="ok")
+    assert cli._live_exit_code(rep, incl) == 2
+
+
 def test_tampering_with_unsupported_scheme_still_invalid():
     # A definitive offline failure alongside the scheme one → INVALID wins.
     rep = verify.Report(

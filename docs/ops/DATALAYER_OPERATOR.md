@@ -73,7 +73,7 @@ python -m orchard_chia.cli.orchard_verify reading --node-id <ID> --season <N> --
 |------|---------|-----------------|
 | `0` | VALID — every check passed | none |
 | `1` | INVALID — a definitive contradiction (bad signature/Merkle/score/oracle-sig, or an on-chain value that differs from the record) | investigate tampering |
-| `2` | CANNOT-VERIFY — transient/unprovable (RPC down, store root not yet **confirmed**, key not published yet, proof stale) | retry later; **not** fraud |
+| `2` | CANNOT-VERIFY — transient/unprovable (RPC down, store root not yet **confirmed**, key not published yet, proof stale, an unsupported schema/scheme, or an **unanchored** reading — current firmware sends placeholder `block_anchor`) | retry later; **not** fraud |
 
 `live` proves + value-binds every verdict-bearing key (`meta`/`node`/`attest`/
 `readings`) against a **confirmed** store root via `get_proof` + `verify_proof`
