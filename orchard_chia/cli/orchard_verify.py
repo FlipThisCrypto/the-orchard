@@ -72,25 +72,40 @@ def _print_report(
 
 INCLUSION_CHECK_NAME = "DataLayer inclusion proof"
 
+# Offline checks whose failure means "we can't verify this store" rather than
+# "the data is fraudulent" — a store on a schema major / signer scheme this
+# verifier doesn't implement. Everything else offline is a definitive
+# contradiction (bad sig / Merkle / roots / score / consistency).
+_CANNOT_VERIFY_OFFLINE_CHECKS = frozenset({"Schema and signer scheme supported"})
+
 
 def _live_exit_code(rep: verify.Report, incl: inclusion.InclusionReport) -> int:
     """Map a live verification to an exit code, distinguishing cannot-verify.
 
     0 VALID, 1 INVALID (a definitive contradiction — tampering), 2 CANNOT
     (transient/unprovable: RPC down, root not yet confirmed, key not published,
-    proof stale). Only collapse to INVALID when something is *definitively*
-    wrong: an offline check failed (bad signature / Merkle / score / oracle sig
-    / anchor), or the inclusion failure was a value mismatch (cannot_verify
-    False). An inclusion that merely couldn't be established is exit 2.
+    proof stale, or an unsupported schema/scheme). Collapse to INVALID only when
+    something is *definitively* wrong: a definitive offline check failed, or the
+    inclusion failure was a value mismatch (cannot_verify False).
     """
     if rep.valid:
         return 0
-    offline_bad = any(
-        not c.ok for c in rep.checks if c.name != INCLUSION_CHECK_NAME
+    definitive_offline = any(
+        not c.ok
+        for c in rep.checks
+        if c.name != INCLUSION_CHECK_NAME
+        and c.name not in _CANNOT_VERIFY_OFFLINE_CHECKS
     )
-    if not offline_bad and incl.cannot_verify:
-        return 2
-    return 1
+    if definitive_offline:
+        return 1
+    # Remaining failures are cannot-verify offline checks and/or the inclusion
+    # check. A value-mismatch inclusion is tampering; anything else is retry.
+    incl_failed = any(
+        not c.ok for c in rep.checks if c.name == INCLUSION_CHECK_NAME
+    )
+    if incl_failed and not incl.cannot_verify:
+        return 1
+    return 2
 
 
 def _bundle_proof_pairs(bundle: dict, node_id: str, season: int) -> dict[str, str]:

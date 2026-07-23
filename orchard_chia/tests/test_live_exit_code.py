@@ -46,3 +46,31 @@ def test_unconfirmed_root_is_cannot_verify():
         ok=False, detail="root not confirmed", confirmed=False, cannot_verify=True
     )
     assert cli._live_exit_code(rep, incl) == 2
+
+
+def test_unsupported_scheme_is_cannot_verify():
+    # The only failing offline check is the schema/scheme one, inclusion ok.
+    rep = verify.Report(
+        node_id="N", season=1,
+        checks=[
+            verify.Check(cli.INCLUSION_CHECK_NAME, True, ""),
+            verify.Check("Schema and signer scheme supported", False, "ed25519"),
+            verify.Check("Device signature verified", True, ""),
+        ],
+    )
+    incl = InclusionReport(ok=True, detail="ok")
+    assert cli._live_exit_code(rep, incl) == 2
+
+
+def test_tampering_with_unsupported_scheme_still_invalid():
+    # A definitive offline failure alongside the scheme one → INVALID wins.
+    rep = verify.Report(
+        node_id="N", season=1,
+        checks=[
+            verify.Check(cli.INCLUSION_CHECK_NAME, True, ""),
+            verify.Check("Schema and signer scheme supported", False, ""),
+            verify.Check("Device signature verified", False, "bad sig"),
+        ],
+    )
+    incl = InclusionReport(ok=True, detail="ok")
+    assert cli._live_exit_code(rep, incl) == 1
