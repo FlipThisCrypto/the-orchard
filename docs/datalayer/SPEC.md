@@ -503,13 +503,30 @@ not dropped) · **block anchor = oracle `/beacon`** for v1, direct RPC later.
       (`orchard_chia/datalayer/verify.py` + `orchard_chia/cli/orchard_verify.py`,
       `test_verify_cli.py`). `vectors` runs all 7 checks on the golden bundle →
       VALID; tampering → INVALID; `live` is an interface-frozen stub.
-- [ ] `orchard-verify live` — wire on-chain `get_proof` (inclusion) + block-anchor
-      lookup (the two checks offline mode can't do).
+- [x] `orchard-verify live` — inclusion wired: `get_root` must be **confirmed**,
+      `get_proof` covers every verdict-bearing key (`meta`/`node`/`attest`/
+      `readings`), `verify_proof` requires `current_root`, and each key is
+      value-bound via `value_clvm_hash` (`datalayer/inclusion.py`). Exit codes
+      distinguish INVALID (1) from cannot-verify (2). Partial `--hour` slices
+      skip season-level checks. Per-reading `orchard-verify reading` (SPEC §8).
+- [x] Anti-backdate check — offline **presence/format** of `block_anchor`
+      (`verify.py`); chain-lookup **kernel** built (`datalayer/block_anchor.py` +
+      full-node block RPCs). *Deferred:* the live anchor→block orchestration
+      (needs a synced node + `/beacon` + firmware anchors).
 - [ ] Firmware: secp256r1 keygen in NVS, sign each reading, `HW_INFO` exports
       pubkey, fetch `/beacon` for `block_anchor`.
 - [ ] Oracle: store device pubkey at registration; `/beacon` endpoint; persist
       per-reading `sig` + `block_anchor`.
-- [ ] Writer: hot path + watermark wiring into `orchard_chia/datalayer/main.py`.
-- [ ] `orchard-verify` CLI (the five §7 checks).
-- [ ] Orchard Atlas: read-only DataLayer reader + map + per-field §8 mapping + Verify.
-- [ ] `reader.py` back-compat check against existing `attest:` rows.
+- [x] Writer: hot path + watermark wired into `orchard_chia/datalayer/publish.py`
+      (closed-hour harvest, idempotent `batch_update` with configurable `fee`,
+      post-write confirm, `publish_watermark.db`). Sealed path in `main.py`.
+- [x] `orchard-verify` offline checks — device sig (all readings), full Merkle
+      proofs, hour/season roots, `verified_hours`/`season_score`, oracle sig,
+      record consistency, schema/scheme compatibility.
+- [ ] Orchard Atlas: read-only DataLayer reader + map + per-field §8 mapping +
+      Verify. (Building blocks ready: `verify.verification_badge` for §8 badges,
+      `verify.verify_reading_in_hour` for per-reading Verify.)
+- [x] `reader.py` back-compat — reads `attest:` rows; payout pays on the
+      verifiable `verified_hours` when present, else `hours_online`.
+
+**Known limitation:** reading↔hour-bucket binding — see §3.
