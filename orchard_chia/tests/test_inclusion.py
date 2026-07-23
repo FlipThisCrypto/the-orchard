@@ -114,6 +114,8 @@ def test_inclusion_fails_when_root_moved():
     assert rep.current_root is False
     assert rep.keys_proven == 1
     assert "current_root=false" in rep.detail
+    # Root moved since the proof — transient, retry — not tampering.
+    assert rep.cannot_verify is True
 
 
 def test_inclusion_fails_when_verify_proof_unreachable():
@@ -222,6 +224,8 @@ def test_inclusion_rejects_value_mismatch():
     assert rep.ok is False
     assert "value differs" in rep.detail
     assert rep.values_bound == 0
+    # A value mismatch is a definitive contradiction — NOT cannot-verify.
+    assert rep.cannot_verify is False
 
 
 def test_inclusion_without_expected_values_is_key_only():

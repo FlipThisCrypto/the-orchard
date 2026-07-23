@@ -33,7 +33,9 @@ def _marks() -> tuple[str, str]:
     return ok, fail
 
 
-def _print_report(rep: verify.Report, *, as_json: bool = False) -> None:
+def _print_report(
+    rep: verify.Report, *, as_json: bool = False, result_label: str | None = None
+) -> None:
     if as_json:
         import json
         print(json.dumps(rep.as_dict(), indent=2, sort_keys=True))
@@ -52,7 +54,31 @@ def _print_report(rep: verify.Report, *, as_json: bool = False) -> None:
             line += f"  ({c.detail})"
         print(line)
     print()
-    print(f"Result: {'VALID' if rep.valid else 'INVALID'}")
+    label = result_label or ("VALID" if rep.valid else "INVALID")
+    print(f"Result: {label}")
+
+
+INCLUSION_CHECK_NAME = "DataLayer inclusion proof"
+
+
+def _live_exit_code(rep: verify.Report, incl: inclusion.InclusionReport) -> int:
+    """Map a live verification to an exit code, distinguishing cannot-verify.
+
+    0 VALID, 1 INVALID (a definitive contradiction — tampering), 2 CANNOT
+    (transient/unprovable: RPC down, root not yet confirmed, key not published,
+    proof stale). Only collapse to INVALID when something is *definitively*
+    wrong: an offline check failed (bad signature / Merkle / score / oracle sig
+    / anchor), or the inclusion failure was a value mismatch (cannot_verify
+    False). An inclusion that merely couldn't be established is exit 2.
+    """
+    if rep.valid:
+        return 0
+    offline_bad = any(
+        not c.ok for c in rep.checks if c.name != INCLUSION_CHECK_NAME
+    )
+    if not offline_bad and incl.cannot_verify:
+        return 2
+    return 1
 
 
 def _bundle_proof_pairs(bundle: dict, node_id: str, season: int) -> dict[str, str]:
@@ -169,14 +195,16 @@ def cmd_live(args: argparse.Namespace) -> int:
     rep.checks.insert(
         0,
         verify.Check(
-            "DataLayer inclusion proof",
+            INCLUSION_CHECK_NAME,
             incl.ok,
             incl.detail,
         ),
     )
 
-    _print_report(rep, as_json=bool(getattr(args, "json", False)))
-    return 0 if rep.valid else 1
+    code = _live_exit_code(rep, incl)
+    label = {0: "VALID", 1: "INVALID", 2: "CANNOT-VERIFY"}[code]
+    _print_report(rep, as_json=bool(getattr(args, "json", False)), result_label=label)
+    return code
 
 
 def build_parser() -> argparse.ArgumentParser:

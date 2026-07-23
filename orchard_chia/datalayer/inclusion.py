@@ -43,6 +43,11 @@ class InclusionReport:
     keys_proven: int = 0
     current_root: bool | None = None
     values_bound: int = 0
+    # True  => the result could not be established (RPC down, root not yet
+    #          confirmed, key not published yet, proof stale) — retry later.
+    # False on a failure => a definitive contradiction (an on-chain value that
+    #          differs from the record being verified) — i.e. tampering.
+    cannot_verify: bool = False
 
 
 def proof_envelope(proof_resp: dict[str, Any]) -> dict | None:
@@ -87,12 +92,14 @@ def check_inclusion(
     compatible); passing ``{}`` while requesting keys fails, by design.
     """
     if not key_hex_list:
-        return InclusionReport(ok=False, detail="no keys to prove")
+        return InclusionReport(ok=False, detail="no keys to prove", cannot_verify=True)
 
     try:
         root_resp = rpc.get_root(store_id)
     except ChiaRpcError as e:
-        return InclusionReport(ok=False, detail=f"get_root failed: {e}")
+        return InclusionReport(
+            ok=False, detail=f"get_root failed: {e}", cannot_verify=True
+        )
 
     root_hash = (
         root_resp.get("hash")
@@ -115,6 +122,7 @@ def check_inclusion(
             detail="get_root returned no hash",
             root_hash=None,
             confirmed=conf,
+            cannot_verify=True,
         )
     if not conf:
         return InclusionReport(
@@ -125,6 +133,7 @@ def check_inclusion(
             ),
             root_hash=root_s,
             confirmed=False,
+            cannot_verify=True,
         )
 
     try:
@@ -135,11 +144,13 @@ def check_inclusion(
             detail=f"get_proof failed: {e}",
             root_hash=root_s,
             confirmed=conf,
+            cannot_verify=True,
         )
 
     proven = _count_proven_keys(proof_resp, key_hex_list)
 
     if proven < len(key_hex_list):
+        # Key not (yet) provable on chain — unpublished/pending, not tampering.
         return InclusionReport(
             ok=False,
             detail=(
@@ -149,6 +160,7 @@ def check_inclusion(
             root_hash=root_s,
             confirmed=conf,
             keys_proven=proven,
+            cannot_verify=True,
         )
 
     # Keys are covered — now prove the proof chains to the CURRENT on-chain root.
@@ -163,6 +175,7 @@ def check_inclusion(
             root_hash=root_s,
             confirmed=conf,
             keys_proven=proven,
+            cannot_verify=True,
         )
     try:
         vp = rpc.verify_proof(
@@ -175,6 +188,7 @@ def check_inclusion(
             root_hash=root_s,
             confirmed=conf,
             keys_proven=proven,
+            cannot_verify=True,
         )
 
     current_root = bool(vp.get("current_root"))
@@ -191,6 +205,7 @@ def check_inclusion(
             confirmed=conf,
             keys_proven=proven,
             current_root=False,
+            cannot_verify=True,
         )
 
     # Bind the proof to the actual data: the on-chain value_clvm_hash for each
@@ -220,6 +235,8 @@ def check_inclusion(
             else:
                 mismatched.append(k)
         if missing_expected:
+            # Our side couldn't supply a value for a requested key — a coverage
+            # gap on the verifier, not proof of tampering.
             return InclusionReport(
                 ok=False,
                 detail=(
@@ -232,6 +249,7 @@ def check_inclusion(
                 keys_proven=proven,
                 current_root=True,
                 values_bound=values_bound,
+                cannot_verify=True,
             )
         if mismatched:
             return InclusionReport(
@@ -259,6 +277,7 @@ def check_inclusion(
                 keys_proven=proven,
                 current_root=True,
                 values_bound=values_bound,
+                cannot_verify=True,
             )
 
     bound_note = (
