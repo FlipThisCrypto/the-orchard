@@ -169,6 +169,11 @@ def _sign(body: dict, seed_hex: str) -> str:
 
 
 def _verify(body: dict, sig_hex: str, pubkey_hex: str) -> bool:
+    # Robust to hostile/corrupt on-chain input: a node: card with a null or
+    # non-string pubkey (or a non-string sig) must yield False, never an
+    # exception — verify_bundle is contracted never to raise on bad data.
+    if not isinstance(sig_hex, str) or not isinstance(pubkey_hex, str):
+        return False
     try:
         sig = bytes.fromhex(sig_hex)
         if len(sig) != 64:
@@ -181,7 +186,7 @@ def _verify(body: dict, sig_hex: str, pubkey_hex: str) -> bool:
         )
         pk.verify(der, canonical_bytes(body), ec.ECDSA(hashes.SHA256()))
         return True
-    except (InvalidSignature, ValueError):
+    except (InvalidSignature, ValueError, TypeError):
         return False
 
 

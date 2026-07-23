@@ -129,6 +129,23 @@ def test_changed_oracle_signature_fails():
     assert "Oracle season signature verified" in _failed_names(rep)
 
 
+def test_null_node_pubkey_does_not_crash():
+    # A node: card with a null pubkey must yield INVALID, not a TypeError crash
+    # (verify_bundle is contracted never to raise on bad data).
+    b = _bundle()
+    b["node"]["pubkey"] = None
+    rep = verify.verify_bundle(**b)  # must not raise
+    assert rep.valid is False
+    assert "Device signature verified" in _failed_names(rep)
+
+
+def test_non_hex_node_pubkey_does_not_crash():
+    b = _bundle()
+    b["node"]["pubkey"] = "not-hex!!"
+    rep = verify.verify_bundle(**b)
+    assert rep.valid is False
+
+
 def test_missing_oracle_pubkey_fails_loudly():
     b = _bundle()
     b["meta"]["signer"]["season_pubkey"] = None
