@@ -17,7 +17,9 @@ verifies it. Reuses the canonicalization rule already in
 > **Wire-level RPC/CLI shapes** (what `get_proof`/`verify_proof`/`batch_update`
 > actually accept and return) are transcribed from the official Chia docs in
 > [`reference/CHIA_DATALAYER_RPC.md`](reference/CHIA_DATALAYER_RPC.md). The live
-> verifier (§7 check 1) is written against that reference.
+> verifier (§7 check 1) is written against that reference. The **public
+> verification API** anyone can build on is documented in
+> [`reference/VERIFY_API.md`](reference/VERIFY_API.md).
 
 **Schema version:** `1.0.0`.
 **Status:** namespace frozen; two signing details still open (Season-signature
