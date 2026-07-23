@@ -84,6 +84,24 @@ class FullNodeRpc:
         peak = st.get("blockchain_state", {}).get("peak") or {}
         return int(peak.get("height", 0))
 
+    def get_block_record_by_height(self, height: int) -> dict | None:
+        """Block record at a height. ``timestamp`` is only present on
+        transaction blocks (null otherwise). See CHIA_DATALAYER_RPC.md §Full-node."""
+        data = self._post("get_block_record_by_height", {"height": int(height)})
+        return data.get("block_record")
+
+    def get_block_record(self, header_hash: str) -> dict | None:
+        """Block record by header hash (the block identifier)."""
+        data = self._post("get_block_record", {"header_hash": header_hash})
+        return data.get("block_record")
+
+    def get_block_records(self, start: int, end: int) -> list[dict]:
+        """Block records for heights ``[start, end)`` (end non-inclusive)."""
+        data = self._post(
+            "get_block_records", {"start": int(start), "end": int(end)}
+        )
+        return data.get("block_records", []) or []
+
 
 class DataLayerRpc:
     """Subset of Chia DataLayer RPC the attestation writer needs.

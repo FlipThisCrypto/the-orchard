@@ -233,6 +233,28 @@ names — do not assume they match.
 
 ---
 
+## 6a. Full-node RPC — block lookup (for anti-backdate)
+
+Default full-node RPC port **8555**. Used by the anti-backdate check (SPEC §4.2):
+resolve a reading's `block_anchor` (first 16 hex of a header hash) to a real
+block whose `timestamp ≤ ts_ms`.
+
+| Endpoint | Request | Response |
+|---|---|---|
+| `get_blockchain_state` | — | `blockchain_state.peak` (a block record: `header_hash`, `height`, `timestamp`), `space`, `difficulty`, `sync` |
+| `get_block_record_by_height` | `height` (int) | `block_record` |
+| `get_block_record` | `header_hash` (hex) | `block_record` |
+| `get_block_records` | `start` (int, incl), `end` (int, excl) | `block_records` (array) |
+| `get_block` | `header_hash` (hex) | `block` (full; `foliage_transaction_block.timestamp`) |
+
+**Block record fields that matter:** `header_hash` (the block id; serialized
+`0x…`), `height`, and `timestamp`. **`timestamp` is present only on transaction
+blocks** — non-transaction blocks return `null`, so they cannot bound a reading
+time. The header hash is the hash of the block's foliage.
+
+Our client: `rpc.py::FullNodeRpc.{get_block_record_by_height,get_block_record,
+get_block_records}`; the pure matching kernel is `datalayer/block_anchor.py`.
+
 ## 7. Orchard integration mapping
 
 Where our code touches each endpoint, and the gaps this reference exposes.
