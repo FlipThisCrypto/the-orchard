@@ -32,6 +32,12 @@ def test_is_transient_classification():
         ChiaRpcError("datalayer batch_update returned success=false: {}")
     )
     assert not is_transient_rpc_error(ChiaRpcError("datalayer x -> 404: missing"))
+    # Rate-limit and request-timeout are transient (retry-after conditions).
+    assert is_transient_rpc_error(ChiaRpcError("datalayer x -> 429: slow down"))
+    assert is_transient_rpc_error(ChiaRpcError("datalayer x -> 408: request timeout"))
+    # Other 4xx still permanent.
+    assert not is_transient_rpc_error(ChiaRpcError("datalayer x -> 400: bad request"))
+    assert not is_transient_rpc_error(ChiaRpcError("datalayer x -> 409: conflict"))
 
 
 def test_call_with_retry_succeeds_after_transient(monkeypatch):

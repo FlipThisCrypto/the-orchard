@@ -88,6 +88,8 @@ def is_transient_rpc_error(exc: BaseException) -> bool:
         "connection",
         "reset",
         "temporarily",
+        "-> 408",  # request timeout — retry
+        "-> 429",  # rate limited (e.g. behind a reverse proxy) — back off + retry
         "-> 500",
         "-> 502",
         "-> 503",
