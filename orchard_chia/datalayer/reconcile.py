@@ -106,6 +106,9 @@ def reconcile_node_season(
     # readings were corrupted/tampered — surface it alongside the uptime verdict.
     if sealed.root_mismatches:
         detail += f" [!] {sealed.root_mismatches} hour_root mismatch(es)"
+    # Be honest when the count is presence-based (no device pubkey to check).
+    if not sealed.sigs_verified:
+        detail += " (unverified: no device pubkey, sigs unchecked)"
 
     return NodeSeasonRow(
         node_id=node_id,

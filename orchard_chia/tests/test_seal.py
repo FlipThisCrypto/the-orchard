@@ -84,6 +84,25 @@ def test_seal_no_mismatch_when_root_matches():
     assert out is not None and out.root_mismatches == 0
 
 
+def test_seal_with_pubkey_marks_sigs_verified():
+    batch = schema.build_readings_batch(
+        node_id=NODE, season=5, hour=0, readings=[_signed(1000)]
+    )
+    out = seal.seal_from_readings([batch], device_pubkey=PUB)
+    assert out is not None and out.sigs_verified is True
+
+
+def test_seal_without_pubkey_is_presence_only():
+    batch = schema.build_readings_batch(
+        node_id=NODE, season=5, hour=0, readings=[_signed(1000)]
+    )
+    out = seal.seal_from_readings([batch], device_pubkey=None)
+    assert out is not None
+    assert out.sigs_verified is False
+    # Presence count still non-zero, just not signature-verified.
+    assert out.verified_hours == 1
+
+
 def test_load_season_readings_via_fake_rpc():
     r = _signed(1)
     batch = schema.build_readings_batch(

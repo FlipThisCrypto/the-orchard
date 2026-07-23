@@ -24,6 +24,10 @@ class SealInputs:
     # Hours whose stored hour_root disagreed with a recompute over their
     # readings — a published-data corruption/tampering signal. >0 is a red flag.
     root_mismatches: int = 0
+    # True when verified_hours was derived by checking device signatures against
+    # a known pubkey. False means it is a reading-PRESENCE count (no pubkey was
+    # available) and must not be presented as cryptographically verified.
+    sigs_verified: bool = True
 
 
 def seal_from_readings(
@@ -69,9 +73,13 @@ def seal_from_readings(
     season_root = schema.season_root(hour_roots)
     if device_pubkey:
         verified = schema.verified_hours(by_hour, device_pubkey)
+        sigs_verified = True
     else:
         # No pubkey → cannot verify device sigs; count hours with ≥1 reading.
+        # This is a PRESENCE count, not a signature-verified one — flagged so
+        # callers don't present it as cryptographically verified.
         verified = sum(1 for rs in by_hour.values() if rs)
+        sigs_verified = False
 
     return SealInputs(
         season_root=season_root,
@@ -80,6 +88,7 @@ def seal_from_readings(
         hour_count=len(hour_roots),
         source="readings",
         root_mismatches=root_mismatches,
+        sigs_verified=sigs_verified,
     )
 
 
