@@ -119,6 +119,27 @@ def verify_bundle(
         if not consistency else "; ".join(consistency[:3]),
     ))
 
+    # 0b. Schema/scheme compatibility — this verifier implements schema 1.x with
+    # secp256r1 device + season signatures. A store declaring a different major
+    # version or a different signer scheme cannot be meaningfully verified here
+    # (its sigs would read as failures), so flag it rather than mislead.
+    signer = (meta or {}).get("signer") or {}
+    schema_v = str((meta or {}).get("orchard_schema", ""))
+    want_major = schema.SCHEMA_VERSION.split(".")[0]
+    got_major = schema_v.split(".")[0] if schema_v else ""
+    compat: list[str] = []
+    if got_major != want_major:
+        compat.append(f"schema {schema_v or '?'} != {schema.SCHEMA_VERSION}")
+    if signer.get("device_sig") not in (None, "secp256r1"):
+        compat.append(f"device_sig {signer.get('device_sig')!r} unsupported")
+    if signer.get("season_sig") not in (None, "secp256r1"):
+        compat.append(f"season_sig {signer.get('season_sig')!r} unsupported")
+    checks.append(Check(
+        "Schema and signer scheme supported",
+        not compat,
+        f"schema {schema_v or '?'}, secp256r1" if not compat else "; ".join(compat),
+    ))
+
     # 1. Device provenance — every reading signed by the node's published key.
     bad_sig = [
         r for rec in readings_records for r in rec.get("readings", [])

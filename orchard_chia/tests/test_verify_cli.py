@@ -36,10 +36,27 @@ def _failed_names(rep) -> set[str]:
 def test_vectors_bundle_is_valid():
     rep = verify.verify_bundle(**_bundle())
     assert rep.valid is True
-    assert len(rep.checks) == 9
+    assert len(rep.checks) == 10
     assert _failed_names(rep) == set()
     assert "Anti-backdate anchor present" in {c.name for c in rep.checks}
     assert "Records agree on node and season" in {c.name for c in rep.checks}
+    assert "Schema and signer scheme supported" in {c.name for c in rep.checks}
+
+
+def test_unsupported_device_scheme_fails():
+    b = _bundle()
+    b["meta"]["signer"]["device_sig"] = "ed25519"
+    rep = verify.verify_bundle(**b)
+    assert rep.valid is False
+    assert "Schema and signer scheme supported" in _failed_names(rep)
+
+
+def test_incompatible_schema_major_fails():
+    b = _bundle()
+    b["meta"]["orchard_schema"] = "2.0.0"
+    rep = verify.verify_bundle(**b)
+    assert rep.valid is False
+    assert "Schema and signer scheme supported" in _failed_names(rep)
 
 
 def test_stitched_bundle_wrong_attest_node_fails():
