@@ -76,6 +76,61 @@ class Report:
         }
 
 
+@dataclass
+class ReadingCheck:
+    """Result of verifying a single reading against its hour record."""
+    signature_ok: bool
+    in_hour_tree: bool
+    hour_root_ok: bool
+
+    @property
+    def ok(self) -> bool:
+        return self.signature_ok and self.in_hour_tree and self.hour_root_ok
+
+    def as_dict(self) -> dict:
+        return {
+            "signature_ok": self.signature_ok,
+            "in_hour_tree": self.in_hour_tree,
+            "hour_root_ok": self.hour_root_ok,
+            "ok": self.ok,
+        }
+
+
+def verify_reading_in_hour(
+    reading: dict, node_pubkey: str, hour_record: dict
+) -> ReadingCheck:
+    """Verify ONE reading without a full season bundle — the SPEC §8 Atlas
+    "Verify" primitive.
+
+    Checks, all recomputable by anyone: (1) the device signed it against the
+    node's published key; (2) it is a member of the hour's Merkle tree via an
+    audit path to the recomputed ``hour_root``; (3) the record's stored
+    ``hour_root`` equals that recompute. Never raises on bad data.
+    """
+    hour_record = hour_record or {}
+    sig_ok = schema.verify_reading(reading, node_pubkey) if isinstance(reading, dict) else False
+
+    readings = hour_record.get("readings", []) or []
+    recomputed = schema.hour_root(readings) if isinstance(readings, list) else ""
+    hour_root_ok = bool(recomputed) and recomputed == hour_record.get("hour_root")
+
+    in_tree = False
+    try:
+        ordered = schema._sorted_readings(readings)
+        leaves = [schema.reading_leaf(r) for r in ordered]
+        target = schema.reading_leaf(reading)
+        if target in leaves:
+            idx = leaves.index(target)
+            path = merkle.merkle_proof(leaves, idx)
+            in_tree = merkle.verify_proof(target, path, bytes.fromhex(recomputed))
+    except (ValueError, IndexError, TypeError):
+        in_tree = False
+
+    return ReadingCheck(
+        signature_ok=sig_ok, in_hour_tree=in_tree, hour_root_ok=hour_root_ok
+    )
+
+
 def verify_bundle(
     *, meta: dict, node: dict, attest: dict, readings_records: list[dict]
 ) -> Report:
