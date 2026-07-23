@@ -55,6 +55,29 @@ def _print_report(rep: verify.Report, *, as_json: bool = False) -> None:
     print(f"Result: {'VALID' if rep.valid else 'INVALID'}")
 
 
+def _bundle_proof_pairs(bundle: dict, node_id: str, season: int) -> dict[str, str]:
+    """Map every key the verdict trusts → its canonical value hex, for a live
+    inclusion + value bind.
+
+    Covers meta:schema (oracle season pubkey, checks §7.7), node:<id> (device
+    pubkey, §7.2), attest:<id>:<season> (the reward anchor, §7.5-6), and each
+    readings hour present (§7.3). Proving only readings would leave the pubkeys
+    and the reward summary unbound — a tampered mirror could swap them while
+    serving a valid readings proof.
+    """
+    pairs: dict[str, str] = {
+        schema.meta_key(): schema.value_hex(bundle["meta"]),
+        schema.node_key(node_id): schema.value_hex(bundle["node"]),
+        schema.attest_key(node_id, season): schema.value_hex(bundle["attest"]),
+    }
+    for r in bundle.get("readings_records", []):
+        if "hour" in r:
+            pairs[schema.readings_key(node_id, season, int(r["hour"]))] = (
+                schema.value_hex(r)
+            )
+    return pairs
+
+
 def _load_vectors_bundle(path: Path) -> dict:
     rec = json.loads(path.read_text(encoding="utf-8"))["records"]
     return {
@@ -136,26 +159,12 @@ def cmd_live(args: argparse.Namespace) -> int:
     )
     rep = verify.verify_bundle(**bundle)
 
-    # SPEC §7.1 — DataLayer inclusion / permanence (RPC-level).
-    proof_keys = [
-        schema.readings_key(args.node_id, season_n, int(h))
-        for h in rep.hours
-    ]
-    if not proof_keys and bundle.get("readings_records"):
-        proof_keys = [
-            schema.readings_key(
-                args.node_id, season_n, int(r["hour"])
-            )
-            for r in bundle["readings_records"]
-        ]
-    # Bind each proven readings key to the exact on-chain value we verified.
-    expected_values = {
-        schema.readings_key(args.node_id, season_n, int(r["hour"])): schema.value_hex(r)
-        for r in bundle.get("readings_records", [])
-        if "hour" in r
-    }
+    # SPEC §7.1 — DataLayer inclusion / permanence (RPC-level). Prove and
+    # value-bind every key the verdict trusts: meta (oracle pubkey), node
+    # (device pubkey), attest (reward anchor), and each readings hour.
+    proof_pairs = _bundle_proof_pairs(bundle, args.node_id, season_n)
     incl = inclusion.check_inclusion(
-        rpc, store_id, proof_keys, expected_values=expected_values
+        rpc, store_id, list(proof_pairs), expected_values=proof_pairs
     )
     rep.checks.insert(
         0,

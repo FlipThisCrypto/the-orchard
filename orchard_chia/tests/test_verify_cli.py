@@ -116,6 +116,30 @@ def test_cli_missing_file_exit_two(capsys):
     assert cli.main(["vectors", "does-not-exist.json"]) == 2
 
 
+def test_bundle_proof_pairs_covers_all_verified_keys():
+    from orchard_chia.datalayer import schema
+
+    b = _bundle()
+    node_id = b["node"]["node_id"]
+    season = int(b["attest"]["season"])
+    pairs = cli._bundle_proof_pairs(b, node_id, season)
+
+    # Every key the verdict trusts is present …
+    assert schema.meta_key() in pairs
+    assert schema.node_key(node_id) in pairs
+    assert schema.attest_key(node_id, season) in pairs
+    hour = int(b["readings_records"][0]["hour"])
+    assert schema.readings_key(node_id, season, hour) in pairs
+
+    # … bound to the exact canonical value hex of the record being verified.
+    assert pairs[schema.node_key(node_id)] == schema.value_hex(b["node"])
+    assert pairs[schema.attest_key(node_id, season)] == schema.value_hex(b["attest"])
+    assert pairs[schema.meta_key()] == schema.value_hex(b["meta"])
+    assert pairs[schema.readings_key(node_id, season, hour)] == schema.value_hex(
+        b["readings_records"][0]
+    )
+
+
 def test_cli_live_without_config_or_rpc_exit_two(capsys, monkeypatch, tmp_path):
     """Live mode is wired: missing config / unreachable RPC → exit 2 (cannot)."""
     # Point config at a non-existent path so load() fails cleanly.
