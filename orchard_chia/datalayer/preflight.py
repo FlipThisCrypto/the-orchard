@@ -16,6 +16,23 @@ from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
 
+def store_id_wellformed(store_id: str | None) -> bool:
+    """A DataLayer store id is a 32-byte hex string (64 chars), optionally
+    ``0x``-prefixed. Catches truncated/typo'd ids before a batch run."""
+    if not isinstance(store_id, str):
+        return False
+    s = store_id.strip()
+    if s.lower().startswith("0x"):
+        s = s[2:]
+    if len(s) != 64:
+        return False
+    try:
+        int(s, 16)
+    except ValueError:
+        return False
+    return True
+
+
 @dataclass
 class Check:
     name: str
@@ -50,13 +67,18 @@ def run_preflight(*, skip_chia: bool = False) -> Report:
         rep.add("config.yaml", False, f"{type(e).__name__}: {e}")
         return rep
 
-    # Store id
+    # Store id — must be present AND well-formed (64 hex), not just non-empty.
     sid = (cfg.data_layer.store_id or "").strip()
-    rep.add(
-        "datalayer.store_id",
-        bool(sid),
-        sid[:16] + "…" if len(sid) > 16 else (sid or "empty — create_data_store"),
-    )
+    if not sid:
+        rep.add("datalayer.store_id", False, "empty — create_data_store")
+    elif not store_id_wellformed(sid):
+        rep.add(
+            "datalayer.store_id",
+            False,
+            f"malformed (expected 64 hex chars): {sid[:20]}…",
+        )
+    else:
+        rep.add("datalayer.store_id", True, sid[:16] + "…")
 
     # Signing key material present
     key_path = cfg_mod.SIGNING_KEY_PATH
