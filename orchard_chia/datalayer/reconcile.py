@@ -102,6 +102,11 @@ def reconcile_node_season(
         status = "underclaim"
         detail = f"oracle={hours_online} verified={vh}"
 
+    # A stored hour_root that disagrees with a recompute means the published
+    # readings were corrupted/tampered — surface it alongside the uptime verdict.
+    if sealed.root_mismatches:
+        detail += f" [!] {sealed.root_mismatches} hour_root mismatch(es)"
+
     return NodeSeasonRow(
         node_id=node_id,
         season=season,

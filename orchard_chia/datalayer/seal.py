@@ -21,6 +21,9 @@ class SealInputs:
     reading_count: int
     hour_count: int
     source: str  # "readings" | "placeholder"
+    # Hours whose stored hour_root disagreed with a recompute over their
+    # readings — a published-data corruption/tampering signal. >0 is a red flag.
+    root_mismatches: int = 0
 
 
 def seal_from_readings(
@@ -39,6 +42,7 @@ def seal_from_readings(
     hour_roots: dict[int, str] = {}
     by_hour: dict[int, list[dict]] = {}
     reading_count = 0
+    root_mismatches = 0
 
     for rec in readings_records:
         try:
@@ -52,8 +56,9 @@ def seal_from_readings(
         recomputed = schema.hour_root(readings)
         stored = rec.get("hour_root")
         if stored and stored != recomputed:
-            # Still use recomputed — verifiers will recompute too.
-            pass
+            # Still use recomputed — verifiers will recompute too — but count
+            # it: the published readings don't match their published root.
+            root_mismatches += 1
         hour_roots[hour] = recomputed
         by_hour[hour] = readings
         reading_count += len(readings)
@@ -74,6 +79,7 @@ def seal_from_readings(
         reading_count=reading_count,
         hour_count=len(hour_roots),
         source="readings",
+        root_mismatches=root_mismatches,
     )
 
 

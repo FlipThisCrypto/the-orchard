@@ -61,6 +61,29 @@ def test_seal_empty_returns_none():
     assert seal.seal_from_readings([], device_pubkey=PUB) is None
 
 
+def test_seal_counts_hour_root_mismatch():
+    r0 = _signed(1000)
+    batch = schema.build_readings_batch(
+        node_id=NODE, season=5, hour=0, readings=[r0]
+    )
+    # Corrupt the stored hour_root so it disagrees with a recompute.
+    batch = {**batch, "hour_root": "00" * 32}
+    out = seal.seal_from_readings([batch], device_pubkey=PUB)
+    assert out is not None
+    assert out.root_mismatches == 1
+    # The seal still uses the recomputed (correct) root, not the corrupt one.
+    assert out.season_root != "00" * 32
+
+
+def test_seal_no_mismatch_when_root_matches():
+    r0 = _signed(1000)
+    batch = schema.build_readings_batch(
+        node_id=NODE, season=5, hour=0, readings=[r0]
+    )
+    out = seal.seal_from_readings([batch], device_pubkey=PUB)
+    assert out is not None and out.root_mismatches == 0
+
+
 def test_load_season_readings_via_fake_rpc():
     r = _signed(1)
     batch = schema.build_readings_batch(
