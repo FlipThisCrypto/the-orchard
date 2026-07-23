@@ -89,6 +89,25 @@ def test_verified_hours_out_of_range_raises():
             {"hours_online": 10, "verified_hours": 99}, daily_rate=1.0)
 
 
+def test_paid_hours_prefers_verified():
+    assert calculator.paid_hours({"hours_online": 24, "verified_hours": 12}) == (12, "verified_hours")
+    assert calculator.paid_hours({"hours_online": 24}) == (24, "hours_online")
+
+
+def test_hours_cell_annotates_overclaim():
+    from orchard_chia.payout.main import _hours_cell
+    # Paid on verified 12 while oracle claimed 24 → surface the claim.
+    assert _hours_cell(
+        {"hours": 12, "hours_basis": "verified_hours", "claimed_hours": 24}
+    ) == "12 (claim 24)"
+    # Honest (equal) → no annotation.
+    assert _hours_cell(
+        {"hours": 24, "hours_basis": "verified_hours", "claimed_hours": 24}
+    ) == "24"
+    # Fallback basis → plain.
+    assert _hours_cell({"hours": 24, "hours_basis": "hours_online"}) == "24"
+
+
 def test_aggregate_by_wallet_sums_correctly():
     rows = [
         {"wallet_address": "xch1a", "mojos": 1000},

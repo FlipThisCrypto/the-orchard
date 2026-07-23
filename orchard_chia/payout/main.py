@@ -148,10 +148,26 @@ def _attestations_to_plan(
             "wallet_address":  wallet_address,
             "hours":           hours_paid,
             "hours_basis":     basis,
+            "claimed_hours":   int(s.signed.get("hours_online", 0)),
             "mojos":           mojos,
             "status":          "ready" if mojos > 0 else "skipped:zero",
         })
     return plan
+
+
+def _hours_cell(p: dict) -> str:
+    """Hours paid on; annotate the oracle's claim when payment fell to the
+    verifiable count below it (an over-count surfaced at the payment boundary)."""
+    hours = p.get("hours", "?")
+    claimed = p.get("claimed_hours")
+    if (
+        p.get("hours_basis") == "verified_hours"
+        and isinstance(claimed, int)
+        and isinstance(hours, int)
+        and claimed != hours
+    ):
+        return f"{hours} (claim {claimed})"
+    return str(hours)
 
 
 def _format_table(plan: list[dict]) -> str:
@@ -162,7 +178,7 @@ def _format_table(plan: list[dict]) -> str:
         rows.append((
             p["node_id"][:8] + "..",
             str(p["season"]),
-            str(p.get("hours", "?")),
+            _hours_cell(p),
             (p.get("wallet_address") or "—")[:24] + ("…" if len(p.get("wallet_address") or "") > 24 else ""),
             f"{calculator.mojos_to_juice(int(p.get('mojos', 0))):.3f}",
             p["status"],
