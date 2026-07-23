@@ -34,6 +34,23 @@ class Check:
     detail: str = ""
 
 
+def _anchor_wellformed(anchor: object) -> bool:
+    """A ``block_anchor`` is the first 16 hex chars (8 bytes) of a recent Chia
+    header hash (SPEC §2.3 / §4.2). Well-formed = a 16-char hex string that is
+    not the all-zero placeholder (all-zero ⇒ the reading was never anchored).
+
+    This validates the anchor is *present and parseable*; confirming it against
+    a real block whose ``timestamp ≤ ts_ms`` requires a full node and is the
+    live-only half of SPEC §7 check 4.
+    """
+    if not isinstance(anchor, str) or len(anchor) != 16:
+        return False
+    try:
+        return int(anchor, 16) != 0
+    except ValueError:
+        return False
+
+
 @dataclass
 class Report:
     node_id: str
@@ -88,6 +105,22 @@ def verify_bundle(
         bool(all_readings) and not bad_sig,
         f"{len(all_readings)} reading(s) signed by node {node.get('node_id', '?')[:8]}…"
         if not bad_sig else f"{len(bad_sig)} reading(s) failed the signature check",
+    ))
+
+    # 1b. Anti-backdate anchor (SPEC §7 check 4, offline half). Every reading
+    # must carry a well-formed, non-placeholder block anchor. Confirming it
+    # against a real block (timestamp ≤ ts_ms) is the live-only chain lookup.
+    bad_anchor = [
+        r for r in all_readings if not _anchor_wellformed(r.get("block_anchor"))
+    ]
+    checks.append(Check(
+        "Anti-backdate anchor present",
+        bool(all_readings) and not bad_anchor,
+        f"{len(all_readings)} reading(s) carry a 16-hex block anchor "
+        f"(chain lookup is a live-only step)"
+        if not bad_anchor
+        else f"{len(bad_anchor)} reading(s) have a missing, placeholder, or "
+             f"malformed block anchor",
     ))
 
     # 2. Inclusion — prove one reading sits under its hour_root via a Merkle path.

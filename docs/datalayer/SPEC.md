@@ -359,11 +359,23 @@ the score is honest."
 `python -m orchard_chia.cli.orchard_verify vectors <vectors.json>` runs the
 device-signature, Merkle (proof + hour root + season root), verified-hours,
 season-score, and oracle-season-signature checks against a published bundle —
-i.e. checks **2, 3, 5** plus signature verification. The oracle pubkey comes
-from `meta:schema.signer.season_pubkey`; the device pubkey from `node:.pubkey`.
-Exit 0 = VALID, 1 = INVALID, 2 = cannot-verify. **Stubbed (Phase 2, live):**
-checks **1** (on-chain `get_proof` inclusion) and **4** (block-anchor lookup)
-need DataLayer/full-node access — `orchard-verify live` freezes that interface.
+i.e. checks **2, 3, 5** plus signature verification, and the **offline half of
+check 4** (block-anchor *presence & format*: every reading must carry a
+well-formed, non-placeholder 16-hex anchor). The oracle pubkey comes from
+`meta:schema.signer.season_pubkey`; the device pubkey from `node:.pubkey`.
+Exit 0 = VALID, 1 = INVALID, 2 = cannot-verify.
+
+**Implemented (live):** `orchard-verify live` runs check **1** on-chain —
+`get_root` must report a **confirmed** root, `get_proof` must cover every key
+the verdict trusts (`meta`/`node`/`attest`/`readings`), `verify_proof` must
+report `current_root == true`, and each key is value-bound to the record via
+`value_clvm_hash` (see `datalayer/inclusion.py`,
+[`reference/CHIA_DATALAYER_RPC.md`](reference/CHIA_DATALAYER_RPC.md) §4).
+
+**Still Phase 2 (live, deferred):** the *chain-lookup* half of check **4** —
+resolving a reading's `block_anchor` prefix to a real block with
+`timestamp ≤ ts_ms` — needs full-node access (and `/beacon` + firmware anchors)
+and is not yet wired.
 
 ---
 

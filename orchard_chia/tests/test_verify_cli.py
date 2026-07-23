@@ -36,8 +36,9 @@ def _failed_names(rep) -> set[str]:
 def test_vectors_bundle_is_valid():
     rep = verify.verify_bundle(**_bundle())
     assert rep.valid is True
-    assert len(rep.checks) == 7
+    assert len(rep.checks) == 8
     assert _failed_names(rep) == set()
+    assert "Anti-backdate anchor present" in {c.name for c in rep.checks}
 
 
 # --- engine: tampering must fail loudly (acceptance criteria 2–6) ----------- #
