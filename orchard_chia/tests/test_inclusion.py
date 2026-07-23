@@ -236,6 +236,78 @@ def test_inclusion_without_expected_values_is_key_only():
     assert rep.values_bound == 0
 
 
+def test_inclusion_fails_when_root_unconfirmed():
+    rpc = FakeRpc(
+        root={"success": True, "hash": "ab" * 32, "confirmed": False},
+        proof=_proof_for(["aa"]),
+        current_root=True,
+    )
+    rep = inclusion.check_inclusion(rpc, "store", ["aa"])
+    assert rep.ok is False
+    assert rep.confirmed is False
+    assert "not confirmed" in rep.detail
+
+
+def test_inclusion_fails_when_confirmed_field_missing():
+    # get_root omits 'confirmed' entirely -> unknown -> fail closed.
+    rpc = FakeRpc(
+        root={"success": True, "hash": "ab" * 32},
+        proof=_proof_for(["aa"]),
+        current_root=True,
+    )
+    rep = inclusion.check_inclusion(rpc, "store", ["aa"])
+    assert rep.ok is False
+    assert rep.confirmed is False
+    assert "not confirmed" in rep.detail
+
+
+def test_inclusion_current_root_does_not_override_unconfirmed():
+    # Proof is fine and current_root=True, but the root is not confirmed:
+    # confirmation must still gate the result.
+    rpc = FakeRpc(
+        root={"success": True, "hash": "ab" * 32, "confirmed": False},
+        proof=_proof_for_kv({"aa": "1234"}),
+        current_root=True,
+    )
+    rep = inclusion.check_inclusion(
+        rpc, "store", ["aa"], expected_values={"aa": "1234"}
+    )
+    assert rep.ok is False
+    assert rep.confirmed is False
+    assert "not confirmed" in rep.detail
+
+
+def test_inclusion_fails_on_incomplete_expected_values():
+    # Both keys prove out, but only one has an expected value supplied.
+    rpc = FakeRpc(
+        root={"success": True, "hash": "ab" * 32, "confirmed": True},
+        proof=_proof_for_kv({"aa": "1234", "bb": "5678"}),
+        current_root=True,
+    )
+    rep = inclusion.check_inclusion(
+        rpc, "store", ["aa", "bb"], expected_values={"aa": "1234"}
+    )
+    assert rep.ok is False
+    assert "no expected value supplied" in rep.detail
+
+
+def test_inclusion_ok_when_all_keys_and_values_bound():
+    rpc = FakeRpc(
+        root={"success": True, "hash": "ab" * 32, "confirmed": True},
+        proof=_proof_for_kv({"aa": "1234", "bb": "5678"}),
+        current_root=True,
+    )
+    rep = inclusion.check_inclusion(
+        rpc, "store", ["aa", "bb"],
+        expected_values={"aa": "1234", "bb": "5678"},
+    )
+    assert rep.ok is True
+    assert rep.keys_proven == 2
+    assert rep.values_bound == 2
+    assert rep.confirmed is True
+    assert rep.current_root is True
+
+
 def test_inclusion_get_root_error():
     rpc = FakeRpc(root_err="down")
     rep = inclusion.check_inclusion(rpc, "store", ["aa"])

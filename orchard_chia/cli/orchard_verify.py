@@ -81,10 +81,12 @@ def cmd_vectors(args: argparse.Namespace) -> int:
 
 
 def cmd_live(args: argparse.Namespace) -> int:
-    """Fetch a bundle from DataLayer RPC and run the same offline checks.
+    """Fetch a bundle from DataLayer RPC and run the same offline checks, plus a
+    live on-chain inclusion check (SPEC §7 check 1) prepended as a Check.
 
-    On-chain inclusion proof (get_proof vs store root) is a separate SPEC §7
-    step — when the RPC supports it we will add it as an extra Check.
+    The inclusion check requires a confirmed store root (get_root.confirmed),
+    a get_proof covering every readings key, verify_proof's current_root, and a
+    value-hash bind of each key to the readings record being verified.
     """
     try:
         cfg = config.load()

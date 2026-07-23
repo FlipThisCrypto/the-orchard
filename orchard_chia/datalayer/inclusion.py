@@ -73,12 +73,18 @@ def check_inclusion(
 ) -> InclusionReport:
     """Return whether DataLayer reports a confirmed root + proof for keys.
 
+    A confirmed on-chain root is required: ``get_root``'s ``confirmed`` must be
+    exactly ``True``. A ``False`` or missing status fails closed (cannot assert
+    permanence), and a later ``current_root == True`` does not override it.
+
     When ``expected_values`` (a ``key_hex -> value_hex`` map) is given, inclusion
     additionally binds each proven key to that value: the proof's
-    ``value_clvm_hash`` must equal ``clvm_hash(expected_value)``. This closes the
-    gap where a key can be proven on-chain while its stored value differs from
-    the record actually being verified — i.e. it ties the proof to the data, not
-    just the key. Omit it to keep the key-only check (backward compatible).
+    ``value_clvm_hash`` must equal ``clvm_hash(expected_value)``. Binding is
+    all-or-nothing — **every** requested key must have an expected value and
+    every one must match (``values_bound == len(key_hex_list)``); a missing entry
+    or a mismatch fails. This ties the proof to the data, not just the key. Omit
+    ``expected_values`` entirely (``None``) to keep the key-only check (backward
+    compatible); passing ``{}`` while requesting keys fails, by design.
     """
     if not key_hex_list:
         return InclusionReport(ok=False, detail="no keys to prove")
@@ -93,24 +99,15 @@ def check_inclusion(
         or root_resp.get("root_hash")
         or root_resp.get("root")
     )
-    confirmed = root_resp.get("confirmed")
-    if confirmed is None:
-        # Some RPC versions omit confirmed; treat presence of a root as ok-ish.
-        confirmed = bool(root_hash)
-
-    try:
-        proof_resp = rpc.get_proof(store_id, key_hex_list)
-    except ChiaRpcError as e:
-        return InclusionReport(
-            ok=False,
-            detail=f"get_proof failed: {e}",
-            root_hash=root_hash if isinstance(root_hash, str) else None,
-            confirmed=bool(confirmed) if confirmed is not None else None,
-        )
-
-    proven = _count_proven_keys(proof_resp, key_hex_list)
     root_s = root_hash if isinstance(root_hash, str) else None
-    conf = bool(confirmed)
+
+    # Enforce on-chain confirmation. get_root's ``confirmed`` must be exactly
+    # True: a False status means the root's transaction is still pending, and a
+    # MISSING status is unknown — both fail closed (cannot assert permanence)
+    # rather than being treated as confirmed. verify_proof's current_root
+    # (checked later) does NOT substitute for a confirmed root.
+    confirmed_raw = root_resp.get("confirmed")
+    conf = confirmed_raw is True
 
     if not root_s:
         return InclusionReport(
@@ -118,8 +115,30 @@ def check_inclusion(
             detail="get_root returned no hash",
             root_hash=None,
             confirmed=conf,
-            keys_proven=proven,
         )
+    if not conf:
+        return InclusionReport(
+            ok=False,
+            detail=(
+                f"store root not confirmed on-chain (confirmed={confirmed_raw!r}); "
+                f"cannot assert permanence"
+            ),
+            root_hash=root_s,
+            confirmed=False,
+        )
+
+    try:
+        proof_resp = rpc.get_proof(store_id, key_hex_list)
+    except ChiaRpcError as e:
+        return InclusionReport(
+            ok=False,
+            detail=f"get_proof failed: {e}",
+            root_hash=root_s,
+            confirmed=conf,
+        )
+
+    proven = _count_proven_keys(proof_resp, key_hex_list)
+
     if proven < len(key_hex_list):
         return InclusionReport(
             ok=False,
@@ -179,12 +198,16 @@ def check_inclusion(
     # this, a valid key proof says nothing about whether the stored value is the
     # one being displayed.
     values_bound = 0
-    if expected_values:
+    if expected_values is not None:
         val_by_keyhash = proof_value_hashes(proof_resp)
+        missing_expected: list[str] = []
         mismatched: list[str] = []
         for k in key_hex_list:
             exp = expected_values.get(k)
             if exp is None:
+                # A requested key with no expected value supplied — we cannot
+                # bind it, so we must not assert inclusion for it.
+                missing_expected.append(k)
                 continue
             try:
                 on_chain = val_by_keyhash.get(key_clvm_hash(k))
@@ -196,6 +219,20 @@ def check_inclusion(
                 values_bound += 1
             else:
                 mismatched.append(k)
+        if missing_expected:
+            return InclusionReport(
+                ok=False,
+                detail=(
+                    f"no expected value supplied for {len(missing_expected)} of "
+                    f"{len(key_hex_list)} requested key(s); refusing to assert "
+                    f"inclusion without full value coverage"
+                ),
+                root_hash=root_s,
+                confirmed=conf,
+                keys_proven=proven,
+                current_root=True,
+                values_bound=values_bound,
+            )
         if mismatched:
             return InclusionReport(
                 ok=False,
@@ -209,8 +246,24 @@ def check_inclusion(
                 current_root=True,
                 values_bound=values_bound,
             )
+        if values_bound != len(key_hex_list):
+            # Defensive: every requested key must be value-bound to succeed.
+            return InclusionReport(
+                ok=False,
+                detail=(
+                    f"bound {values_bound}/{len(key_hex_list)} value(s); "
+                    f"incomplete value coverage"
+                ),
+                root_hash=root_s,
+                confirmed=conf,
+                keys_proven=proven,
+                current_root=True,
+                values_bound=values_bound,
+            )
 
-    bound_note = f", {values_bound} value(s) bound" if expected_values else ""
+    bound_note = (
+        f", {values_bound} value(s) bound" if expected_values is not None else ""
+    )
     return InclusionReport(
         ok=True,
         detail=(
