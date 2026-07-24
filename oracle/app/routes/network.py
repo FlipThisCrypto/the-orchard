@@ -19,6 +19,9 @@ materialize, but premature optimization for v1.
 """
 from __future__ import annotations
 
+import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
@@ -30,6 +33,30 @@ from .. import models, seasons
 from ..db import get_db
 
 router = APIRouter()
+
+# This endpoint is public, unauthenticated, and unrate-limited, and each call
+# runs full-table COUNTs (including COUNT(readings), which grows without bound).
+# A short single-flight cache bounds the DB load regardless of request rate —
+# neutralizing both the scale cost and a cheap DoS-amplification vector — while
+# keeping the home-page card near-fresh. Set ORCHARD_NETWORK_STATS_TTL_S=0 to
+# disable (used by the test suite so per-request assertions see live counts).
+_lock = threading.Lock()
+_cache: "NetworkStats | None" = None
+_cache_mono = 0.0
+
+
+def _ttl_seconds() -> float:
+    try:
+        return float(os.environ.get("ORCHARD_NETWORK_STATS_TTL_S", "30") or "30")
+    except ValueError:
+        return 30.0
+
+
+def reset_cache_for_tests() -> None:
+    global _cache, _cache_mono
+    with _lock:
+        _cache = None
+        _cache_mono = 0.0
 
 
 class NetworkStats(BaseModel):
@@ -50,10 +77,23 @@ def network_stats(db: Session = Depends(get_db)) -> NetworkStats:
     """Public aggregate stats for the home-page card.
 
     No auth — by design. Caller can't infer per-operator data from
-    these counts. If a future field would expose per-operator info
-    (e.g. a histogram by wallet), gate it behind require_session
-    instead of adding it here.
+    these counts. Served from a short single-flight cache (see module top).
     """
+    global _cache, _cache_mono
+    ttl = _ttl_seconds()
+    if ttl <= 0:
+        return _compute_stats(db)
+    now_mono = time.monotonic()
+    with _lock:
+        if _cache is not None and (now_mono - _cache_mono) < ttl:
+            return _cache
+        stats = _compute_stats(db)
+        _cache = stats
+        _cache_mono = now_mono
+        return stats
+
+
+def _compute_stats(db: Session) -> NetworkStats:
     now = datetime.now(timezone.utc)
     cutoff_24h = now - timedelta(hours=24)
 

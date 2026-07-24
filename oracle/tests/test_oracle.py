@@ -18,6 +18,9 @@ from hashlib import sha256
 # Force a fresh in-memory DB BEFORE importing the app so settings()
 # doesn't latch in a file-backed URL from the env.
 os.environ["ORCHARD_ORACLE_DB_URL"] = "sqlite:///:memory:"
+# Disable the /network/stats cache so per-request count assertions see live
+# data (the cache itself is covered in test_network_cache.py).
+os.environ.setdefault("ORCHARD_NETWORK_STATS_TTL_S", "0")
 
 import pytest
 from fastapi.testclient import TestClient
