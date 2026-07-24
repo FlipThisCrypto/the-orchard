@@ -1155,6 +1155,14 @@ def test_delete_node_owner_succeeds_cascade(auth_client):
         ).scalars().all()
         assert n_left == []
 
+    # The destructive delete is audited, with the blast radius, and the audit
+    # record survives the node's cascade (no FK to nodes).
+    ev = auth_client.get("/audit", params={"node_id": NID}).json()
+    dels = [e for e in ev if e["action"] == "node.delete"]
+    assert len(dels) == 1
+    assert dels[0]["actor"] == addr
+    assert dels[0]["detail"]["readings_deleted"] == 1
+
 
 def test_delete_node_non_owner_returns_404(auth_client):
     """Trying to delete someone else's node returns 404 (not 403)."""

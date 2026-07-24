@@ -35,11 +35,11 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from .. import models, pass_verify, sessions
+from .. import audit, models, pass_verify, sessions
 from ..config import settings
 from ..db import get_db
 from ..session_deps import maybe_session
@@ -228,6 +228,7 @@ def _resolve_wallet_for_register(
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 def register(
     req: RegisterRequest,
+    request: Request,
     db: Session = Depends(get_db),
     sess: sessions.Session | None = Depends(maybe_session),
 ) -> RegisterResponse:
@@ -282,6 +283,15 @@ def register(
                     ),
                 )
             existing.device_pubkey = req.device_pubkey
+        audit.record(
+            db,
+            action="node.reregister",
+            node_id=existing.node_id,
+            actor=audit.actor_for(sess, fallback="legacy"),
+            request_id=audit.request_id_of(request),
+            wallet_bound=wallet_address is not None,
+            pass_bound=pass_nft_id is not None,
+        )
         db.commit()
         db.refresh(existing)
         return RegisterResponse(
@@ -304,6 +314,15 @@ def register(
         registered_at=datetime.now(timezone.utc),
     )
     db.add(node)
+    audit.record(
+        db,
+        action="node.register",
+        node_id=node.node_id,
+        actor=audit.actor_for(sess, fallback="legacy"),
+        request_id=audit.request_id_of(request),
+        wallet_bound=wallet_address is not None,
+        pass_bound=pass_nft_id is not None,
+    )
     db.commit()
     db.refresh(node)
     return RegisterResponse(

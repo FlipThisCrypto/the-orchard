@@ -113,6 +113,25 @@ class UptimeHour(Base):
     reading_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class AuditEvent(Base):
+    """Append-only record of a consequential action (node register/delete, …).
+
+    Deliberately has NO foreign key to ``nodes`` — an audit row must outlive the
+    node it references (a delete cascades the node away but the record of the
+    deletion must remain). ``request_id`` correlates with the observability
+    request log (X-Request-ID). ``detail_json`` holds non-secret context only.
+    """
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    node_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    actor: Mapped[str] = mapped_column(String(128), default="unknown")
+    request_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    detail_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class Season(Base):
     """Season metadata. v1 = UTC-day-aligned; Phase 5 swaps to Chia blocks."""
     __tablename__ = "seasons"
