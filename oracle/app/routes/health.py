@@ -4,13 +4,24 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from sqlalchemy import text
 
-from .. import seasons
+from .. import db, seasons
 from ..observability import METRICS
 from ..session_deps import LOOPBACK_HOSTS
 
 router = APIRouter()
+
+
+def _check_db() -> tuple[bool, str]:
+    """Cheap DB connectivity probe (``SELECT 1``). Returns (ok, detail)."""
+    try:
+        with db.engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True, "ok"
+    except Exception as e:  # noqa: BLE001 — any failure means not-ready
+        return False, f"error: {type(e).__name__}"
 
 
 @router.get("/")
@@ -28,7 +39,29 @@ def root() -> dict:
 
 @router.get("/health")
 def health() -> dict:
+    """Liveness: the process is up and serving. Cheap, no dependencies —
+    suitable for a load balancer's frequent poll."""
     return {"ok": True}
+
+
+@router.get("/health/ready")
+def readiness(response: Response) -> dict:
+    """Readiness: the service can actually serve (its DB is reachable).
+
+    Returns 200 when every dependency check passes, else **503** so an
+    orchestrator/monitor can pull a broken-but-running instance out of
+    rotation (a DB that is down, locked, or file-permission-broken).
+    """
+    db_ok, db_detail = _check_db()
+    checks = {"db": db_detail}
+    ready = db_ok
+    if not ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return {
+        "ready": ready,
+        "checks": checks,
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @router.get("/metrics")

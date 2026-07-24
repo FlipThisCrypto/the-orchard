@@ -66,6 +66,39 @@ def test_metrics_is_loopback_only(monkeypatch):
     monkeypatch.setattr(Request, "client", property(orig))
 
 
+def test_readiness_ok_when_db_reachable():
+    client = TestClient(app)
+    r = client.get("/health/ready")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ready"] is True
+    assert body["checks"]["db"] == "ok"
+
+
+def test_readiness_503_when_db_unreachable(monkeypatch):
+    def boom():
+        raise RuntimeError("db down")
+
+    # Break the DB engine access the readiness probe uses.
+    monkeypatch.setattr(health_route.db, "engine", boom)
+    client = TestClient(app)
+    r = client.get("/health/ready")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["ready"] is False
+    assert "error" in body["checks"]["db"]
+
+
+def test_liveness_stays_cheap_and_dependency_free(monkeypatch):
+    # Even with the DB broken, liveness must still report ok (process is up).
+    def boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(health_route.db, "engine", boom)
+    client = TestClient(app)
+    assert client.get("/health").json() == {"ok": True}
+
+
 def test_unhandled_exception_returns_clean_500_with_request_id(monkeypatch):
     observability.METRICS.reset()
     # Make the root endpoint raise, then confirm the middleware turns it into a
