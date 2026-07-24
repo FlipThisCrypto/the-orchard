@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from .. import auth, models, seasons, sessions
@@ -43,21 +44,24 @@ class ReadingResponse(BaseModel):
 
 
 def _bump_uptime_hour(db: Session, node_id: str, when: datetime) -> None:
+    """Atomically create-or-increment the (node, hour) uptime counter.
+
+    A single ``INSERT ... ON CONFLICT (node_id, hour_utc) DO UPDATE`` — race
+    safe (two concurrent readings for the same node·hour can't both insert and
+    trip the unique constraint, which previously 500'd and dropped a reading)
+    and one query instead of the old SELECT-then-INSERT/UPDATE round trip on the
+    hottest path.
+    """
     bucket = seasons.hour_bucket_for(when)
-    row = (
-        db.execute(
-            select(models.UptimeHour).where(
-                models.UptimeHour.node_id == node_id,
-                models.UptimeHour.hour_utc == bucket,
-            )
+    stmt = (
+        sqlite_insert(models.UptimeHour)
+        .values(node_id=node_id, hour_utc=bucket, reading_count=1)
+        .on_conflict_do_update(
+            index_elements=["node_id", "hour_utc"],
+            set_={"reading_count": models.UptimeHour.reading_count + 1},
         )
-        .scalar_one_or_none()
     )
-    if row is None:
-        row = models.UptimeHour(node_id=node_id, hour_utc=bucket, reading_count=1)
-        db.add(row)
-    else:
-        row.reading_count += 1
+    db.execute(stmt)
 
 
 @router.post("/readings", status_code=status.HTTP_202_ACCEPTED)
