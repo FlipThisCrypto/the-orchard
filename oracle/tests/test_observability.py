@@ -99,6 +99,36 @@ def test_liveness_stays_cheap_and_dependency_free(monkeypatch):
     assert client.get("/health").json() == {"ok": True}
 
 
+def test_oversized_request_body_rejected_413(monkeypatch):
+    from oracle.app.config import reset_settings_for_tests
+
+    monkeypatch.setenv("ORCHARD_ORACLE_MAX_REQUEST_BODY_BYTES", "100")
+    reset_settings_for_tests()
+    try:
+        client = TestClient(app)
+        r = client.post("/readings", content=b"x" * 500)  # 500 > 100
+        assert r.status_code == 413
+        assert r.json()["detail"] == "request body too large"
+        # Still observed: the 413 carries a correlation id.
+        assert r.headers.get("X-Request-ID")
+    finally:
+        reset_settings_for_tests()
+
+
+def test_body_under_limit_passes_the_size_gate(monkeypatch):
+    from oracle.app.config import reset_settings_for_tests
+
+    monkeypatch.setenv("ORCHARD_ORACLE_MAX_REQUEST_BODY_BYTES", "100000")
+    reset_settings_for_tests()
+    try:
+        client = TestClient(app)
+        # A small /readings POST clears the size gate (then fails auth, NOT 413).
+        r = client.post("/readings", content=b"{}")
+        assert r.status_code != 413
+    finally:
+        reset_settings_for_tests()
+
+
 def test_unhandled_exception_returns_clean_500_with_request_id(monkeypatch):
     observability.METRICS.reset()
     # Make the root endpoint raise, then confirm the middleware turns it into a

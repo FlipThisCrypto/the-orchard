@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     # exempt; these bound remote LAN callers only. 0 disables a limit.
     auth_rate_limit_per_min: int = 30
     readings_rate_limit_per_min: int = 600
+    # Reject any request whose declared body exceeds this many bytes (413).
+    # A reading is ~1 KB; 1 MB is generous headroom while bounding the memory a
+    # single request can force the server to buffer. 0 disables the check.
+    max_request_body_bytes: int = 1_048_576
 
     # Phase 6.6 register hardening: /register requires a verified
     # wallet session by default. Closes the "anyone can claim someone

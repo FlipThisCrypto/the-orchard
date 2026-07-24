@@ -99,6 +99,26 @@ async def _rate_limit(request: Request, call_next):
     return await call_next(request)
 
 
+# --- Request body-size guard (before observability so 413s are logged) -----
+# Reject an oversized body early via Content-Length so a single request can't
+# force the server to buffer an unbounded payload. Covers every POST/PUT path.
+@app.middleware("http")
+async def _limit_body_size(request: Request, call_next):
+    max_bytes = settings().max_request_body_bytes
+    if max_bytes > 0:
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > max_bytes:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "request body too large"},
+                    )
+            except ValueError:
+                pass  # malformed header — let the normal parse path reject it
+    return await call_next(request)
+
+
 # --- Observability (outermost: wraps the rate limiter + all routes) --------
 # Defined AFTER _rate_limit so Starlette runs it first/outermost — it times and
 # logs every response (including 429s), captures unhandled exceptions as a clean
