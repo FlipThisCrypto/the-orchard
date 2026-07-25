@@ -21,7 +21,8 @@ verifies it. Reuses the canonicalization rule already in
 > verification API** anyone can build on is documented in
 > [`reference/VERIFY_API.md`](reference/VERIFY_API.md).
 
-**Schema version:** `1.0.0`.
+**Schema version:** `1.1.0` (1.1.0 added the attest verification-basis fields —
+§2.4; same major, so 1.x verifiers and pre-1.1 records keep working).
 **Status:** namespace frozen; two signing details still open (Season-signature
 scheme, block-anchor source — see ADR-0003 open questions). Not yet built.
 
@@ -80,7 +81,7 @@ record permanent; `latest:` is the only routinely-overwritten key.
 
 ```json
 {
-  "orchard_schema": "1.0.0",
+  "orchard_schema": "1.1.0",
   "store_role": "orchard-operator",
   "operator_pass_nft": "<launcher-id or null>",
   "units": {
@@ -186,6 +187,9 @@ Backward-compatible superset of today's record. New fields **bold**:
   "season_end_utc": "2026-06-01T00:00:00Z",
   "hours_online": 24,
   "verified_hours": 24,
+  "seal_source": "readings",
+  "sigs_verified": true,
+  "root_mismatches": 0,
   "season_score": 100,
   "reading_count": 1440,
   "block_height_at_write": 8794728,
@@ -199,6 +203,28 @@ Backward-compatible superset of today's record. New fields **bold**:
 `data_hash` is retained (don't break the payout `reader.py`) but now equals
 `season_root`. `oracle_sig` migrates HMAC → secp256r1 (pubkey in
 `meta:schema.signer`). See §3 for `verified_hours` / `season_score`.
+
+**Verification basis (1.1.0) — the record must not overstate itself.** These
+three fields are *inside* the signature, so an intermediary cannot strip the
+caveat and leave the number looking proven:
+
+| Field | Meaning |
+|---|---|
+| `seal_source` | `"readings"` — `season_root` is a real Merkle root over published device-signed readings, so `verified_hours` is recomputable by anyone. `"placeholder"` — **nothing was published**; the root is only `sha256(node:season:hours)` and **`verified_hours` is 0 because nothing was verified**. |
+| `sigs_verified` | `false` when hours were counted by reading *presence* (no device pubkey was available to check signatures against). |
+| `root_mismatches` | Hours whose stored `hour_root` disagreed with a recompute. `>0` is a tampering/corruption red flag. |
+
+> **Why a placeholder writes `verified_hours: 0`.** Writing the oracle's
+> `hours_online` there would sign a self-report into a field named *verified*,
+> in the one case with no evidence at all — the exact thing §3 exists to
+> prevent. The claim is still recorded in `hours_online`; the payout falls back
+> to it for a **declared** placeholder (so reward amounts are unchanged) and
+> labels the row `unverified`. A pre-1.1.0 record declares no basis and keeps
+> its previous treatment.
+
+`orchard-verify` reports a placeholder record as **cannot-verify (exit 2)** —
+it is honestly labelled, not fraudulent — while a declared `root_mismatches > 0`
+is a definitive **INVALID (exit 1)**.
 
 ### 2.5 `latest:<NODE_ID>` (live pointer)
 

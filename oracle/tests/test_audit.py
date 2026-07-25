@@ -2,10 +2,7 @@
 """Audit trail for consequential node-lifecycle actions."""
 from __future__ import annotations
 
-import hmac
-import json
 import os
-from hashlib import sha256
 
 os.environ.setdefault("ORCHARD_ORACLE_DB_URL", "sqlite:///:memory:")
 

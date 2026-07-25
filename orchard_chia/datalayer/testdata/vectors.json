@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "canonical_examples": [
     {
       "obj": {
@@ -139,7 +139,7 @@
   "season_score": 4,
   "records": {
     "meta": {
-      "orchard_schema": "1.0.0",
+      "orchard_schema": "1.1.0",
       "store_role": "orchard-operator",
       "operator_pass_nft": null,
       "units": {
@@ -272,13 +272,16 @@
       "season_end_utc": "2026-06-01T00:00:00Z",
       "hours_online": 1,
       "verified_hours": 1,
+      "seal_source": "readings",
+      "sigs_verified": true,
+      "root_mismatches": 0,
       "season_score": 4,
       "reading_count": 3,
       "block_height_at_write": 8794728,
       "data_hash": "653cf831765e8a6a91d7714cfb5a0252ecf9fa3e2ac0270b345d96e9ba5aa559",
       "season_root": "653cf831765e8a6a91d7714cfb5a0252ecf9fa3e2ac0270b345d96e9ba5aa559",
       "signed_at": "2026-06-01T00:05:00Z",
-      "oracle_sig": "0d48ef3b483b4d3ac0f7602e80fc25787aa0e3ac2e6c56cd61289e104e8f44126c124a4279624a1606813218d15e4591dc7cf0f05e154e95e32b7318d7e96cb2"
+      "oracle_sig": "7a3e65b669fdcb1f5a88f9fc1397b813d9157721874e1ad6239363b5a9bdfca710a8b0e5960e1fabeb5bc5ad9281e77777c3378345651a922b35bbfaf38ab303"
     },
     "latest": {
       "node_id": "5B9BB022649FA93D4091DA4BA40714B9",

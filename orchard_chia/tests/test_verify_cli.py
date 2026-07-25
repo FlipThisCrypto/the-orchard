@@ -36,8 +36,9 @@ def _failed_names(rep) -> set[str]:
 def test_vectors_bundle_is_valid():
     rep = verify.verify_bundle(**_bundle())
     assert rep.valid is True
-    assert len(rep.checks) == 11
+    assert len(rep.checks) == 12
     assert _failed_names(rep) == set()
+    assert "Attestation is proof-backed" in {c.name for c in rep.checks}
     assert "Anti-backdate anchor present" in {c.name for c in rep.checks}
     assert "Records agree on node and season" in {c.name for c in rep.checks}
     assert "Schema and signer scheme supported" in {c.name for c in rep.checks}

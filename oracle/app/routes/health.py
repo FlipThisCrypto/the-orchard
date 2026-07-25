@@ -14,6 +14,19 @@ from ..session_deps import LOOPBACK_HOSTS
 router = APIRouter()
 
 
+def _datalayer_schema_version() -> str:
+    """The DataLayer publish-schema version this deployment writes/reads.
+
+    Sourced from orchard_chia so it cannot drift from the real schema. Falls
+    back to "unknown" when orchard_chia isn't importable (oracle-only install).
+    """
+    try:
+        from orchard_chia.datalayer import SCHEMA_VERSION
+        return SCHEMA_VERSION
+    except Exception:  # noqa: BLE001 — advertising a version is best-effort
+        return "unknown"
+
+
 def _check_db() -> tuple[bool, str]:
     """Cheap DB connectivity probe (``SELECT 1``). Returns (ok, detail)."""
     try:
@@ -32,8 +45,10 @@ def root() -> dict:
         "version": "0.1.0",
         "now_utc": datetime.now(timezone.utc).isoformat(),
         "current_season": seasons.current_season(),
-        # Orchard DataLayer publish schema (docs/datalayer/SPEC.md).
-        "datalayer_schema": "1.0.0",
+        # Orchard DataLayer publish schema (docs/datalayer/SPEC.md). Read from
+        # the package rather than hardcoded — a literal here silently drifted
+        # from the real schema version once already.
+        "datalayer_schema": _datalayer_schema_version(),
     }
 
 

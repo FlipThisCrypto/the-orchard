@@ -90,7 +90,12 @@ def test_verified_hours_out_of_range_raises():
 
 
 def test_paid_hours_prefers_verified():
-    assert calculator.paid_hours({"hours_online": 24, "verified_hours": 12}) == (12, "verified_hours")
+    # Legacy record (no seal_source): same AMOUNT as always; the label now says
+    # the basis was never declared, so the payer can't print "verified" for a
+    # record a third-party verifier can only call unproven.
+    hours, basis = calculator.paid_hours({"hours_online": 24, "verified_hours": 12})
+    assert hours == 12
+    assert basis == "verified_hours (basis undeclared)"
     assert calculator.paid_hours({"hours_online": 24}) == (24, "hours_online")
 
 

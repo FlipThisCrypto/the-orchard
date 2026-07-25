@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import merkle, schema
+# Imported by name: `attest` is a parameter name inside verify_bundle.
+from .attest import data_hash_for_uptime
 
 
 @dataclass
@@ -250,12 +252,91 @@ def verify_bundle(
         f"schema {schema_v or '?'}, secp256r1" if not compat else "; ".join(compat),
     ))
 
+    # 0c. Verification basis (schema 1.1.0). A sealed record that declares
+    # seal_source == "placeholder" was written with nothing published on chain:
+    # its season_root is a hash of node:season:hours, NOT a Merkle root, and its
+    # verified_hours proves nothing. Without this check the season-root
+    # comparison below fails and reports "tampered", which is both wrong and
+    # alarming — the record is honestly-labelled, just not proof-backed.
+    basis, basis_why = schema.attest_basis(
+        attest, store_schema=(meta or {}).get("orchard_schema")
+    )
+    checks.append(Check("Attestation is proof-backed", basis is not False, basis_why))
+
+    # A declared tampering signal must never be suppressible by the same party
+    # that declares it. This is deliberately NOT gated on the basis: previously
+    # an oracle could bury its own root-mismatch admission just by declaring a
+    # non-"readings" basis, downgrading a definitive INVALID to cannot-verify.
+    try:
+        declared_mismatches = int(attest.get("root_mismatches") or 0)
+    except (TypeError, ValueError):
+        declared_mismatches = -1  # unparseable — treat as a defect, not as zero
+    if declared_mismatches != 0:
+        checks.append(Check(
+            "No hour_root mismatches declared",
+            False,
+            f"record declares root_mismatches={attest.get('root_mismatches')!r} — "
+            f"stored hour_root(s) disagreed with a recompute",
+        ))
+
+    # A placeholder must be SELF-CONSISTENT before it earns the leniency of
+    # having its season-level checks skipped, otherwise "placeholder" becomes a
+    # way to claim a verified number that nothing ever recomputes.
+    inconsistent = schema.placeholder_inconsistency(attest)
+    if inconsistent:
+        checks.append(Check("Placeholder attestation is self-consistent", False, inconsistent))
+
+    # Recognize a placeholder seal: declared (and self-consistent), or inferred
+    # for a pre-1.1.0 record whose season_root is exactly the placeholder hash.
+    # The legacy inference matters because those records predate seal_source and
+    # would otherwise be reported as "season root mismatch (tampered…)" forever.
+    try:
+        expected_ph_root = data_hash_for_uptime(
+            nid, int(attest.get("season") or 0), int(attest.get("hours_online") or 0)
+        )
+    except (TypeError, ValueError):
+        expected_ph_root = None
+    declared_ph = schema.attest_declares_placeholder(attest)
+    legacy_ph = (
+        basis is None
+        and expected_ph_root is not None
+        and attest.get("season_root") == expected_ph_root
+    )
+    placeholder_sealed = (declared_ph and not inconsistent) or legacy_ph
+
+    if placeholder_sealed:
+        # A placeholder root is not a Merkle root, but it is NOT unconstrained:
+        # it must be exactly sha256(node:season:hours_online). Verifying that is
+        # strictly better than skipping the root — declaring "placeholder" must
+        # not become a way to smuggle in an arbitrary root unchecked.
+        root_ok = (
+            expected_ph_root is not None
+            and attest.get("season_root") == expected_ph_root
+            and attest.get("data_hash") == expected_ph_root
+        )
+        checks.append(Check(
+            "Placeholder root well-formed",
+            root_ok,
+            "season_root == sha256(node:season:hours_online) as required"
+            if root_ok else
+            "placeholder season_root/data_hash is not the required "
+            "sha256(node:season:hours_online) value",
+        ))
+
+    # A genuine placeholder season has NO published readings by definition (the
+    # writer only takes that branch when nothing was found), so the
+    # reading-dependent checks below have nothing to examine. Running them would
+    # fail on the empty set and report a truthful "nothing was published" as a
+    # definitive defect — forcing exit 1 where cannot-verify is correct.
+    skip_reading_checks = placeholder_sealed and not all_readings
+
     # 1. Device provenance — every reading signed by the node's published key.
     bad_sig = [
         r for rec in readings_records for r in rec.get("readings", [])
         if not schema.verify_reading(r, node_pub)
     ]
-    checks.append(Check(
+    reading_checks: list[Check] = []
+    reading_checks.append(Check(
         "Device signature verified",
         bool(all_readings) and not bad_sig,
         f"{len(all_readings)} reading(s) signed by node {node.get('node_id', '?')[:8]}…"
@@ -268,7 +349,7 @@ def verify_bundle(
     bad_anchor = [
         r for r in all_readings if not _anchor_wellformed(r.get("block_anchor"))
     ]
-    checks.append(Check(
+    reading_checks.append(Check(
         "Anti-backdate anchor present",
         bool(all_readings) and not bad_anchor,
         f"{len(all_readings)} reading(s) carry a 16-hex block anchor "
@@ -311,23 +392,37 @@ def verify_bundle(
             proof_detail = (
                 f"{len(failures)} Merkle path failure(s): {failures[:3]}"
             )
-    checks.append(Check("Reading Merkle proof verified", proof_ok, proof_detail))
+    reading_checks.append(Check("Reading Merkle proof verified", proof_ok, proof_detail))
 
     # 3. Hour roots — each record's stored hour_root equals a recompute.
     hr_bad = [
         int(rec["hour"]) for rec in valid_records
         if schema.hour_root(rec.get("readings", [])) != rec.get("hour_root")
     ]
-    checks.append(Check(
+    reading_checks.append(Check(
         "Hour root verified", not hr_bad,
         f"{len(readings_records)} hour root(s) match recompute"
         if not hr_bad else f"mismatch at hour(s) {hr_bad}",
     ))
 
+    if not skip_reading_checks:
+        checks.extend(reading_checks)
+
     # 4-6. Season-level checks need EVERY hour to recompute, so they only run
     # for a full-season bundle. For a known partial slice they are skipped (not
     # failed) — see expect_full_season.
-    if expect_full_season:
+    #
+    # They are ALSO skipped for a record that declares a placeholder basis: its
+    # season_root is sha256(node:season:hours), not a Merkle root, and its
+    # verified_hours/season_score are 0 by construction. Running them would
+    # report "season root mismatch (tampered…)" for a record that is honestly
+    # labelled as unproven — turning a truthful caveat into a false fraud
+    # signal, and (because those are definitive failures) forcing exit 1 where
+    # the correct verdict is cannot-verify. The basis check above is the finding,
+    # and "Placeholder root well-formed" still constrains the root — the skip
+    # only applies to a SELF-CONSISTENT placeholder, so declaring it can't be
+    # used to dodge a recompute while claiming a verified number.
+    if expect_full_season and not placeholder_sealed:
         # 4. Season root — recompute from the present hours; must equal attest.
         recomputed_sr = schema.season_root({h: schema.hour_root(by_hour[h]) for h in by_hour})
         sr_ok = recomputed_sr == attest.get("season_root") == attest.get("data_hash")

@@ -197,13 +197,27 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 verified_hrs = sealed.verified_hours
                 reading_count = sealed.reading_count
                 seal_src = sealed.source
+                # Carry the integrity signals into the SIGNED record instead of
+                # dropping them: presence-only counting (no device pubkey) and
+                # hour_root mismatches are exactly what a consumer needs to know
+                # before treating verified_hours as proof.
+                sigs_verified = sealed.sigs_verified
+                root_mismatches = sealed.root_mismatches
             else:
                 season_root_hex = attest.data_hash_for_uptime(
                     node_id, season, hours
                 )
-                verified_hrs = hours
+                # Nothing is published for this season, so NOTHING was verified.
+                # Writing `hours` here would sign the oracle's own claim into a
+                # field named "verified" — the one case where there is no
+                # evidence at all. hours_online below still records the claim;
+                # the payout falls back to it for a declared-placeholder record,
+                # so amounts are unchanged — but the record no longer lies.
+                verified_hrs = 0
                 reading_count = 0
-                seal_src = "placeholder"
+                seal_src = schema.SEAL_SOURCE_PLACEHOLDER
+                sigs_verified = False
+                root_mismatches = 0
 
             signed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             payload = schema.build_attest(
@@ -217,6 +231,9 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 block_height_at_write=block_height,
                 season_root_hex=season_root_hex,
                 signed_at=signed_at,
+                seal_source=seal_src,
+                sigs_verified=sigs_verified,
+                root_mismatches=root_mismatches,
             )
             # signing_key_hex is 64 hex chars — valid secp256r1 scalar seed
             # (generated once per operator; same file as legacy HMAC key).
@@ -249,10 +266,17 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 block_height=block_height,
             ))
             stats["written"] += 1
+            flags = ""
+            if seal_src == schema.SEAL_SOURCE_PLACEHOLDER:
+                flags += " [NOT proof-backed]"
+            if not sigs_verified and seal_src != schema.SEAL_SOURCE_PLACEHOLDER:
+                flags += " [sigs unchecked: no device pubkey]"
+            if root_mismatches:
+                flags += f" [!] {root_mismatches} hour_root mismatch(es)"
             print(
                 f"  + node={node_id[:8]}.. season={season:>4} "
                 f"hours={hours:>2} verified={verified_hrs} "
-                f"seal={seal_src} sig={signed['oracle_sig'][:10]}.."
+                f"seal={seal_src} sig={signed['oracle_sig'][:10]}..{flags}"
             )
 
     if not changelist:

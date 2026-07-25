@@ -138,10 +138,25 @@ def _attestations_to_plan(
 
         # 4. Compute reward on the verifiable metric (verified_hours when
         #    present), and record the hours actually paid on — not a claim.
-        hours_paid, basis = calculator.paid_hours(s.signed)
-        mojos = calculator.juice_mojos_for_attestation(
-            s.signed, daily_rate=daily_rate,
-        )
+        #    One malformed record must not abort the whole run: every other
+        #    failure mode in this loop appends a skipped:* row, so do the same
+        #    here instead of letting a bad value propagate out and kill the
+        #    payout for every node.
+        try:
+            hours_paid, basis = calculator.paid_hours(s.signed)
+            mojos = calculator.juice_mojos_for_attestation(
+                s.signed, daily_rate=daily_rate,
+            )
+        except (ValueError, TypeError) as e:
+            plan.append({
+                "node_id":  s.node_id,
+                "season":   s.season,
+                "status":   "skipped:invalid_attestation",
+                "hours":    "?",
+                "mojos":    0,
+                "detail":   str(e)[:120],
+            })
+            continue
         plan.append({
             "node_id":         s.node_id,
             "season":          s.season,
@@ -156,12 +171,26 @@ def _attestations_to_plan(
 
 
 def _hours_cell(p: dict) -> str:
-    """Hours paid on; annotate the oracle's claim when payment fell to the
-    verifiable count below it (an over-count surfaced at the payment boundary)."""
+    """Hours paid on, annotated with what the number actually rests on.
+
+    - ``N (claim M)`` — paid the verifiable count, below the oracle's claim
+      (an over-count surfaced at the payment boundary).
+    - ``N (unverified)`` — the attestation declares a placeholder basis: nothing
+      was published on chain, so this payment rests on the oracle's self-report,
+      not on proof. Same amount as always; the operator can now SEE that.
+    """
     hours = p.get("hours", "?")
     claimed = p.get("claimed_hours")
+    basis = p.get("hours_basis") or ""
+    if basis.startswith("hours_online (unverified)"):
+        return f"{hours} (unverified)"
+    if basis.startswith("unpayable"):
+        return f"{hours} (unpayable)"
+    if basis.startswith("verified_hours ("):
+        # e.g. "(sigs unchecked)" / "(basis unrecognized)" / "(basis undeclared)"
+        return f"{hours} {basis[len('verified_hours '):]}"
     if (
-        p.get("hours_basis") == "verified_hours"
+        basis == "verified_hours"
         and isinstance(claimed, int)
         and isinstance(hours, int)
         and claimed != hours

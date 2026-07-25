@@ -38,6 +38,28 @@ verification_badge(report, *, sealed=True, stale=False, unverifiable=False) -> s
 The SPEC §8 public badge: `Verified` | `Live` | `Partial` | `Stale` |
 `Unverified` (precedence: unverifiable → stale → validity).
 
+### Verification basis (schema 1.1.0)
+
+```python
+attest_basis(attest_record, *, store_schema=None) -> tuple[bool | None, str]
+attest_is_proof_backed(attest_record, *, store_schema=None) -> bool | None
+schema_declares_basis(schema_version) -> bool
+```
+How much of a sealed attest is actually proven (SPEC §2.4). `True` only when the
+record declares `seal_source == "readings"` **and** `sigs_verified` — i.e. a real
+Merkle root over readings whose device signatures were checked. `False` for a
+placeholder, for presence-counted hours, for an unrecognized basis (fail closed),
+and for a record that declares no basis inside a store whose `meta:schema` says
+`>= 1.1.0` (so a record cannot dodge its caveat by omitting it). `None` only when
+the store genuinely predates 1.1.0.
+
+`verify_bundle` surfaces this as the **"Attestation is proof-backed"** check and,
+for a placeholder record, *skips* the season root / verified-hours / season-score
+checks — they compare against a root that is not a Merkle root, so running them
+would report a truthful caveat as tampering. A declared `root_mismatches > 0`
+raises a separate **"No hour_root mismatches declared"** check, which stays a
+definitive INVALID.
+
 ## On-chain inclusion — `orchard_chia.datalayer.inclusion`
 
 ```python
@@ -85,4 +107,8 @@ recomputable by anyone from public data.
   reading.
 
 Exit codes: **0** VALID · **1** INVALID (a definitive contradiction) · **2**
-CANNOT-VERIFY (transient/unprovable — retry, not fraud).
+CANNOT-VERIFY (transient/unprovable — retry, not fraud). `vectors` and `live`
+share one classifier, so an honestly-labelled-but-unproven record (placeholder
+basis, unsupported scheme, unanchored readings) reports 2 rather than being
+called fraud. `reading` verifies a single datum, which carries no attest basis,
+schema or anchor check, so it maps its own three outcomes directly.

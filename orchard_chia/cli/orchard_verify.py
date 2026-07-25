@@ -79,10 +79,33 @@ INCLUSION_CHECK_NAME = "DataLayer inclusion proof"
 #   - anti-backdate anchor: an unanchored (placeholder) reading — current
 #     firmware doesn't yet fetch /beacon, so the anti-backdate dimension simply
 #     can't be established; that is not fraud, so don't flag it as INVALID.
+#   - proof-backed basis: a placeholder-sealed attestation is honestly labelled
+#     as unproven (nothing was published). That is "cannot verify the reward",
+#     not "the operator is lying" — unlike a declared root mismatch, which stays
+#     a definitive INVALID.
 _CANNOT_VERIFY_OFFLINE_CHECKS = frozenset({
     "Schema and signer scheme supported",
     "Anti-backdate anchor present",
+    "Attestation is proof-backed",
 })
+
+
+def _offline_exit_code(rep: verify.Report) -> int:
+    """Exit code for a bundle verified WITHOUT the live inclusion check.
+
+    0 VALID · 1 INVALID (a definitive contradiction) · 2 CANNOT-VERIFY (every
+    failure is an honestly-declared "we can't establish this": placeholder
+    basis, unsupported schema/scheme, unanchored readings).
+    """
+    if rep.valid:
+        return 0
+    definitive = any(
+        not c.ok
+        for c in rep.checks
+        if c.name != INCLUSION_CHECK_NAME
+        and c.name not in _CANNOT_VERIFY_OFFLINE_CHECKS
+    )
+    return 1 if definitive else 2
 
 
 def _live_exit_code(rep: verify.Report, incl: inclusion.InclusionReport) -> int:
@@ -158,9 +181,19 @@ def cmd_vectors(args: argparse.Namespace) -> int:
         print(f"error: malformed vectors file: {e}", file=sys.stderr)
         return 2
     rep = verify.verify_bundle(**bundle)
-    badge = verify.verification_badge(rep, sealed=True)
-    _print_report(rep, as_json=bool(getattr(args, "json", False)), badge=badge)
-    return 0 if rep.valid else 1
+    # Offline mode uses the SAME tri-state classifier as live, so an honestly
+    # -labelled-but-unproven record (placeholder basis, unsupported scheme,
+    # unanchored readings) reports cannot-verify (2) instead of being called
+    # fraud (1). Previously this returned `0 if valid else 1` and collapsed
+    # every distinction.
+    code = _offline_exit_code(rep)
+    label = {0: "VALID", 1: "INVALID", 2: "CANNOT-VERIFY"}[code]
+    badge = verify.verification_badge(rep, sealed=True, unverifiable=(code == 2))
+    _print_report(
+        rep, as_json=bool(getattr(args, "json", False)),
+        result_label=label, badge=badge,
+    )
+    return code
 
 
 def cmd_live(args: argparse.Namespace) -> int:
