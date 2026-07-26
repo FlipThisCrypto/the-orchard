@@ -368,7 +368,9 @@ def test_pass_verify_cache_hit(client: TestClient, fake_indexer, monkeypatch):
     pass_verify.clear_cache()
 
     calls = {"n": 0}
-    original = pass_verify.nft_verify.list_passes_by_address
+    # nft_verify is imported lazily now (so the oracle can boot without
+    # orchard_chia); reach it through the accessor rather than module scope.
+    original = pass_verify._nft_verify().list_passes_by_address
 
     def counting(address: str):
         calls["n"] += 1

@@ -14,6 +14,14 @@ PyJWT>=2.8.0
 # Imported lazily there, but require_wallet_session=true is the
 # production posture, so it's a hard runtime dep — same CI catch.
 chia_rs>=0.42.0
+# Orchard Pass verification (app/pass_verify.py -> orchard_chia.nft.verify ->
+# orchard_chia.wallet.rpc) reaches these. They were undeclared here, so a clean
+# oracle-only install crashed at startup with an ImportError. The import is now
+# lazy (a missing dep degrades to a 503 on /register instead of killing the
+# service), but the dependency is real whenever wallet binding is used.
+# Floors match orchard_chia/requirements.txt.
+requests>=2.32.0
+urllib3>=2.7.0
 
 # Dev / tests (kept here for one-command install; trim to a separate
 # requirements-dev.txt later if it grows).
