@@ -250,12 +250,43 @@ def register(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="node_id already registered with a different signing key",
             )
-        # Update mutable metadata if provided. With a session, the
-        # resolved wallet_address is always set (== sess.address) so
-        # any re-registration through the wizard re-binds the wallet
-        # to the connected one. That's correct: the operator's
-        # intent in clicking Provision again is "this Tree is mine
-        # now under the wallet I'm currently connected with."
+        # OWNERSHIP GUARD. Re-registration may refresh a Tree's metadata, but it
+        # must never silently transfer the Tree to a different wallet.
+        #
+        # The signing key is NOT an ownership credential: it is readable over
+        # USB, returned verbatim by the dashboard's own /api/serial/identify,
+        # and stored in plaintext here. Without this check, anyone who has ever
+        # seen the device secret can re-register the node under their own wallet
+        # and redirect every future $JUICE payout — the previous code assumed
+        # "re-provisioning means it's mine now", which is only true when the
+        # Tree is unclaimed or you already own it.
+        if (
+            existing.wallet_address is not None
+            and wallet_address is not None
+            and existing.wallet_address != wallet_address
+        ):
+            audit.record(
+                db,
+                action="node.takeover_blocked",
+                node_id=existing.node_id,
+                actor=audit.actor_for(sess, fallback="legacy"),
+                request_id=audit.request_id_of(request),
+                bound_to_other_wallet=True,
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "node_id is already bound to a different wallet. Knowing the "
+                    "device signing key does not transfer ownership. If this Tree "
+                    "genuinely changed hands, the current owner must release it "
+                    "(DELETE /nodes/{node_id}) before it can be re-registered."
+                ),
+            )
+
+        # Update mutable metadata if provided. With a session the resolved
+        # wallet_address is sess.address, so re-provisioning re-binds the wallet
+        # — now only when the Tree is unclaimed or already yours (guard above).
         if wallet_address is not None:
             existing.wallet_address = wallet_address
             # When wallet changes, re-bind the Pass (or clear if the
