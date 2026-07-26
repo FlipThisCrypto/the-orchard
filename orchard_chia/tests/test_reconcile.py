@@ -63,7 +63,7 @@ def test_reconcile_main_exits_datalayer_when_store_unreachable(monkeypatch):
     monkeypatch.setattr(reconcile.config, "load", lambda: fake)
 
     class FakeOracle:
-        def __init__(self, url):
+        def __init__(self, url, writer_token=None):
             pass
 
         def current_season(self):

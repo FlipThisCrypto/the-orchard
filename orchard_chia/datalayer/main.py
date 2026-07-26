@@ -104,7 +104,7 @@ def main() -> int:
 
 
 def _attest_body(cfg, run: ops_log.OpsRun) -> int:
-    oracle = OracleClient(cfg.oracle.url)
+    oracle = OracleClient(cfg.oracle.url, cfg.oracle.writer_token)
     fn = FullNodeRpc(
         cfg.full_node.host, cfg.full_node.port,
         cfg.full_node.cert_path, cfg.full_node.key_path,

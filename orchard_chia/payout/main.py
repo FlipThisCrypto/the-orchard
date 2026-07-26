@@ -27,7 +27,7 @@ import yaml
 _XCH_ADDR = re.compile(r"^xch1[0-9a-z]{50,80}$")
 
 from .. import datalayer as dl_pkg  # type: ignore  # noqa: F401
-from ..datalayer import attest, config as base_config
+from ..datalayer import attest, config as base_config, exit_codes
 from ..datalayer.oracle import OracleClient, OracleError
 from ..datalayer.rpc import ChiaRpcError, DataLayerRpc
 from ..wallet.rpc import WalletRpc, WalletRpcError
@@ -267,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     daily_rate = _daily_rate()
-    oracle = OracleClient(cfg.oracle.url)
+    oracle = OracleClient(cfg.oracle.url, cfg.oracle.writer_token)
     dl = DataLayerRpc(
         cfg.data_layer.host, cfg.data_layer.port,
         cfg.data_layer.cert_path, cfg.data_layer.key_path,
@@ -317,6 +317,36 @@ def main(argv: list[str] | None = None) -> int:
               f"-> {len(per_wallet)} wallet(s) -> {total_juice:.3f} $JUICE total")
 
         if not per_wallet:
+            # "nothing to send" is indistinguishable from "everyone is already
+            # paid", which is exactly how a total payout failure hid before: the
+            # oracle scrubs wallet_address for anyone who can't prove they are
+            # the operator's writer, so an unconfigured token made EVERY node
+            # resolve to no_wallet while the run exited 0. Diagnose it loudly.
+            no_wallet = [p for p in plan if p["status"] == "skipped:no_wallet"]
+            if no_wallet and len(no_wallet) == len([p for p in plan if p["mojos"] == 0]):
+                token_set = bool((cfg.oracle.writer_token or "").strip())
+                print(
+                    f"[orchard.payout] ERROR: every attestation ({len(no_wallet)}) "
+                    f"resolved to an empty wallet_address.",
+                    file=sys.stderr,
+                )
+                if not token_set:
+                    print(
+                        "[orchard.payout] Cause: no writer token configured, so the "
+                        "oracle withholds operator-private wallet_address. Set "
+                        "ORCHARD_ORACLE_WRITER_TOKEN (or oracle.writer_token in "
+                        "config.yaml) to the SAME value as the oracle's "
+                        "ORCHARD_ORACLE_WRITER_TOKEN and re-run.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "[orchard.payout] A writer token IS configured, so either it "
+                        "does not match the oracle's, or these Trees genuinely have "
+                        "no wallet bound (operator never completed registration).",
+                        file=sys.stderr,
+                    )
+                return exit_codes.ORACLE
             print("[orchard.payout] nothing to send.")
             return 0
 

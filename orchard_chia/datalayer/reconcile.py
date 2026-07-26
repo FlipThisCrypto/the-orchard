@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: datalayer.store_id empty", file=sys.stderr)
         return exit_codes.USAGE
 
-    oracle = OracleClient(cfg.oracle.url)
+    oracle = OracleClient(cfg.oracle.url, cfg.oracle.writer_token)
     try:
         current = oracle.current_season()
         nodes = oracle.list_nodes()

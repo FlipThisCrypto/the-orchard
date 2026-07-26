@@ -44,6 +44,11 @@ class DataLayerConfig:
 @dataclass
 class OracleConfig:
     url: str = "http://127.0.0.1:8000"
+    # Shared secret proving this process is the operator's own writer/payout job
+    # (same token as the oracle's ORCHARD_ORACLE_WRITER_TOKEN). Needed to read
+    # operator-private fields such as wallet_address when the job does NOT run
+    # on the oracle host. Empty = rely on loopback trust.
+    writer_token: str = ""
 
 
 @dataclass
@@ -100,6 +105,12 @@ def load() -> Config:
         ),
         oracle=OracleConfig(
             url=orcl.get("url", "http://127.0.0.1:8000"),
+            # Env override so the secret can stay out of config.yaml.
+            writer_token=(
+                os.environ.get("ORCHARD_ORACLE_WRITER_TOKEN")
+                or orcl.get("writer_token", "")
+                or ""
+            ),
         ),
         attestation=AttestationConfig(
             max_lookback_seasons=att.get("max_lookback_seasons"),

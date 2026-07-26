@@ -16,12 +16,29 @@ class OracleError(RuntimeError):
 
 
 class OracleClient:
-    def __init__(self, base_url: str):
+    """Read client for the oracle.
+
+    ``writer_token`` authenticates this process as the operator's own DataLayer
+    writer / payout job (the same ``X-Orchard-Writer-Token`` POST /attestations
+    uses). It is required to read operator-private fields — notably
+    ``wallet_address``, which the payout needs to know where to send $JUICE.
+    When the job runs on the oracle host the token may be omitted: the oracle
+    falls back to loopback-only trust.
+    """
+
+    def __init__(self, base_url: str, writer_token: str | None = None):
         self.base = base_url.rstrip("/")
+        self._writer_token = (writer_token or "").strip()
+
+    def _auth_headers(self) -> dict:
+        if self._writer_token:
+            return {"X-Orchard-Writer-Token": self._writer_token}
+        return {}
 
     def _get(self, path: str, **kwargs) -> dict | list:
+        headers = {**self._auth_headers(), **(kwargs.pop("headers", None) or {})}
         try:
-            r = requests.get(f"{self.base}{path}", timeout=10, **kwargs)
+            r = requests.get(f"{self.base}{path}", timeout=10, headers=headers, **kwargs)
         except requests.RequestException as e:
             raise OracleError(f"oracle unreachable: {e}") from e
         if r.status_code == 404:

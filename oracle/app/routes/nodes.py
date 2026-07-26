@@ -39,6 +39,7 @@ from ..session_deps import LOOPBACK_HOSTS
 # are alias names kept for the existing call sites in this module.
 from ..session_deps import maybe_session as _maybe_session
 from ..session_deps import require_session as _require_session
+from ..session_deps import writer_authenticated
 
 router = APIRouter()
 
@@ -124,10 +125,18 @@ def _to_public(
     n: models.Node,
     db: Session,
     sess: sessions.Session | None = None,
+    *,
+    writer: bool = False,
 ) -> NodePublic:
     # owner == legacy unowned node OR the session wallet matches the node's
     # wallet. Mirrors the GPS owner-check in routes/readings.py.
-    owner = n.wallet_address is None or (
+    #
+    # ``writer`` widens this for the operator's own DataLayer writer / payout
+    # process (authenticated by X-Orchard-Writer-Token, else loopback-only — the
+    # same trust rule POST /attestations uses). The payout MUST be able to read
+    # wallet_address to know where to send $JUICE; without this it resolved every
+    # node to "" and skipped every payment while exiting 0.
+    owner = writer or n.wallet_address is None or (
         sess is not None and sess.address == n.wallet_address
     )
     geohash: str | None = None
@@ -164,6 +173,7 @@ def _to_public(
 def list_nodes(
     db: Session = Depends(get_db),
     sess: sessions.Session | None = Depends(_maybe_session),
+    writer: bool = Depends(writer_authenticated),
 ) -> list[NodePublic]:
     """List nodes. With a session, scoped to that operator's wallet.
     Without, returns all (existing public-dashboard behavior)."""
@@ -171,7 +181,7 @@ def list_nodes(
     if sess is not None:
         q = q.where(models.Node.wallet_address == sess.address)
     rows = db.execute(q.order_by(models.Node.registered_at.desc())).scalars().all()
-    return [_to_public(n, db, sess) for n in rows]
+    return [_to_public(n, db, sess, writer=writer) for n in rows]
 
 
 @router.get("/nodes/{node_id}", response_model=NodePublic)
@@ -179,6 +189,7 @@ def get_node(
     node_id: str,
     db: Session = Depends(get_db),
     sess: sessions.Session | None = Depends(_maybe_session),
+    writer: bool = Depends(writer_authenticated),
 ) -> NodePublic:
     node = db.get(models.Node, node_id.upper())
     if node is None:
@@ -193,7 +204,7 @@ def get_node(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="unknown node_id",
         )
-    return _to_public(node, db, sess)
+    return _to_public(node, db, sess, writer=writer)
 
 
 @router.delete("/nodes/{node_id}", status_code=status.HTTP_204_NO_CONTENT)

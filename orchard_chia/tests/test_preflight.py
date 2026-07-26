@@ -48,7 +48,7 @@ def test_preflight_with_mock_config(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg_mod, "CONFIG_PATH", tmp_path / "config.yaml")
 
     class FakeOracle:
-        def __init__(self, url):
+        def __init__(self, url, writer_token=None):
             pass
 
         def current_season(self):
@@ -102,7 +102,7 @@ def test_preflight_flags_malformed_store_id(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg_mod, "SIGNING_KEY_PATH", key)
 
     class FakeOracle:
-        def __init__(self, url):
+        def __init__(self, url, writer_token=None):
             pass
 
         def current_season(self):
@@ -149,7 +149,7 @@ def test_preflight_oracle_down(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg_mod, "SIGNING_KEY_PATH", key)
 
     class BadOracle:
-        def __init__(self, url):
+        def __init__(self, url, writer_token=None):
             pass
 
         def current_season(self):

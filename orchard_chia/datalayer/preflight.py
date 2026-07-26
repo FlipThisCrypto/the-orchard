@@ -101,7 +101,7 @@ def run_preflight(*, skip_chia: bool = False) -> Report:
 
     # Oracle liveness
     try:
-        oracle = OracleClient(cfg.oracle.url)
+        oracle = OracleClient(cfg.oracle.url, cfg.oracle.writer_token)
         season = oracle.current_season()
         nodes = oracle.list_nodes()
         rep.add(

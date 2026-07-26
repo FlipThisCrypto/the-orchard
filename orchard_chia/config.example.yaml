@@ -28,6 +28,14 @@ reward:
 # ----- Oracle (where we read uptime data from) ----------------------
 oracle:
   url: "http://127.0.0.1:8000"
+  # REQUIRED FOR PAYOUTS. wallet_address is operator-private: the oracle only
+  # returns it to a caller that proves it is your own writer/payout process.
+  # Set this to the SAME value as the oracle's ORCHARD_ORACLE_WRITER_TOKEN.
+  # Without it `python -m orchard_chia.payout` resolves every Tree to an empty
+  # wallet and refuses to send (it now reports this loudly instead of exiting 0).
+  # Prefer the ORCHARD_ORACLE_WRITER_TOKEN env var so the secret stays out of
+  # this file; the env var wins when both are set.
+  writer_token: ""
 
 # ----- Phase 5 attestation writer ---------------------------------
 # Idempotent. Re-run as often as you like; only changed values are

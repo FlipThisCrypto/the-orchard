@@ -361,7 +361,7 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
     )
     wm = PublishWatermark(watermark_path)
 
-    oracle = OracleClient(cfg.oracle.url)
+    oracle = OracleClient(cfg.oracle.url, cfg.oracle.writer_token)
     try:
         current_season = oracle.current_season()
         nodes = oracle.list_nodes()
