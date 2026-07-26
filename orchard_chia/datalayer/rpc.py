@@ -253,6 +253,25 @@ class DataLayerRpc:
             keys.extend(data.get("keys", []))
         return keys
 
+    def get_keys_strict(self, store_id: str) -> list[str]:
+        """Like :meth:`get_keys` but PROPAGATES a first-page failure.
+
+        ``get_keys`` soft-fails to ``[]`` for scanners, which makes "the store
+        is unreachable" indistinguishable from "the store is empty". Any caller
+        that would treat an empty list as evidence (e.g. sealing an attestation
+        as "nothing was published") must use this instead.
+        """
+        first = self._post("get_keys", {"id": store_id, "page": 1})
+        keys = list(first.get("keys", []))
+        try:
+            total = int(first.get("total_pages"))
+        except (TypeError, ValueError):
+            return keys
+        for page in range(2, total + 1):
+            data = self._post("get_keys", {"id": store_id, "page": page})
+            keys.extend(data.get("keys", []))
+        return keys
+
     def get_root(self, store_id: str) -> dict:
         """Current on-chain root hash + confirmed status for a store.
 

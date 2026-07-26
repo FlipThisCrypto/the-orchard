@@ -13,6 +13,14 @@ from dataclasses import dataclass
 from . import schema
 
 
+class SealReadError(RuntimeError):
+    """The published readings for a node·season could not be read completely.
+
+    Distinct from "there are none": sealing on incomplete data would sign a
+    permanent, wrong conclusion.
+    """
+
+
 @dataclass(frozen=True)
 class SealInputs:
     """Material used to seal one node·season."""
@@ -98,26 +106,54 @@ def load_season_readings(
     *,
     node_id: str,
     season: int,
+    strict: bool = False,
 ) -> list[dict]:
     """Fetch all ``readings:<node>:<season>:*`` values from DataLayer.
 
-    Soft-fails to [] on any RPC/key error so the attest writer can fall
-    back to the placeholder path without aborting the whole run.
+    ``strict=False`` (default, for read-only reporting like reconcile) soft-fails
+    to ``[]`` / skips unreadable hours.
+
+    ``strict=True`` raises :class:`SealReadError` if the store cannot be listed
+    or ANY discovered hour cannot be read. Anything that SIGNS a conclusion from
+    this data must use strict mode: otherwise a transient RPC failure is
+    indistinguishable from "nothing was published", and the writer permanently
+    seals either a placeholder (claiming nothing exists) or a ``season_root``
+    over a PARTIAL set with an understated ``verified_hours`` — both signed,
+    both labelled proof-backed, both irreversible.
     """
     from .fetch import _discover_hours  # shared hour discovery
 
     node_id = node_id.upper()
     try:
-        hours = _discover_hours(rpc, store_id, node_id, season)
-    except Exception:  # noqa: BLE001
+        if strict:
+            hours = _discover_hours(rpc, store_id, node_id, season, strict=True)
+        else:
+            hours = _discover_hours(rpc, store_id, node_id, season)
+    except SealReadError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        if strict:
+            raise SealReadError(
+                f"cannot list store keys for {node_id}:{season}: {e}"
+            ) from e
         return []
+
     out: list[dict] = []
     for h in hours:
+        key = schema.readings_key(node_id, season, h)
         try:
-            raw = rpc.get_value(store_id, schema.readings_key(node_id, season, h))
-        except Exception:  # noqa: BLE001
+            raw = rpc.get_value_strict(store_id, key) if strict else rpc.get_value(store_id, key)
+        except Exception as e:  # noqa: BLE001
+            if strict:
+                raise SealReadError(
+                    f"hour {h:02d} of {node_id}:{season} is unreadable: {e}"
+                ) from e
             continue
         rec = schema.parse_value(raw)
         if rec:
             out.append(rec)
+        elif strict:
+            raise SealReadError(
+                f"hour {h:02d} of {node_id}:{season} did not parse as a readings record"
+            )
     return out

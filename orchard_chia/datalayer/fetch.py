@@ -80,10 +80,18 @@ def _discover_hours(
     store_id: str,
     node_id: str,
     season: int,
+    *,
+    strict: bool = False,
 ) -> list[int]:
+    """Hours present for a node·season.
+
+    ``strict=True`` uses the non-swallowing key listing so an unreachable store
+    raises instead of looking like an empty one (see seal.SealReadError).
+    """
     prefix = f"readings:{node_id.upper()}:{int(season):08d}:"
     found: list[int] = []
-    for key_hex in rpc.get_keys(store_id):
+    keys = rpc.get_keys_strict(store_id) if strict else rpc.get_keys(store_id)
+    for key_hex in keys:
         try:
             ascii_key = bytes.fromhex(key_hex).decode("utf-8")
         except (ValueError, UnicodeDecodeError):

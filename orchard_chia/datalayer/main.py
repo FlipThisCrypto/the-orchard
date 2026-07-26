@@ -182,9 +182,23 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
             # SPEC §2.4 sealed attest (ADR-0003): prefer season_root +
             # verified_hours from published readings: batches; fall back to
             # the uptime-derived placeholder when nothing is on-chain yet.
-            pub_readings = seal.load_season_readings(
-                dl, cfg.data_layer.store_id, node_id=node_id, season=season
-            )
+            # STRICT: this data decides a permanent, signed conclusion. A
+            # transient RPC failure must never be read as "nothing published"
+            # (-> placeholder) or silently drop an hour (-> understated
+            # verified_hours over a partial season_root). Skip the season
+            # instead; the next run re-attempts it.
+            try:
+                pub_readings = seal.load_season_readings(
+                    dl, cfg.data_layer.store_id,
+                    node_id=node_id, season=season, strict=True,
+                )
+            except seal.SealReadError as e:
+                print(
+                    f"  WARN: skipping {node_id[:8]}.. season={season}: {e}",
+                    file=sys.stderr,
+                )
+                stats["read_error"] += 1
+                continue
             device_pub = (
                 node.get("device_pubkey")
                 or node.get("pubkey")
@@ -251,6 +265,25 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
             if existing_hex == value_hex:
                 stats["unchanged"] += 1
                 continue
+
+            # BASIS-DOWNGRADE GUARD. Never replace a proof-backed attestation
+            # with a weaker one. Without this, a single bad read (or a store
+            # that has since been pruned) could overwrite a sealed,
+            # Merkle-rooted record with a placeholder claiming nothing was ever
+            # published — destroying the evidence for that season permanently.
+            if existing_hex is not None:
+                prev = schema.parse_value(existing_hex) or {}
+                prev_backed = schema.attest_is_proof_backed(prev)
+                new_backed = schema.attest_is_proof_backed(signed)
+                if prev_backed is True and new_backed is not True:
+                    print(
+                        f"  WARN: refusing to downgrade {node_id[:8]}.. "
+                        f"season={season}: on-chain record is proof-backed, "
+                        f"new one would be {signed.get('seal_source')!r}",
+                        file=sys.stderr,
+                    )
+                    stats["downgrade_refused"] += 1
+                    continue
 
             if existing_hex is not None:
                 # DataLayer batch_update supports delete-then-insert for replaces.
