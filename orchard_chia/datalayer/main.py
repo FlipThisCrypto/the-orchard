@@ -82,6 +82,26 @@ def _report_to_oracle(
                 f"{r.text[:160]}", file=sys.stderr)
 
 
+def _season_seal_time(uptime: dict) -> str:
+    """Deterministic ``signed_at`` for a sealed Season.
+
+    Uses the Season's end boundary normalized to ``%Y-%m-%dT%H:%M:%SZ`` so
+    re-sealing the same closed Season reproduces byte-identical signed content
+    (the precondition for the writer being idempotent). Falls back to the raw
+    string, then to the epoch, rather than reintroducing now().
+    """
+    raw = (uptime or {}).get("season_end_utc")
+    if not isinstance(raw, str) or not raw:
+        return "1970-01-01T00:00:00Z"
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def main() -> int:
     try:
         cfg = config.load()
@@ -233,7 +253,15 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 sigs_verified = False
                 root_mismatches = 0
 
-            signed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            # Deterministic seal time: the Season's own close boundary, NOT
+            # wall-clock now(). signed_at is inside the signed body, so a
+            # per-run timestamp changed value_hex on every run — which made the
+            # `existing_hex == value_hex` short-circuit below unreachable and
+            # caused every daily run to delete+insert EVERY attestation for
+            # EVERY past season: unbounded, fee-bearing, and rewriting the seal
+            # time of historical records. A sealed season is a fixed fact, so
+            # re-signing it must reproduce identical bytes.
+            signed_at = _season_seal_time(uptime)
             payload = schema.build_attest(
                 node_id=node_id,
                 season=season,
