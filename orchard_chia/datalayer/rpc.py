@@ -12,7 +12,7 @@ operator's CA cert path via ``verify=<ca_path>`` instead.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import requests

@@ -2,8 +2,6 @@
 """DataLayer preflight checks."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from orchard_chia.datalayer import preflight
 from orchard_chia.datalayer.oracle import OracleError
 

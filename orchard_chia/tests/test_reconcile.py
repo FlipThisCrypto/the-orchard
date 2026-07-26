@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-from orchard_chia.datalayer import reconcile, schema, seal
+from orchard_chia.datalayer import reconcile, schema
 
 
 NODE = "AABBCCDDEEFF0011AABBCCDDEEFF0011"

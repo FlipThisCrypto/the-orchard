@@ -2,10 +2,7 @@
 """Tests for the DataLayer hot-path publisher (ADR-0003 / SPEC §6)."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-import pytest
 
 from orchard_chia.datalayer import metrics, publish, publish_watermark, schema
 

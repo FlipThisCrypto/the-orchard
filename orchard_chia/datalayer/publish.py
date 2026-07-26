@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from . import clock, confirm, metrics as metrics_mod
 from . import ops_log, schedule, schema

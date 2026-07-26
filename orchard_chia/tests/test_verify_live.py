@@ -2,8 +2,6 @@
 """End-to-end coverage of `orchard-verify live` (fetch -> verify -> inclusion)."""
 from __future__ import annotations
 
-import pytest
-
 from orchard_chia.cli import orchard_verify as cli
 from orchard_chia.datalayer import schema
 from orchard_chia.datalayer.inclusion import clvm_hash
