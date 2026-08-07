@@ -68,14 +68,34 @@ class OracleClient:
         return info
 
     def current_season(self) -> int:
-        info = self.root()
+        """The Season the oracle says it is in.
+
+        Read from ``/network/stats``, not from ``/``. Both publish
+        ``current_season``, but the deployed oracle sits behind Cloudflare and
+        the bare root is answered with a 403 HTML challenge — measured
+        2026-08-07: ``/`` and ``/health/ready`` give 403 text/html while
+        ``/health``, ``/nodes``, ``/network/stats`` and ``/uptime/...`` all give
+        200 JSON, for the same client and the same User-Agent. So the very
+        first call the publisher makes was the one call production refuses.
+
+        ``/network/stats`` is a purpose-built public endpoint rather than a
+        landing page, so it is also the more honest thing to depend on. The root
+        stays as a fallback for an oracle old enough not to publish the field.
+        """
+        info = None
+        try:
+            info = self._get("/network/stats")
+        except OracleError:
+            info = None
+        if not isinstance(info, dict) or "current_season" not in info:
+            info = self.root()
         try:
             return int(info["current_season"])
         except (KeyError, TypeError, ValueError) as e:
             # Turn a malformed oracle payload into OracleError so callers'
             # existing `except OracleError` handles it instead of crashing.
             raise OracleError(
-                f"oracle root missing/invalid current_season: {e}"
+                f"oracle has no usable current_season: {e}"
             ) from e
 
     def list_nodes(self) -> list[dict]:
