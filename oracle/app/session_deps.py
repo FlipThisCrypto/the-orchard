@@ -71,6 +71,35 @@ def require_writer(
         )
 
 
+def writer_authenticated(
+    request: Request,
+    x_orchard_writer_token: str | None = Header(
+        default=None, alias="X-Orchard-Writer-Token"
+    ),
+) -> bool:
+    """Is this caller provably the operator's own writer/payout process?
+
+    Non-raising, so a READ route can widen what it discloses without becoming a
+    401 for everyone else.
+
+    DELIBERATELY STRICTER THAN :func:`require_writer`: it requires a configured
+    token AND a matching header, and does **not** accept bare loopback. Loopback
+    is an acceptable fallback for the *write* path (which predates this and is
+    already gated), but it is far too broad to unlock a privacy-sensitive field:
+    every process on the oracle host — and, behind the reverse proxy/tunnel this
+    project's own ADR-0004 prescribes, potentially every internet caller —
+    presents as loopback. Disclosing an operator's payout wallet on that basis
+    would silently undo the owner-only scrubbing.
+
+    Consequence: to run payouts the operator must set
+    ``ORCHARD_ORACLE_WRITER_TOKEN`` and give the same value to the writer job.
+    """
+    token = settings().writer_token
+    if not token or not x_orchard_writer_token:
+        return False
+    return _hmac.compare_digest(x_orchard_writer_token, token)
+
+
 def _parse_bearer(authorization: str | None) -> str | None:
     """Pull the token out of an ``Authorization: Bearer <token>`` header.
     Returns None if the header is absent or doesn't use the Bearer

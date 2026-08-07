@@ -165,6 +165,13 @@ const OrchardView = (() => {
     const parts = [];
     parts.push(makeField('node_id',     r.body.node_id, {mono: true}));
     parts.push(makeField('signing_key', sk ? `${sk.slice(0, 16)}…` : '—', {mono: true}));
+    // ADR-0003 provenance key — published to DataLayer node:<id>.pubkey.
+    const dpub = r.body.device_pubkey || (hw && hw.pubkey) || '';
+    parts.push(makeField(
+      'device_pubkey',
+      dpub ? `${dpub.slice(0, 18)}…` : '(none — upgrade firmware for verifiable readings)',
+      {mono: true}
+    ));
     parts.push(makeField('fw',          r.body.status?.fw));
     if (hw && hw.board) {
       parts.push(makeField('board', hw.board));
@@ -293,6 +300,10 @@ const OrchardView = (() => {
         signing_key_hex: identified.signing_key_hex,
         label: label || null,
         fw_version: identified.status?.fw || null,
+        // Compressed secp256r1 pubkey for DataLayer node:<id>.pubkey.
+        device_pubkey: identified.device_pubkey
+          || identified.hw_info?.pubkey
+          || null,
       }),
     });
     let r = { ok: regResp.ok, status: regResp.status,

@@ -95,3 +95,8 @@ Be respectful. Disagreements about technical decisions are fine; personal attack
 ## License
 
 By contributing you agree your contributions are licensed under the [Apache License 2.0](LICENSE), same as the rest of the project.
+
+## DataLayer
+
+Run `python -m pytest orchard_chia/tests -q` after changing `orchard_chia/datalayer`. See `docs/ops/DATALAYER_OPERATOR.md`.
+

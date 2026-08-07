@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import attest, config
+from . import attest, config, confirm, exit_codes, ops_log, schema, seal
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
@@ -116,12 +116,32 @@ def _report_to_oracle(
                 f"{r.text[:160]}", file=sys.stderr)
 
 
+def _season_seal_time(uptime: dict) -> str:
+    """Deterministic ``signed_at`` for a sealed Season.
+
+    Uses the Season's end boundary normalized to ``%Y-%m-%dT%H:%M:%SZ`` so
+    re-sealing the same closed Season reproduces byte-identical signed content
+    (the precondition for the writer being idempotent). Falls back to the raw
+    string, then to the epoch, rather than reintroducing now().
+    """
+    raw = (uptime or {}).get("season_end_utc")
+    if not isinstance(raw, str) or not raw:
+        return "1970-01-01T00:00:00Z"
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def main() -> int:
     try:
         cfg = config.load()
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
-        return 2
+        return exit_codes.USAGE
 
     if not cfg.data_layer.store_id:
         print(
@@ -131,9 +151,14 @@ def main() -> int:
             "Then put the returned `id` value into config.yaml.",
             file=sys.stderr,
         )
-        return 2
+        return exit_codes.USAGE
 
-    oracle = OracleClient(cfg.oracle.url)
+    with ops_log.ops_run("attest", store_id_set=True) as run:
+        return _attest_body(cfg, run)
+
+
+def _attest_body(cfg, run: ops_log.OpsRun) -> int:
+    oracle = OracleClient(cfg.oracle.url, cfg.oracle.writer_token)
     fn = FullNodeRpc(
         cfg.full_node.host, cfg.full_node.port,
         cfg.full_node.cert_path, cfg.full_node.key_path,
@@ -151,27 +176,31 @@ def main() -> int:
         current_season = oracle.current_season()
     except OracleError as e:
         print(f"ERROR: oracle unreachable: {e}", file=sys.stderr)
-        return 3
+        run.finish("error", error="OracleError", error_msg=str(e)[:200])
+        return exit_codes.ORACLE
     print(f"[orchard.attest] current_season: {current_season} (closed: 1..{current_season - 1})")
 
     if current_season < 2:
         print("[orchard.attest] No closed Seasons yet. Nothing to attest.")
+        run.finish("noop", reason="no_closed_seasons", season=current_season)
         return 0
 
     try:
         nodes = oracle.list_nodes()
     except OracleError as e:
         print(f"ERROR: oracle list_nodes failed: {e}", file=sys.stderr)
-        return 3
+        run.finish("error", error="OracleError", error_msg=str(e)[:200])
+        return exit_codes.ORACLE
     print(f"[orchard.attest] registered Trees: {len(nodes)}")
     if not nodes:
+        run.finish("noop", reason="no_trees", season=current_season)
         return 0
 
     try:
         block_height = fn.peak_height()
     except ChiaRpcError as e:
         print(f"ERROR: chia full-node unreachable: {e}", file=sys.stderr)
-        return 4
+        return exit_codes.CHIA
     print(f"[orchard.attest] chia peak height: {block_height}")
 
     # Determine Season range to process.
@@ -204,20 +233,90 @@ def main() -> int:
                 stats["empty"] += 1
                 continue
 
-            payload = attest.build_attestation_payload(
+            # SPEC §2.4 sealed attest (ADR-0003): prefer season_root +
+            # verified_hours from published readings: batches; fall back to
+            # the uptime-derived placeholder when nothing is on-chain yet.
+            # STRICT: this data decides a permanent, signed conclusion. A
+            # transient RPC failure must never be read as "nothing published"
+            # (-> placeholder) or silently drop an hour (-> understated
+            # verified_hours over a partial season_root). Skip the season
+            # instead; the next run re-attempts it.
+            try:
+                pub_readings = seal.load_season_readings(
+                    dl, cfg.data_layer.store_id,
+                    node_id=node_id, season=season, strict=True,
+                )
+            except seal.SealReadError as e:
+                print(
+                    f"  WARN: skipping {node_id[:8]}.. season={season}: {e}",
+                    file=sys.stderr,
+                )
+                stats["read_error"] += 1
+                continue
+            device_pub = (
+                node.get("device_pubkey")
+                or node.get("pubkey")
+            )
+            sealed = seal.seal_from_readings(
+                pub_readings, device_pubkey=device_pub
+            )
+            if sealed is not None:
+                season_root_hex = sealed.season_root
+                verified_hrs = sealed.verified_hours
+                reading_count = sealed.reading_count
+                seal_src = sealed.source
+                # Carry the integrity signals into the SIGNED record instead of
+                # dropping them: presence-only counting (no device pubkey) and
+                # hour_root mismatches are exactly what a consumer needs to know
+                # before treating verified_hours as proof.
+                sigs_verified = sealed.sigs_verified
+                root_mismatches = sealed.root_mismatches
+            else:
+                season_root_hex = attest.data_hash_for_uptime(
+                    node_id, season, hours
+                )
+                # Nothing is published for this season, so NOTHING was verified.
+                # Writing `hours` here would sign the oracle's own claim into a
+                # field named "verified" — the one case where there is no
+                # evidence at all. hours_online below still records the claim;
+                # the payout falls back to it for a declared-placeholder record,
+                # so amounts are unchanged — but the record no longer lies.
+                verified_hrs = 0
+                reading_count = 0
+                seal_src = schema.SEAL_SOURCE_PLACEHOLDER
+                sigs_verified = False
+                root_mismatches = 0
+
+            # Deterministic seal time: the Season's own close boundary, NOT
+            # wall-clock now(). signed_at is inside the signed body, so a
+            # per-run timestamp changed value_hex on every run — which made the
+            # `existing_hex == value_hex` short-circuit below unreachable and
+            # caused every daily run to delete+insert EVERY attestation for
+            # EVERY past season: unbounded, fee-bearing, and rewriting the seal
+            # time of historical records. A sealed season is a fixed fact, so
+            # re-signing it must reproduce identical bytes.
+            signed_at = _season_seal_time(uptime)
+            payload = schema.build_attest(
                 node_id=node_id,
                 season=season,
-                hours_online=hours,
                 season_start_utc=uptime["season_start_utc"],
                 season_end_utc=uptime["season_end_utc"],
+                hours_online=hours,
+                verified_hrs=verified_hrs,
+                reading_count=reading_count,
                 block_height_at_write=block_height,
-                data_hash=attest.data_hash_for_uptime(node_id, season, hours),
-                signed_at=datetime.now(timezone.utc),
+                season_root_hex=season_root_hex,
+                signed_at=signed_at,
+                seal_source=seal_src,
+                sigs_verified=sigs_verified,
+                root_mismatches=root_mismatches,
             )
-            signed = attest.sign_payload(payload, cfg.signing_key_hex)
+            # signing_key_hex is 64 hex chars — valid secp256r1 scalar seed
+            # (generated once per operator; same file as legacy HMAC key).
+            signed = schema.sign_attest(payload, cfg.signing_key_hex.lower())
 
-            key_hex = attest.datalayer_key_for(node_id, season)
-            value_hex = attest.datalayer_value_for(signed)
+            key_hex = schema.attest_key(node_id, season)
+            value_hex = schema.value_hex(signed)
 
             try:
                 existing_hex = dl.get_value(cfg.data_layer.store_id, key_hex)
@@ -228,6 +327,25 @@ def main() -> int:
             if existing_hex == value_hex:
                 stats["unchanged"] += 1
                 continue
+
+            # BASIS-DOWNGRADE GUARD. Never replace a proof-backed attestation
+            # with a weaker one. Without this, a single bad read (or a store
+            # that has since been pruned) could overwrite a sealed,
+            # Merkle-rooted record with a placeholder claiming nothing was ever
+            # published — destroying the evidence for that season permanently.
+            if existing_hex is not None:
+                prev = schema.parse_value(existing_hex) or {}
+                prev_backed = schema.attest_is_proof_backed(prev)
+                new_backed = schema.attest_is_proof_backed(signed)
+                if prev_backed is True and new_backed is not True:
+                    print(
+                        f"  WARN: refusing to downgrade {node_id[:8]}.. "
+                        f"season={season}: on-chain record is proof-backed, "
+                        f"new one would be {signed.get('seal_source')!r}",
+                        file=sys.stderr,
+                    )
+                    stats["downgrade_refused"] += 1
+                    continue
 
             if existing_hex is not None:
                 # DataLayer batch_update supports delete-then-insert for replaces.
@@ -243,25 +361,69 @@ def main() -> int:
                 block_height=block_height,
             ))
             stats["written"] += 1
+            flags = ""
+            if seal_src == schema.SEAL_SOURCE_PLACEHOLDER:
+                flags += " [NOT proof-backed]"
+            if not sigs_verified and seal_src != schema.SEAL_SOURCE_PLACEHOLDER:
+                flags += " [sigs unchecked: no device pubkey]"
+            if root_mismatches:
+                flags += f" [!] {root_mismatches} hour_root mismatch(es)"
             print(
                 f"  + node={node_id[:8]}.. season={season:>4} "
-                f"hours={hours:>2} signed sig={signed['oracle_sig'][:10]}.."
+                f"hours={hours:>2} verified={verified_hrs} "
+                f"seal={seal_src} sig={signed['oracle_sig'][:10]}..{flags}"
             )
 
     if not changelist:
         print(f"[orchard.attest] Nothing to update ({dict(stats)})")
+        run.finish("noop", stats=dict(stats), season=current_season)
         return 0
 
     print(f"[orchard.attest] sending {len(changelist)} changelist items to DataLayer ...")
     try:
-        result = dl.batch_update(cfg.data_layer.store_id, changelist)
+        result = dl.batch_update(
+            cfg.data_layer.store_id, changelist, fee=cfg.data_layer.fee or None
+        )
     except ChiaRpcError as e:
         print(f"ERROR: DataLayer batch_update failed: {e}", file=sys.stderr)
-        return 5
+        run.finish(
+            "error",
+            error="ChiaRpcError",
+            error_msg=str(e)[:200],
+            stats=dict(stats),
+            rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        )
+        return exit_codes.DATALAYER
     txn_id = result.get("tx_id") or result.get("transaction_id") or "<unknown>"
     written_at = datetime.now(timezone.utc)
     print(f"[orchard.attest] DataLayer batch_update accepted. tx_id={txn_id}")
+    if getattr(dl, "last_retried", False):
+        print(
+            f"[orchard.attest] succeeded after {dl.last_retry_attempts} RPC attempt(s)"
+        )
     print(f"[orchard.attest] stats: {dict(stats)}")
+
+    inserts = confirm.inserts_from_changelist(changelist)
+    conf = confirm.confirm_inserts(dl, cfg.data_layer.store_id, inserts)
+    print(f"[orchard.attest] {conf.detail}")
+    if not conf.ok:
+        print(
+            f"ERROR: post-write confirm failed "
+            f"(missing={conf.missing[:5]} mismatched={conf.mismatched[:5]}). "
+            f"Oracle NOT updated — re-run to converge.",
+            file=sys.stderr,
+        )
+        run.finish(
+            "error",
+            error="ConfirmError",
+            error_msg=conf.detail,
+            stats=dict(stats),
+            confirm_checked=conf.checked,
+            confirm_missing=len(conf.missing),
+            confirm_mismatched=len(conf.mismatched),
+            rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        )
+        return exit_codes.CONFIRM
 
     # Report back to the oracle so its local DB tracks what's on chain.
     # Failures here don't roll back the DataLayer write — the chain
@@ -275,14 +437,34 @@ def main() -> int:
         written_at=written_at,
     )
 
-    # T16: confirm the root update actually landed on chain. Non-fatal — the
-    # spend is submitted and the writer is convergent (an unconfirmed root is
-    # re-attempted next run, so attestation data is never silently dropped).
+    # T16 / ADR-0010: confirm the root update actually landed on chain.
+    # Non-fatal to the write — the spend is submitted and the writer is
+    # convergent (an unconfirmed root is re-attempted next run, so attestation
+    # data is never silently dropped), but the operator gets a loud WARNING and
+    # a distinct non-zero exit so a cron/timer wrapper can alert.
     print(f"[orchard.attest] waiting up to {CONFIRM_TIMEOUT_S}s for the root "
           f"update to confirm on chain …")
-    if wait_for_root_confirmation(dl, cfg.data_layer.store_id):
+    root_confirmed = wait_for_root_confirmation(dl, cfg.data_layer.store_id)
+
+    # Journal fields are identical either way; only the status/exit differ, so
+    # the ops journal records every run (confirmed or not) exactly once.
+    finish_fields = dict(
+        stats=dict(stats),
+        pending=len(pending),
+        season=current_season,
+        # Only a short prefix — full tx ids can be long hex.
+        tx_id_prefix=(txn_id[:16] if isinstance(txn_id, str) else None),
+        rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        rpc_retried=bool(getattr(dl, "last_retried", False)),
+        confirm_checked=conf.checked,
+        root_confirmed=root_confirmed,
+    )
+
+    if root_confirmed:
         print("[orchard.attest] root update CONFIRMED on chain.")
+        run.finish("ok", **finish_fields)
         return 0
+
     print(
         f"WARNING: root update tx_id={txn_id} not confirmed within "
         f"{CONFIRM_TIMEOUT_S}s. The spend may still confirm shortly; if it "
@@ -290,7 +472,16 @@ def main() -> int:
         f"Season ledger before relying on this attestation.",
         file=sys.stderr,
     )
-    return 6  # distinct non-zero so a cron/timer wrapper can alert
+    run.finish(
+        "error",
+        error="RootUnconfirmed",
+        error_msg=f"root update not confirmed within {CONFIRM_TIMEOUT_S}s",
+        **finish_fields,
+    )
+    # ADR-0010: distinct non-zero exit (exit_codes.CONFIRM == 6, the value the
+    # production writer has always returned here) so a cron/timer wrapper can
+    # alert on "submitted but not confirmed".
+    return exit_codes.CONFIRM
 
 
 if __name__ == "__main__":

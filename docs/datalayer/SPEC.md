@@ -14,7 +14,15 @@ built, how often it's written, how the public dashboard reads it, and how anyone
 verifies it. Reuses the canonicalization rule already in
 `orchard_chia/datalayer/attest.py` so existing code carries forward.
 
-**Schema version:** `1.0.0`.
+> **Wire-level RPC/CLI shapes** (what `get_proof`/`verify_proof`/`batch_update`
+> actually accept and return) are transcribed from the official Chia docs in
+> [`reference/CHIA_DATALAYER_RPC.md`](reference/CHIA_DATALAYER_RPC.md). The live
+> verifier (§7 check 1) is written against that reference. The **public
+> verification API** anyone can build on is documented in
+> [`reference/VERIFY_API.md`](reference/VERIFY_API.md).
+
+**Schema version:** `1.1.0` (1.1.0 added the attest verification-basis fields —
+§2.4; same major, so 1.x verifiers and pre-1.1 records keep working).
 **Status:** namespace frozen; two signing details still open (Season-signature
 scheme, block-anchor source — see ADR-0003 open questions). Not yet built.
 
@@ -73,7 +81,7 @@ record permanent; `latest:` is the only routinely-overwritten key.
 
 ```json
 {
-  "orchard_schema": "1.0.0",
+  "orchard_schema": "1.1.0",
   "store_role": "orchard-operator",
   "operator_pass_nft": "<launcher-id or null>",
   "units": {
@@ -179,6 +187,9 @@ Backward-compatible superset of today's record. New fields **bold**:
   "season_end_utc": "2026-06-01T00:00:00Z",
   "hours_online": 24,
   "verified_hours": 24,
+  "seal_source": "readings",
+  "sigs_verified": true,
+  "root_mismatches": 0,
   "season_score": 100,
   "reading_count": 1440,
   "block_height_at_write": 8794728,
@@ -192,6 +203,28 @@ Backward-compatible superset of today's record. New fields **bold**:
 `data_hash` is retained (don't break the payout `reader.py`) but now equals
 `season_root`. `oracle_sig` migrates HMAC → secp256r1 (pubkey in
 `meta:schema.signer`). See §3 for `verified_hours` / `season_score`.
+
+**Verification basis (1.1.0) — the record must not overstate itself.** These
+three fields are *inside* the signature, so an intermediary cannot strip the
+caveat and leave the number looking proven:
+
+| Field | Meaning |
+|---|---|
+| `seal_source` | `"readings"` — `season_root` is a real Merkle root over published device-signed readings, so `verified_hours` is recomputable by anyone. `"placeholder"` — **nothing was published**; the root is only `sha256(node:season:hours)` and **`verified_hours` is 0 because nothing was verified**. |
+| `sigs_verified` | `false` when hours were counted by reading *presence* (no device pubkey was available to check signatures against). |
+| `root_mismatches` | Hours whose stored `hour_root` disagreed with a recompute. `>0` is a tampering/corruption red flag. |
+
+> **Why a placeholder writes `verified_hours: 0`.** Writing the oracle's
+> `hours_online` there would sign a self-report into a field named *verified*,
+> in the one case with no evidence at all — the exact thing §3 exists to
+> prevent. The claim is still recorded in `hours_online`; the payout falls back
+> to it for a **declared** placeholder (so reward amounts are unchanged) and
+> labels the row `unverified`. A pre-1.1.0 record declares no basis and keeps
+> its previous treatment.
+
+`orchard-verify` reports a placeholder record as **cannot-verify (exit 2)** —
+it is honestly labelled, not fraudulent — while a declared `root_mismatches > 0`
+is a definitive **INVALID (exit 1)**.
 
 ### 2.5 `latest:<NODE_ID>` (live pointer)
 
@@ -240,6 +273,24 @@ calculator): any factor folded into `season_score` **must be deterministically
 recomputable from public data**, or it breaks the tenet and may not enter the
 score. Tier/identity multipliers that depend on private state belong in a
 *separate, clearly-labeled* payout adjustment, not in the verifiable score.
+
+> **Known limitation — reading↔hour-bucket binding (open).** `verified_hours`
+> counts an hour bucket as verified if it holds **any** signature-valid reading,
+> but does **not** currently check that the reading's `ts_ms` actually falls in
+> that UTC hour. A device signs `{node_id, ts_ms, block_anchor, metrics}`; the
+> signature is valid regardless of which `readings:<…>:<HOUR>` bucket the writer
+> files it under. So an oracle could copy one genuine reading into all 24 hour
+> buckets and forge 100 % uptime — the recomputed score would still "verify."
+> (The golden vectors reflect this: their `ts_ms` maps to UTC hour 14 while the
+> record sits in bucket 13, so the invariant is demonstrably not enforced today.)
+>
+> **Mitigations (need a design decision, hence not silently applied):**
+> (a) verifier rejects any reading whose `hour_of_ts_ms(ts_ms)` ≠ bucket hour
+>     (and `season_number_for(ts_ms)` ≠ bucket season); (b) the per-hour Merkle
+>     leaf domain-separates on `(season, hour)` so a leaf can't move buckets.
+> Either changes the frozen cross-language vectors (byte-pinned for firmware),
+> so it must be coordinated with a schema/vectors bump — tracked here rather
+> than patched under an autonomous change.
 
 ---
 
@@ -354,11 +405,23 @@ the score is honest."
 `python -m orchard_chia.cli.orchard_verify vectors <vectors.json>` runs the
 device-signature, Merkle (proof + hour root + season root), verified-hours,
 season-score, and oracle-season-signature checks against a published bundle —
-i.e. checks **2, 3, 5** plus signature verification. The oracle pubkey comes
-from `meta:schema.signer.season_pubkey`; the device pubkey from `node:.pubkey`.
-Exit 0 = VALID, 1 = INVALID, 2 = cannot-verify. **Stubbed (Phase 2, live):**
-checks **1** (on-chain `get_proof` inclusion) and **4** (block-anchor lookup)
-need DataLayer/full-node access — `orchard-verify live` freezes that interface.
+i.e. checks **2, 3, 5** plus signature verification, and the **offline half of
+check 4** (block-anchor *presence & format*: every reading must carry a
+well-formed, non-placeholder 16-hex anchor). The oracle pubkey comes from
+`meta:schema.signer.season_pubkey`; the device pubkey from `node:.pubkey`.
+Exit 0 = VALID, 1 = INVALID, 2 = cannot-verify.
+
+**Implemented (live):** `orchard-verify live` runs check **1** on-chain —
+`get_root` must report a **confirmed** root, `get_proof` must cover every key
+the verdict trusts (`meta`/`node`/`attest`/`readings`), `verify_proof` must
+report `current_root == true`, and each key is value-bound to the record via
+`value_clvm_hash` (see `datalayer/inclusion.py`,
+[`reference/CHIA_DATALAYER_RPC.md`](reference/CHIA_DATALAYER_RPC.md) §4).
+
+**Still Phase 2 (live, deferred):** the *chain-lookup* half of check **4** —
+resolving a reading's `block_anchor` prefix to a real block with
+`timestamp ≤ ts_ms` — needs full-node access (and `/beacon` + firmware anchors)
+and is not yet wired.
 
 ---
 
@@ -468,13 +531,30 @@ not dropped) · **block anchor = oracle `/beacon`** for v1, direct RPC later.
       (`orchard_chia/datalayer/verify.py` + `orchard_chia/cli/orchard_verify.py`,
       `test_verify_cli.py`). `vectors` runs all 7 checks on the golden bundle →
       VALID; tampering → INVALID; `live` is an interface-frozen stub.
-- [ ] `orchard-verify live` — wire on-chain `get_proof` (inclusion) + block-anchor
-      lookup (the two checks offline mode can't do).
+- [x] `orchard-verify live` — inclusion wired: `get_root` must be **confirmed**,
+      `get_proof` covers every verdict-bearing key (`meta`/`node`/`attest`/
+      `readings`), `verify_proof` requires `current_root`, and each key is
+      value-bound via `value_clvm_hash` (`datalayer/inclusion.py`). Exit codes
+      distinguish INVALID (1) from cannot-verify (2). Partial `--hour` slices
+      skip season-level checks. Per-reading `orchard-verify reading` (SPEC §8).
+- [x] Anti-backdate check — offline **presence/format** of `block_anchor`
+      (`verify.py`); chain-lookup **kernel** built (`datalayer/block_anchor.py` +
+      full-node block RPCs). *Deferred:* the live anchor→block orchestration
+      (needs a synced node + `/beacon` + firmware anchors).
 - [ ] Firmware: secp256r1 keygen in NVS, sign each reading, `HW_INFO` exports
       pubkey, fetch `/beacon` for `block_anchor`.
 - [ ] Oracle: store device pubkey at registration; `/beacon` endpoint; persist
       per-reading `sig` + `block_anchor`.
-- [ ] Writer: hot path + watermark wiring into `orchard_chia/datalayer/main.py`.
-- [ ] `orchard-verify` CLI (the five §7 checks).
-- [ ] Orchard Atlas: read-only DataLayer reader + map + per-field §8 mapping + Verify.
-- [ ] `reader.py` back-compat check against existing `attest:` rows.
+- [x] Writer: hot path + watermark wired into `orchard_chia/datalayer/publish.py`
+      (closed-hour harvest, idempotent `batch_update` with configurable `fee`,
+      post-write confirm, `publish_watermark.db`). Sealed path in `main.py`.
+- [x] `orchard-verify` offline checks — device sig (all readings), full Merkle
+      proofs, hour/season roots, `verified_hours`/`season_score`, oracle sig,
+      record consistency, schema/scheme compatibility.
+- [ ] Orchard Atlas: read-only DataLayer reader + map + per-field §8 mapping +
+      Verify. (Building blocks ready: `verify.verification_badge` for §8 badges,
+      `verify.verify_reading_in_hour` for per-reading Verify.)
+- [x] `reader.py` back-compat — reads `attest:` rows; payout pays on the
+      verifiable `verified_hours` when present, else `hours_online`.
+
+**Known limitation:** reading↔hour-bucket binding — see §3.

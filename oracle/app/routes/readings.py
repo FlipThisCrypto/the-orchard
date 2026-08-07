@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from .. import auth, models, seasons, sessions
@@ -45,21 +46,24 @@ class ReadingResponse(BaseModel):
 
 
 def _bump_uptime_hour(db: Session, node_id: str, when: datetime) -> None:
+    """Atomically create-or-increment the (node, hour) uptime counter.
+
+    A single ``INSERT ... ON CONFLICT (node_id, hour_utc) DO UPDATE`` — race
+    safe (two concurrent readings for the same node·hour can't both insert and
+    trip the unique constraint, which previously 500'd and dropped a reading)
+    and one query instead of the old SELECT-then-INSERT/UPDATE round trip on the
+    hottest path.
+    """
     bucket = seasons.hour_bucket_for(when)
-    row = (
-        db.execute(
-            select(models.UptimeHour).where(
-                models.UptimeHour.node_id == node_id,
-                models.UptimeHour.hour_utc == bucket,
-            )
+    stmt = (
+        sqlite_insert(models.UptimeHour)
+        .values(node_id=node_id, hour_utc=bucket, reading_count=1)
+        .on_conflict_do_update(
+            index_elements=["node_id", "hour_utc"],
+            set_={"reading_count": models.UptimeHour.reading_count + 1},
         )
-        .scalar_one_or_none()
     )
-    if row is None:
-        row = models.UptimeHour(node_id=node_id, hour_utc=bucket, reading_count=1)
-        db.add(row)
-    else:
-        row.reading_count += 1
+    db.execute(stmt)
 
 
 @router.post("/readings", status_code=status.HTTP_202_ACCEPTED)
@@ -190,6 +194,19 @@ async def post_reading(
     if reading.fw_version:
         node.fw_version = reading.fw_version
 
+    # ADR-0003: learn device_pubkey from the Tree if registration omitted it.
+    # Only first write — never rotate (would break historical verification).
+    if not node.device_pubkey and isinstance(payload, dict):
+        cand = payload.get("device_pubkey") or payload.get("pubkey")
+        if not cand and isinstance(payload.get("device_reading"), dict):
+            cand = payload["device_reading"].get("pubkey")
+        if isinstance(cand, str):
+            s = cand.strip().lower()
+            if len(s) == 66 and s[:2] in ("02", "03") and all(
+                c in "0123456789abcdef" for c in s
+            ):
+                node.device_pubkey = s
+
     _bump_uptime_hour(db, node.node_id, now)
 
     db.commit()
@@ -216,7 +233,17 @@ def _scrub_payload_gps(payload: dict) -> dict:
 @router.get("/readings/{node_id}", response_model=list[ReadingResponse])
 def list_readings(
     node_id: str,
-    limit: int = Query(default=50, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=2000),
+    since_ms: int | None = Query(
+        default=None,
+        ge=0,
+        description="Inclusive lower bound on tree_ts_ms (device epoch millis)",
+    ),
+    until_ms: int | None = Query(
+        default=None,
+        ge=0,
+        description="Exclusive upper bound on tree_ts_ms (device epoch millis)",
+    ),
     db: Session = Depends(get_db),
     sess: sessions.Session | None = Depends(maybe_session),
 ) -> list[ReadingResponse]:
@@ -235,12 +262,16 @@ def list_readings(
         sess is not None and sess.address == node.wallet_address
     )
 
+    # DataLayer hot-path publisher uses since_ms/until_ms to harvest a
+    # closed UTC hour without scanning the whole history.
+    q = select(models.Reading).where(models.Reading.node_id == node_id)
+    if since_ms is not None:
+        q = q.where(models.Reading.tree_ts_ms >= int(since_ms))
+    if until_ms is not None:
+        q = q.where(models.Reading.tree_ts_ms < int(until_ms))
     rows = (
         db.execute(
-            select(models.Reading)
-            .where(models.Reading.node_id == node_id)
-            .order_by(models.Reading.received_at.desc())
-            .limit(limit)
+            q.order_by(models.Reading.received_at.desc()).limit(limit)
         )
         .scalars()
         .all()

@@ -11,10 +11,14 @@ operator's CA cert path via ``verify=<ca_path>`` instead.
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from typing import Any
 
 import requests
 import urllib3
+
+from .retry import RetryPolicy, call_with_retry
 
 # Local-only mTLS to a self-signed CA — silence the legitimate-but-noisy
 # warning about disabled host verification.
@@ -80,14 +84,48 @@ class FullNodeRpc:
         peak = st.get("blockchain_state", {}).get("peak") or {}
         return int(peak.get("height", 0))
 
+    def get_block_record_by_height(self, height: int) -> dict | None:
+        """Block record at a height. ``timestamp`` is only present on
+        transaction blocks (null otherwise). See CHIA_DATALAYER_RPC.md §Full-node."""
+        data = self._post("get_block_record_by_height", {"height": int(height)})
+        return data.get("block_record")
+
+    def get_block_record(self, header_hash: str) -> dict | None:
+        """Block record by header hash (the block identifier)."""
+        data = self._post("get_block_record", {"header_hash": header_hash})
+        return data.get("block_record")
+
+    def get_block_records(self, start: int, end: int) -> list[dict]:
+        """Block records for heights ``[start, end)`` (end non-inclusive)."""
+        data = self._post(
+            "get_block_records", {"start": int(start), "end": int(end)}
+        )
+        return data.get("block_records", []) or []
+
 
 class DataLayerRpc:
-    """Subset of Chia DataLayer RPC the attestation writer needs."""
+    """Subset of Chia DataLayer RPC the attestation writer needs.
 
-    def __init__(self, host: str, port: int, cert_path: str, key_path: str):
+    Transient transport / 5xx failures are retried with exponential
+    backoff (Round 3 resilience). Last attempt counts and retry totals
+    are exposed on ``last_retry_attempts`` / ``last_retried`` for ops logs.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        cert_path: str,
+        key_path: str,
+        *,
+        retry_policy: RetryPolicy | None = None,
+    ):
         self._ep = _Endpoint(host, port, cert_path, key_path)
+        self._retry_policy = retry_policy or RetryPolicy.from_env()
+        self.last_retry_attempts: int = 1
+        self.last_retried: bool = False
 
-    def _post(self, route: str, body: dict) -> dict:
+    def _post_once(self, route: str, body: dict) -> dict:
         if self._ep.host not in _LOOPBACK_HOSTS:
             raise ChiaRpcError(
                 f"refusing verify=False against non-loopback host "
@@ -111,39 +149,172 @@ class DataLayerRpc:
             raise ChiaRpcError(f"datalayer {route} returned success=false: {data}")
         return data
 
-    def batch_update(self, store_id: str, changelist: list[dict]) -> dict:
+    def _post(self, route: str, body: dict) -> dict:
+        def _on_retry(attempt: int, exc: BaseException, wait: float) -> None:
+            print(
+                f"[orchard.datalayer] retry {route} after attempt {attempt}: "
+                f"{type(exc).__name__}: {exc} — sleep {wait:.2f}s",
+                file=sys.stderr,
+            )
+
+        result = call_with_retry(
+            lambda: self._post_once(route, body),
+            policy=self._retry_policy,
+            on_retry=_on_retry,
+        )
+        self.last_retry_attempts = result.attempts
+        self.last_retried = result.retried
+        return result.value
+
+    def batch_update(
+        self,
+        store_id: str,
+        changelist: list[dict],
+        *,
+        fee: int | None = None,
+        submit_on_chain: bool = True,
+    ) -> dict:
         """Apply a list of insert/delete operations to a DataLayer store.
 
         ``changelist`` items look like:
             {"action": "insert", "key": "<hex>", "value": "<hex>"}
             {"action": "delete", "key": "<hex>"}
+
+        ``fee`` is the transaction fee in **mojos** (1 XCH = 1e12 mojos). A
+        higher fee helps the update's transaction get into a block when the
+        mempool is congested — a 0-fee tx can stall indefinitely, after which
+        our post-write confirm never sees the inserts and the watermark can't
+        advance. Omitted (``None``) preserves the node's default (0). ``fee`` is
+        only added to the request when set. See CHIA_DATALAYER_RPC.md §3.
+
+        ``submit_on_chain=False`` stages the change locally without a
+        transaction (default ``True`` submits on-chain).
         """
-        body = {"id": store_id, "changelist": changelist}
+        body: dict[str, Any] = {"id": store_id, "changelist": changelist}
+        if fee is not None:
+            body["fee"] = int(fee)
+        if not submit_on_chain:
+            body["submit_on_chain"] = False
         return self._post("batch_update", body)
 
     def get_value(self, store_id: str, key_hex: str) -> str | None:
         body = {"id": store_id, "key": key_hex}
         try:
+            # Reads use a shorter timeout path: still go through _post for
+            # retry, but get_value failures are soft (None) for scanners.
             data = self._post("get_value", body)
         except ChiaRpcError:
             return None
         return data.get("value")
 
+    def get_value_strict(self, store_id: str, key_hex: str) -> str:
+        """Like get_value but raises ChiaRpcError instead of returning None."""
+        data = self._post("get_value", {"id": store_id, "key": key_hex})
+        val = data.get("value")
+        if val is None:
+            raise ChiaRpcError(f"datalayer get_value missing value for key {key_hex[:16]}…")
+        return val
+
     def get_keys(self, store_id: str) -> list[str]:
-        """All keys in the store, hex-encoded. Used by the payout
-        reader to discover every attestation that's been published."""
-        body = {"id": store_id}
+        """All keys in the store, hex-encoded, across every page.
+
+        DataLayer caps a single ``get_keys`` response at ``max_page_size``
+        (default 40 MB). For a large store an un-paginated read silently
+        truncates — which would make the payout reader miss ``attest:`` keys
+        (operators underpaid) and the verifier miss reading hours. So page
+        explicitly: fetch page 1, then follow ``total_pages`` to the end,
+        concatenating (CHIA_DATALAYER_RPC.md §2).
+
+        Backward-safe: a node that returns no ``total_pages`` held everything in
+        one response, so we stop after page 1; a node that rejects the ``page``
+        param falls back to an un-paginated read. Soft-fails to ``[]`` only when
+        the store is unreachable on the first read (used by scanners). A failure
+        *partway through* pagination raises rather than returning a truncated set.
+        """
         try:
-            data = self._post("get_keys", body)
+            first = self._post("get_keys", {"id": store_id, "page": 1})
         except ChiaRpcError:
-            return []
-        return data.get("keys", [])
+            # Node may reject the page param (or be unreachable) — try plain.
+            try:
+                data = self._post("get_keys", {"id": store_id})
+            except ChiaRpcError:
+                return []
+            return list(data.get("keys", []))
+
+        keys = list(first.get("keys", []))
+        try:
+            total = int(first.get("total_pages"))
+        except (TypeError, ValueError):
+            return keys  # no pagination info — one response held everything
+        for page in range(2, total + 1):
+            # Do NOT swallow errors here: a mid-pagination failure must not look
+            # like a complete (but truncated) key set.
+            data = self._post("get_keys", {"id": store_id, "page": page})
+            keys.extend(data.get("keys", []))
+        return keys
+
+    def get_keys_strict(self, store_id: str) -> list[str]:
+        """Like :meth:`get_keys` but PROPAGATES a first-page failure.
+
+        ``get_keys`` soft-fails to ``[]`` for scanners, which makes "the store
+        is unreachable" indistinguishable from "the store is empty". Any caller
+        that would treat an empty list as evidence (e.g. sealing an attestation
+        as "nothing was published") must use this instead.
+        """
+        first = self._post("get_keys", {"id": store_id, "page": 1})
+        keys = list(first.get("keys", []))
+        try:
+            total = int(first.get("total_pages"))
+        except (TypeError, ValueError):
+            return keys
+        for page in range(2, total + 1):
+            data = self._post("get_keys", {"id": store_id, "page": page})
+            keys.extend(data.get("keys", []))
+        return keys
 
     def get_root(self, store_id: str) -> dict:
-        """The store's current root: ``{hash, confirmed, timestamp, ...}``.
+        """Current on-chain root hash + confirmed status for a store.
+
+        Typical response fields (Chia DataLayer RPC):
+            success, hash (root hex), confirmed, timestamp
 
         ``confirmed`` flips True once the root-update spend lands on chain —
         which is how the writer tells a batch_update has actually been mined
         (T16 confirmation monitoring), not just accepted into the mempool.
         """
         return self._post("get_root", {"id": store_id})
+
+    def get_proof(self, store_id: str, keys_hex: list[str]) -> dict:
+        """Inclusion proof for one or more keys under the store root.
+
+        ``keys`` are hex-encoded DataLayer keys (same form as batch_update).
+        Used by orchard-verify live for SPEC §7 permanence/inclusion.
+
+        NOTE: this is the one DataLayer endpoint whose store-ID parameter is
+        named ``store_id`` rather than ``id`` — every other endpoint here uses
+        ``id``. Sending ``id`` makes a real node ignore the store and the call
+        fails. See docs/datalayer/reference/CHIA_DATALAYER_RPC.md §4.
+        """
+        return self._post(
+            "get_proof",
+            {"store_id": store_id, "keys": list(keys_hex)},
+        )
+
+    def verify_proof(
+        self, coin_id: str, inner_puzzle_hash: str, store_proofs: dict
+    ) -> dict:
+        """Verify a ``get_proof`` result against the current on-chain root.
+
+        Needs only a single root lookup — no store sync or subscription — so a
+        stranger with any full node can run it. The response's ``current_root``
+        (bool) is the meaningful bit: ``True`` ⇒ the proof chains to the
+        currently published root. See docs/datalayer/reference/CHIA_DATALAYER_RPC.md §4.
+        """
+        return self._post(
+            "verify_proof",
+            {
+                "coin_id": coin_id,
+                "inner_puzzle_hash": inner_puzzle_hash,
+                "store_proofs": store_proofs,
+            },
+        )

@@ -153,6 +153,37 @@ def get_signing_key(port: str) -> str:
     return line[3:].strip()
 
 
+_P256_PUBKEY = re.compile(r"^(?:02|03)[0-9a-fA-F]{64}$")
+
+
+def get_device_pubkey(port: str) -> str | None:
+    """Compressed secp256r1 public key (66 hex), or None on legacy firmware.
+
+    ADR-0003/0007: the Tree signs every DataLayer reading with this key.
+    Prefer the dedicated ``PUBKEY`` console command; fall back to
+    ``HW_INFO.pubkey`` when present. Older trees without either return None
+    so identify/register stay non-fatal.
+    """
+    line = _send_and_read_line(port, "PUBKEY")
+    if line.startswith("ERR unknown"):
+        return None
+    if not line.startswith("OK "):
+        # Some firmwares print the hex alone without OK — tolerate that.
+        candidate = line.strip()
+        if line.startswith("OK"):
+            candidate = line[2:].strip()
+        if _P256_PUBKEY.match(candidate):
+            return candidate.lower()
+        raise TreeError(f"PUBKEY: {line}")
+    hex_pub = line[3:].strip().lower()
+    if not _P256_PUBKEY.match(hex_pub):
+        raise TreeError(
+            f"PUBKEY: expected compressed secp256r1 hex (66 chars, 02/03…), "
+            f"got {hex_pub!r}"
+        )
+    return hex_pub
+
+
 def get_status(port: str) -> dict:
     line = _send_and_read_line(port, "STATUS")
     if not line.startswith("OK "):

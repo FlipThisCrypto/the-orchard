@@ -14,18 +14,21 @@ Endpoints:
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import audit, models, seasons
 from ..db import get_db
 from ..session_deps import require_writer
+from ..uptime_calc import hours_online_for
 
 router = APIRouter()
+log = logging.getLogger("orchard.oracle.attest")
 
 
 class AttestationRecord(BaseModel):
@@ -33,7 +36,13 @@ class AttestationRecord(BaseModel):
     season_number: int = Field(..., ge=1)
     hours_online: int = Field(..., ge=0, le=24)
     data_hash: str = Field(..., description="sha256 hex of the canonical bytes that were signed")
-    oracle_sig: str = Field(..., description="HMAC-SHA256 hex of the signed body")
+    oracle_sig: str = Field(
+        ...,
+        description=(
+            "Oracle season signature hex — secp256r1 r||s (128 hex) for "
+            "ADR-0003 records, or legacy HMAC-SHA256 (64 hex)"
+        ),
+    )
     dl_tx_id: str = Field(..., description="Chia DataLayer batch tx id (0x... or hex)")
     dl_key_hex: str = Field(..., description="hex of the `attest:<node>:<season>` key")
     block_height_at_write: int | None = None
@@ -51,6 +60,11 @@ class AttestationPublic(BaseModel):
     block_height_at_write: int | None
     written_to_datalayer_at: datetime | None
     created_at: datetime
+    # Integrity cross-check populated on POST for a CLOSED season: the oracle's
+    # own authoritative hours_online, and whether the writer's report matched.
+    # None on GET (not recomputed) and for in-progress seasons (still changing).
+    oracle_hours_online: int | None = None
+    hours_match: bool | None = None
 
 
 def _to_public(a: models.Attestation) -> AttestationPublic:
@@ -75,6 +89,7 @@ def _to_public(a: models.Attestation) -> AttestationPublic:
 )
 def record_attestation(
     rec: AttestationRecord,
+    request: Request,
     db: Session = Depends(get_db),
     _writer: None = Depends(require_writer),
 ) -> AttestationPublic:
@@ -106,6 +121,34 @@ def record_attestation(
 
     written_at = rec.written_to_datalayer_at or datetime.now(timezone.utc)
 
+    # Integrity cross-check: the oracle records this as "on chain" truth for the
+    # dashboard, so validate the writer's reported hours_online against the
+    # oracle's OWN authoritative uptime for the season. Only for a CLOSED season
+    # (an in-progress season's count is still changing). A mismatch doesn't
+    # reject the write (the value IS what's on chain) but is flagged in the
+    # response and recorded as an audit event so silent divergence — a writer
+    # bug or a token-compromised writer — can't pass unseen.
+    oracle_hours: int | None = None
+    hours_match: bool | None = None
+    if rec.season_number < seasons.current_season():
+        oracle_hours, _ = hours_online_for(db, node_id, rec.season_number)
+        hours_match = rec.hours_online == oracle_hours
+        if not hours_match:
+            log.warning(
+                "attestation hours mismatch node=%s season=%s reported=%s oracle=%s",
+                node_id, rec.season_number, rec.hours_online, oracle_hours,
+            )
+            audit.record(
+                db,
+                action="attestation.hours_mismatch",
+                node_id=node_id,
+                actor="writer",
+                request_id=audit.request_id_of(request),
+                season=rec.season_number,
+                reported_hours=rec.hours_online,
+                oracle_hours=oracle_hours,
+            )
+
     existing = db.execute(
         select(models.Attestation).where(
             models.Attestation.node_id == node_id,
@@ -124,7 +167,10 @@ def record_attestation(
         existing.written_to_datalayer_at = written_at
         db.commit()
         db.refresh(existing)
-        return _to_public(existing)
+        out = _to_public(existing)
+        out.oracle_hours_online = oracle_hours
+        out.hours_match = hours_match
+        return out
 
     a = models.Attestation(
         node_id=node_id,
@@ -141,7 +187,10 @@ def record_attestation(
     db.add(a)
     db.commit()
     db.refresh(a)
-    return _to_public(a)
+    out = _to_public(a)
+    out.oracle_hours_online = oracle_hours
+    out.hours_match = hours_match
+    return out
 
 
 @router.get(

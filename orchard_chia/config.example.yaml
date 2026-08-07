@@ -28,14 +28,34 @@ reward:
 # ----- Oracle (where we read uptime data from) ----------------------
 oracle:
   url: "http://127.0.0.1:8000"
+  # REQUIRED FOR PAYOUTS. wallet_address is operator-private: the oracle only
+  # returns it to a caller that proves it is your own writer/payout process.
+  # Set this to the SAME value as the oracle's ORCHARD_ORACLE_WRITER_TOKEN.
+  # Without it `python -m orchard_chia.payout` resolves every Tree to an empty
+  # wallet and refuses to send (it now reports this loudly instead of exiting 0).
+  # Prefer the ORCHARD_ORACLE_WRITER_TOKEN env var so the secret stays out of
+  # this file; the env var wins when both are set.
+  writer_token: ""
 
 # ----- Phase 5 attestation writer ---------------------------------
 # Idempotent. Re-run as often as you like; only changed values are
 # pushed to DataLayer. Set `max_lookback_seasons` to cap how many
 # closed Seasons we look back per run (default null = all).
+#
+#   python -m orchard_chia.datalayer attest     # sealed Season attest:
+#   python -m orchard_chia.datalayer publish    # hot-path readings:/latest:
+#
+# Hot-path publish only writes hours that contain device-signed SPEC
+# readings (payload.device_reading with ed25519 sig). Without those the
+# publisher is a clean no-op. Watermark: orchard_chia/data/publish_watermark.db
 attestation:
   max_lookback_seasons: null      # null = no cap
   skip_empty_seasons: true        # don't attest seasons with 0 hours
+
+# Hot-path publisher (optional env overrides also work):
+#   ORCHARD_PUBLISH_LOOKBACK_HOURS=48
+#   ORCHARD_OPS_LOG_DIR=...
+#   ORCHARD_DL_RPC_MAX_ATTEMPTS=4
 
 # ----- Chia full node (read-only — we just need peak block height) --
 full_node:
@@ -54,6 +74,10 @@ datalayer:
   cert_path: "~/.chia/mainnet/config/ssl/data_layer/private_data_layer.crt"
   key_path:  "~/.chia/mainnet/config/ssl/data_layer/private_data_layer.key"
   store_id: ""
+  # On-chain fee for each batch_update, in mojos (1 XCH = 1_000_000_000_000).
+  # 0 works when the mempool is quiet; if publishes stall unconfirmed, raise
+  # this (e.g. 100000000 = 0.0001 XCH) so the write makes it into a block.
+  fee: 0
 
 # ----- Chia reference wallet (used by Phase 7 payout) ----------------
 wallet:

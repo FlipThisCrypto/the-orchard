@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import merkle, schema
+# Imported by name: `attest` is a parameter name inside verify_bundle.
+from .attest import data_hash_for_uptime
 
 
 @dataclass
@@ -32,6 +34,23 @@ class Check:
     name: str
     ok: bool
     detail: str = ""
+
+
+def _anchor_wellformed(anchor: object) -> bool:
+    """A ``block_anchor`` is the first 16 hex chars (8 bytes) of a recent Chia
+    header hash (SPEC §2.3 / §4.2). Well-formed = a 16-char hex string that is
+    not the all-zero placeholder (all-zero ⇒ the reading was never anchored).
+
+    This validates the anchor is *present and parseable*; confirming it against
+    a real block whose ``timestamp ≤ ts_ms`` requires a full node and is the
+    live-only half of SPEC §7 check 4.
+    """
+    if not isinstance(anchor, str) or len(anchor) != 16:
+        return False
+    try:
+        return int(anchor, 16) != 0
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -45,88 +64,387 @@ class Report:
     def valid(self) -> bool:
         return bool(self.checks) and all(c.ok for c in self.checks)
 
+    def as_dict(self) -> dict:
+        """JSON-serializable summary for automation / --json CLIs."""
+        return {
+            "node_id": self.node_id,
+            "season": self.season,
+            "hours": list(self.hours),
+            "valid": self.valid,
+            "checks": [
+                {"name": c.name, "ok": c.ok, "detail": c.detail}
+                for c in self.checks
+            ],
+        }
+
+
+def verification_badge(
+    report: "Report",
+    *,
+    sealed: bool = True,
+    stale: bool = False,
+    unverifiable: bool = False,
+) -> str:
+    """The SPEC §8 public verification badge, derived from a verify Report.
+
+    - ``Unverified`` — store/proof unreachable; nothing could be asserted
+      (pass ``unverifiable=True`` when live inclusion was cannot-verify).
+    - ``Stale``      — no reading within the staleness window (node offline).
+    - ``Verified``   — a sealed Season whose checks all passed.
+    - ``Live``       — current Season in progress; checks pass, not yet sealed.
+    - ``Partial``    — at least one check failed (e.g. an oracle over-count, or a
+                       reading that didn't verify).
+
+    ``unverifiable`` takes precedence (we assert nothing), then ``stale``.
+    """
+    if unverifiable:
+        return "Unverified"
+    if stale:
+        return "Stale"
+    if report.valid:
+        return "Verified" if sealed else "Live"
+    return "Partial"
+
+
+@dataclass
+class ReadingCheck:
+    """Result of verifying a single reading against its hour record."""
+    signature_ok: bool
+    in_hour_tree: bool
+    hour_root_ok: bool
+
+    @property
+    def ok(self) -> bool:
+        return self.signature_ok and self.in_hour_tree and self.hour_root_ok
+
+    def as_dict(self) -> dict:
+        return {
+            "signature_ok": self.signature_ok,
+            "in_hour_tree": self.in_hour_tree,
+            "hour_root_ok": self.hour_root_ok,
+            "ok": self.ok,
+        }
+
+
+def verify_reading_in_hour(
+    reading: dict, node_pubkey: str, hour_record: dict
+) -> ReadingCheck:
+    """Verify ONE reading without a full season bundle — the SPEC §8 Atlas
+    "Verify" primitive.
+
+    Checks, all recomputable by anyone: (1) the device signed it against the
+    node's published key; (2) it is a member of the hour's Merkle tree via an
+    audit path to the recomputed ``hour_root``; (3) the record's stored
+    ``hour_root`` equals that recompute. Never raises on bad data.
+    """
+    hour_record = hour_record or {}
+    sig_ok = schema.verify_reading(reading, node_pubkey) if isinstance(reading, dict) else False
+
+    readings = hour_record.get("readings", []) or []
+    recomputed = schema.hour_root(readings) if isinstance(readings, list) else ""
+    hour_root_ok = bool(recomputed) and recomputed == hour_record.get("hour_root")
+
+    in_tree = False
+    try:
+        ordered = schema._sorted_readings(readings)
+        leaves = [schema.reading_leaf(r) for r in ordered]
+        target = schema.reading_leaf(reading)
+        if target in leaves:
+            idx = leaves.index(target)
+            path = merkle.merkle_proof(leaves, idx)
+            in_tree = merkle.verify_proof(target, path, bytes.fromhex(recomputed))
+    except (ValueError, IndexError, TypeError):
+        in_tree = False
+
+    return ReadingCheck(
+        signature_ok=sig_ok, in_hour_tree=in_tree, hour_root_ok=hour_root_ok
+    )
+
 
 def verify_bundle(
-    *, meta: dict, node: dict, attest: dict, readings_records: list[dict]
+    *, meta: dict, node: dict, attest: dict, readings_records: list[dict],
+    expect_full_season: bool = True,
 ) -> Report:
-    """Run the seven checks (SPEC §7) over a bundle. Never raises on bad data —
-    a failure is a failed Check, so tampering shows up as ``INVALID`` rather than
-    a crash."""
+    """Run the checks (SPEC §7) over a bundle. Never raises on bad data — a
+    failure is a failed Check, so tampering shows up as ``INVALID`` rather than a
+    crash.
+
+    ``expect_full_season=False`` marks the bundle as a KNOWN partial slice (e.g.
+    a single hour). The season-level checks — season root, verified hours,
+    season score — need every hour to recompute, so they are skipped rather than
+    reported as failures; the per-hour and signature checks still run. The caller
+    should label the result as partial (it is not a full-season VALID)."""
     node = node or {}
     attest = attest or {}
     node_pub = node.get("pubkey", "")
     oracle_pub = ((meta or {}).get("signer") or {}).get("season_pubkey")
 
+    # Sanitize: a readings record must have an integer hour to be placed in the
+    # season tree. Malformed records are flagged as a failed check below rather
+    # than crashing (verify_bundle never raises on bad data).
+    valid_records: list[dict] = []
+    malformed_hours = 0
+    for rec in readings_records:
+        try:
+            int(rec["hour"])
+        except (KeyError, TypeError, ValueError):
+            malformed_hours += 1
+            continue
+        valid_records.append(rec)
+
     by_hour: dict[int, list[dict]] = {
-        int(rec["hour"]): rec.get("readings", []) for rec in readings_records
+        int(rec["hour"]): rec.get("readings", []) for rec in valid_records
     }
     hours = sorted(by_hour)
     all_readings = [r for rec in readings_records for r in rec.get("readings", [])]
 
     checks: list[Check] = []
 
+    checks.append(Check(
+        "Readings records well-formed",
+        malformed_hours == 0,
+        "all records have an integer hour" if malformed_hours == 0
+        else f"{malformed_hours} readings record(s) with a missing/invalid hour",
+    ))
+
+    # 0. Bundle consistency — every record must be about the SAME node·season,
+    # so a bundle can't be stitched from a node card, attest, and readings that
+    # actually belong to different nodes/seasons.
+    nid = str(node.get("node_id", "")).upper()
+    consistency: list[str] = []
+    if not nid:
+        consistency.append("node card has no node_id")
+    if str(attest.get("node_id", "")).upper() != nid:
+        consistency.append("attest node_id != node card")
+    a_season = attest.get("season")
+    for rec in readings_records:
+        if str(rec.get("node_id", "")).upper() != nid:
+            consistency.append(f"readings hour {rec.get('hour')} node_id != node card")
+        if a_season is not None and rec.get("season") != a_season:
+            consistency.append(f"readings hour {rec.get('hour')} season != attest")
+        if any(str(r.get("node_id", "")).upper() != nid for r in rec.get("readings", [])):
+            consistency.append(f"a reading in hour {rec.get('hour')} has a foreign node_id")
+    checks.append(Check(
+        "Records agree on node and season",
+        bool(nid) and not consistency,
+        "all records share one node·season"
+        if not consistency else "; ".join(consistency[:3]),
+    ))
+
+    # 0b. Schema/scheme compatibility — this verifier implements schema 1.x with
+    # secp256r1 device + season signatures. A store declaring a different major
+    # version or a different signer scheme cannot be meaningfully verified here
+    # (its sigs would read as failures), so flag it rather than mislead.
+    signer = (meta or {}).get("signer") or {}
+    schema_v = str((meta or {}).get("orchard_schema", ""))
+    want_major = schema.SCHEMA_VERSION.split(".")[0]
+    got_major = schema_v.split(".")[0] if schema_v else ""
+    compat: list[str] = []
+    if got_major != want_major:
+        compat.append(f"schema {schema_v or '?'} != {schema.SCHEMA_VERSION}")
+    if signer.get("device_sig") not in (None, "secp256r1"):
+        compat.append(f"device_sig {signer.get('device_sig')!r} unsupported")
+    if signer.get("season_sig") not in (None, "secp256r1"):
+        compat.append(f"season_sig {signer.get('season_sig')!r} unsupported")
+    checks.append(Check(
+        "Schema and signer scheme supported",
+        not compat,
+        f"schema {schema_v or '?'}, secp256r1" if not compat else "; ".join(compat),
+    ))
+
+    # 0c. Verification basis (schema 1.1.0). A sealed record that declares
+    # seal_source == "placeholder" was written with nothing published on chain:
+    # its season_root is a hash of node:season:hours, NOT a Merkle root, and its
+    # verified_hours proves nothing. Without this check the season-root
+    # comparison below fails and reports "tampered", which is both wrong and
+    # alarming — the record is honestly-labelled, just not proof-backed.
+    basis, basis_why = schema.attest_basis(
+        attest, store_schema=(meta or {}).get("orchard_schema")
+    )
+    checks.append(Check("Attestation is proof-backed", basis is not False, basis_why))
+
+    # A declared tampering signal must never be suppressible by the same party
+    # that declares it. This is deliberately NOT gated on the basis: previously
+    # an oracle could bury its own root-mismatch admission just by declaring a
+    # non-"readings" basis, downgrading a definitive INVALID to cannot-verify.
+    try:
+        declared_mismatches = int(attest.get("root_mismatches") or 0)
+    except (TypeError, ValueError):
+        declared_mismatches = -1  # unparseable — treat as a defect, not as zero
+    if declared_mismatches != 0:
+        checks.append(Check(
+            "No hour_root mismatches declared",
+            False,
+            f"record declares root_mismatches={attest.get('root_mismatches')!r} — "
+            f"stored hour_root(s) disagreed with a recompute",
+        ))
+
+    # A placeholder must be SELF-CONSISTENT before it earns the leniency of
+    # having its season-level checks skipped, otherwise "placeholder" becomes a
+    # way to claim a verified number that nothing ever recomputes.
+    inconsistent = schema.placeholder_inconsistency(attest)
+    if inconsistent:
+        checks.append(Check("Placeholder attestation is self-consistent", False, inconsistent))
+
+    # Recognize a placeholder seal: declared (and self-consistent), or inferred
+    # for a pre-1.1.0 record whose season_root is exactly the placeholder hash.
+    # The legacy inference matters because those records predate seal_source and
+    # would otherwise be reported as "season root mismatch (tampered…)" forever.
+    try:
+        expected_ph_root = data_hash_for_uptime(
+            nid, int(attest.get("season") or 0), int(attest.get("hours_online") or 0)
+        )
+    except (TypeError, ValueError):
+        expected_ph_root = None
+    declared_ph = schema.attest_declares_placeholder(attest)
+    legacy_ph = (
+        basis is None
+        and expected_ph_root is not None
+        and attest.get("season_root") == expected_ph_root
+    )
+    placeholder_sealed = (declared_ph and not inconsistent) or legacy_ph
+
+    if placeholder_sealed:
+        # A placeholder root is not a Merkle root, but it is NOT unconstrained:
+        # it must be exactly sha256(node:season:hours_online). Verifying that is
+        # strictly better than skipping the root — declaring "placeholder" must
+        # not become a way to smuggle in an arbitrary root unchecked.
+        root_ok = (
+            expected_ph_root is not None
+            and attest.get("season_root") == expected_ph_root
+            and attest.get("data_hash") == expected_ph_root
+        )
+        checks.append(Check(
+            "Placeholder root well-formed",
+            root_ok,
+            "season_root == sha256(node:season:hours_online) as required"
+            if root_ok else
+            "placeholder season_root/data_hash is not the required "
+            "sha256(node:season:hours_online) value",
+        ))
+
+    # A genuine placeholder season has NO published readings by definition (the
+    # writer only takes that branch when nothing was found), so the
+    # reading-dependent checks below have nothing to examine. Running them would
+    # fail on the empty set and report a truthful "nothing was published" as a
+    # definitive defect — forcing exit 1 where cannot-verify is correct.
+    skip_reading_checks = placeholder_sealed and not all_readings
+
     # 1. Device provenance — every reading signed by the node's published key.
     bad_sig = [
         r for rec in readings_records for r in rec.get("readings", [])
         if not schema.verify_reading(r, node_pub)
     ]
-    checks.append(Check(
+    reading_checks: list[Check] = []
+    reading_checks.append(Check(
         "Device signature verified",
         bool(all_readings) and not bad_sig,
         f"{len(all_readings)} reading(s) signed by node {node.get('node_id', '?')[:8]}…"
         if not bad_sig else f"{len(bad_sig)} reading(s) failed the signature check",
     ))
 
-    # 2. Inclusion — prove one reading sits under its hour_root via a Merkle path.
+    # 1b. Anti-backdate anchor (SPEC §7 check 4, offline half). Every reading
+    # must carry a well-formed, non-placeholder block anchor. Confirming it
+    # against a real block (timestamp ≤ ts_ms) is the live-only chain lookup.
+    bad_anchor = [
+        r for r in all_readings if not _anchor_wellformed(r.get("block_anchor"))
+    ]
+    reading_checks.append(Check(
+        "Anti-backdate anchor present",
+        bool(all_readings) and not bad_anchor,
+        f"{len(all_readings)} reading(s) carry a 16-hex block anchor "
+        f"(chain lookup is a live-only step)"
+        if not bad_anchor
+        else f"{len(bad_anchor)} reading(s) have a missing, placeholder, or "
+             f"malformed block anchor",
+    ))
+
+    # 2. Inclusion — prove EVERY reading sits under its hour_root via its own
+    #    Merkle path, so any single reading is provably in the tree (not just a
+    #    sampled leaf). Exercises odd-level promotion and ordering for real data.
     proof_ok, proof_detail = False, "no readings to prove"
-    if readings_records:
-        rec0 = readings_records[0]
-        ordered = schema._sorted_readings(rec0.get("readings", []))
-        if ordered:
-            leaves = [schema.reading_leaf(r) for r in ordered]
+    if valid_records:
+        proven = 0
+        failures: list[str] = []
+        for rec in valid_records:
+            ordered = schema._sorted_readings(rec.get("readings", []))
+            if not ordered:
+                continue
             try:
-                path = merkle.merkle_proof(leaves, 0)
-                proof_ok = merkle.verify_proof(
-                    leaves[0], path, bytes.fromhex(rec0["hour_root"])
-                )
-                proof_detail = f"leaf 0 of hour {int(rec0['hour']):02d} via {len(path)}-step path"
-            except (ValueError, IndexError) as e:
-                proof_detail = f"proof error: {e}"
-    checks.append(Check("Reading Merkle proof verified", proof_ok, proof_detail))
+                root = bytes.fromhex(rec["hour_root"])
+            except (ValueError, KeyError, TypeError):
+                failures.append(f"hour {rec.get('hour')}: bad hour_root")
+                continue
+            leaves = [schema.reading_leaf(r) for r in ordered]
+            for i in range(len(leaves)):
+                try:
+                    path = merkle.merkle_proof(leaves, i)
+                    if merkle.verify_proof(leaves[i], path, root):
+                        proven += 1
+                    else:
+                        failures.append(f"hour {int(rec['hour']):02d} leaf {i}")
+                except (ValueError, IndexError) as e:
+                    failures.append(f"hour {rec.get('hour')} leaf {i}: {e}")
+        proof_ok = proven > 0 and not failures
+        if proof_ok:
+            proof_detail = f"{proven} reading(s) each proven to their hour_root"
+        elif failures:
+            proof_detail = (
+                f"{len(failures)} Merkle path failure(s): {failures[:3]}"
+            )
+    reading_checks.append(Check("Reading Merkle proof verified", proof_ok, proof_detail))
 
     # 3. Hour roots — each record's stored hour_root equals a recompute.
     hr_bad = [
-        int(rec["hour"]) for rec in readings_records
+        int(rec["hour"]) for rec in valid_records
         if schema.hour_root(rec.get("readings", [])) != rec.get("hour_root")
     ]
-    checks.append(Check(
+    reading_checks.append(Check(
         "Hour root verified", not hr_bad,
         f"{len(readings_records)} hour root(s) match recompute"
         if not hr_bad else f"mismatch at hour(s) {hr_bad}",
     ))
 
-    # 4. Season root — recompute from the present hours; must equal attest.
-    recomputed_sr = schema.season_root({h: schema.hour_root(by_hour[h]) for h in by_hour})
-    sr_ok = recomputed_sr == attest.get("season_root") == attest.get("data_hash")
-    checks.append(Check(
-        "Season root verified", sr_ok,
-        f"{recomputed_sr[:16]}… over hour(s) {hours}"
-        if sr_ok else "season root mismatch (tampered, or a partial bundle)",
-    ))
+    if not skip_reading_checks:
+        checks.extend(reading_checks)
 
-    # 5. Verified hours — recompute from public signed readings.
-    vh = schema.verified_hours(by_hour, node_pub)
-    checks.append(Check(
-        "Verified hours recomputed", vh == attest.get("verified_hours"),
-        f"recomputed={vh} claimed={attest.get('verified_hours')}",
-    ))
+    # 4-6. Season-level checks need EVERY hour to recompute, so they only run
+    # for a full-season bundle. For a known partial slice they are skipped (not
+    # failed) — see expect_full_season.
+    #
+    # They are ALSO skipped for a record that declares a placeholder basis: its
+    # season_root is sha256(node:season:hours), not a Merkle root, and its
+    # verified_hours/season_score are 0 by construction. Running them would
+    # report "season root mismatch (tampered…)" for a record that is honestly
+    # labelled as unproven — turning a truthful caveat into a false fraud
+    # signal, and (because those are definitive failures) forcing exit 1 where
+    # the correct verdict is cannot-verify. The basis check above is the finding,
+    # and "Placeholder root well-formed" still constrains the root — the skip
+    # only applies to a SELF-CONSISTENT placeholder, so declaring it can't be
+    # used to dodge a recompute while claiming a verified number.
+    if expect_full_season and not placeholder_sealed:
+        # 4. Season root — recompute from the present hours; must equal attest.
+        recomputed_sr = schema.season_root({h: schema.hour_root(by_hour[h]) for h in by_hour})
+        sr_ok = recomputed_sr == attest.get("season_root") == attest.get("data_hash")
+        checks.append(Check(
+            "Season root verified", sr_ok,
+            f"{recomputed_sr[:16]}… over hour(s) {hours}"
+            if sr_ok else "season root mismatch (tampered, or a partial bundle)",
+        ))
 
-    # 6. Season score — the verifiable reward metric.
-    ss = schema.season_score(vh)
-    checks.append(Check(
-        "Season score recomputed", ss == attest.get("season_score"),
-        f"recomputed={ss} claimed={attest.get('season_score')}",
-    ))
+        # 5. Verified hours — recompute from public signed readings.
+        vh = schema.verified_hours(by_hour, node_pub)
+        checks.append(Check(
+            "Verified hours recomputed", vh == attest.get("verified_hours"),
+            f"recomputed={vh} claimed={attest.get('verified_hours')}",
+        ))
+
+        # 6. Season score — the verifiable reward metric.
+        ss = schema.season_score(vh)
+        checks.append(Check(
+            "Season score recomputed", ss == attest.get("season_score"),
+            f"recomputed={ss} claimed={attest.get('season_score')}",
+        ))
 
     # 7. Oracle season signature — against the pubkey published in meta.
     if not oracle_pub:

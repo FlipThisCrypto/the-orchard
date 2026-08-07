@@ -3,15 +3,12 @@
 
     python -m orchard_chia.cli.orchard_verify vectors <path-to-vectors.json>
     python -m orchard_chia.cli.orchard_verify live \\
-        --store-id <ID> --node-id <ID> --season 42 --hour 13
-
-Phase 1 (now): offline verification against the golden ``vectors.json``.
-Phase 2 (stub): live DataLayer verification — interface frozen, not yet wired.
+        --store-id <ID> --node-id <ID> --season 42 [--hour 13]
 
 Exit codes:
     0  VALID    — every check passed
     1  INVALID  — a check failed (tampering, bad signature, wrong score …)
-    2  CANNOT   — couldn't verify (live not wired, file missing/malformed, usage)
+    2  CANNOT   — couldn't verify (RPC down, missing keys, file malformed, usage)
 """
 from __future__ import annotations
 
@@ -20,7 +17,8 @@ import json
 import sys
 from pathlib import Path
 
-from ..datalayer import schema, verify
+from ..datalayer import config, fetch, inclusion, schema, verify
+from ..datalayer.rpc import ChiaRpcError, DataLayerRpc
 
 
 def _marks() -> tuple[str, str]:
@@ -35,7 +33,23 @@ def _marks() -> tuple[str, str]:
     return ok, fail
 
 
-def _print_report(rep: verify.Report) -> None:
+def _print_report(
+    rep: verify.Report,
+    *,
+    as_json: bool = False,
+    result_label: str | None = None,
+    badge: str | None = None,
+) -> None:
+    if as_json:
+        import json
+        d = rep.as_dict()
+        # Expose the tri-state verdict so automation can tell CANNOT-VERIFY
+        # (retry) from INVALID (fraud); `valid` alone collapses both to false.
+        d["result"] = result_label or ("VALID" if rep.valid else "INVALID")
+        if badge is not None:
+            d["badge"] = badge  # SPEC §8 public badge
+        print(json.dumps(d, indent=2, sort_keys=True))
+        return
     ok, fail = _marks()
     print("Orchard Verify\n")
     print(f"Schema: orchard.datalayer v{schema.SCHEMA_VERSION}")
@@ -50,7 +64,100 @@ def _print_report(rep: verify.Report) -> None:
             line += f"  ({c.detail})"
         print(line)
     print()
-    print(f"Result: {'VALID' if rep.valid else 'INVALID'}")
+    label = result_label or ("VALID" if rep.valid else "INVALID")
+    print(f"Result: {label}")
+    if badge is not None:
+        print(f"Badge:  {badge}")
+
+
+INCLUSION_CHECK_NAME = "DataLayer inclusion proof"
+
+# Offline checks whose failure means "we can't verify this store/dimension"
+# rather than "the data is fraudulent". Everything else offline is a definitive
+# contradiction (bad sig / Merkle / roots / score / consistency).
+#   - schema/scheme: a schema major / signer scheme this verifier can't speak.
+#   - anti-backdate anchor: an unanchored (placeholder) reading — current
+#     firmware doesn't yet fetch /beacon, so the anti-backdate dimension simply
+#     can't be established; that is not fraud, so don't flag it as INVALID.
+#   - proof-backed basis: a placeholder-sealed attestation is honestly labelled
+#     as unproven (nothing was published). That is "cannot verify the reward",
+#     not "the operator is lying" — unlike a declared root mismatch, which stays
+#     a definitive INVALID.
+_CANNOT_VERIFY_OFFLINE_CHECKS = frozenset({
+    "Schema and signer scheme supported",
+    "Anti-backdate anchor present",
+    "Attestation is proof-backed",
+})
+
+
+def _offline_exit_code(rep: verify.Report) -> int:
+    """Exit code for a bundle verified WITHOUT the live inclusion check.
+
+    0 VALID · 1 INVALID (a definitive contradiction) · 2 CANNOT-VERIFY (every
+    failure is an honestly-declared "we can't establish this": placeholder
+    basis, unsupported schema/scheme, unanchored readings).
+    """
+    if rep.valid:
+        return 0
+    definitive = any(
+        not c.ok
+        for c in rep.checks
+        if c.name != INCLUSION_CHECK_NAME
+        and c.name not in _CANNOT_VERIFY_OFFLINE_CHECKS
+    )
+    return 1 if definitive else 2
+
+
+def _live_exit_code(rep: verify.Report, incl: inclusion.InclusionReport) -> int:
+    """Map a live verification to an exit code, distinguishing cannot-verify.
+
+    0 VALID, 1 INVALID (a definitive contradiction — tampering), 2 CANNOT
+    (transient/unprovable: RPC down, root not yet confirmed, key not published,
+    proof stale, or an unsupported schema/scheme). Collapse to INVALID only when
+    something is *definitively* wrong: a definitive offline check failed, or the
+    inclusion failure was a value mismatch (cannot_verify False).
+    """
+    if rep.valid:
+        return 0
+    definitive_offline = any(
+        not c.ok
+        for c in rep.checks
+        if c.name != INCLUSION_CHECK_NAME
+        and c.name not in _CANNOT_VERIFY_OFFLINE_CHECKS
+    )
+    if definitive_offline:
+        return 1
+    # Remaining failures are cannot-verify offline checks and/or the inclusion
+    # check. A value-mismatch inclusion is tampering; anything else is retry.
+    incl_failed = any(
+        not c.ok for c in rep.checks if c.name == INCLUSION_CHECK_NAME
+    )
+    if incl_failed and not incl.cannot_verify:
+        return 1
+    return 2
+
+
+def _bundle_proof_pairs(bundle: dict, node_id: str, season: int) -> dict[str, str]:
+    """Map every key the verdict trusts → its canonical value hex, for a live
+    inclusion + value bind.
+
+    Covers meta:schema (oracle season pubkey, checks §7.7), node:<id> (device
+    pubkey, §7.2), attest:<id>:<season> (the reward anchor, §7.5-6), and each
+    readings hour present (§7.3). Proving only readings would leave the pubkeys
+    and the reward summary unbound — a tampered mirror could swap them while
+    serving a valid readings proof.
+    """
+    pairs: dict[str, str] = {
+        schema.meta_key(): schema.value_hex(bundle["meta"]),
+        schema.node_key(node_id): schema.value_hex(bundle["node"]),
+        schema.attest_key(node_id, season): schema.value_hex(bundle["attest"]),
+    }
+    for r in bundle.get("readings_records", []):
+        if "hour" in r:
+            pairs[schema.readings_key(node_id, season, int(r["hour"]))] = (
+                schema.value_hex(r)
+            )
+    return pairs
 
 
 def _load_vectors_bundle(path: Path) -> dict:
@@ -74,18 +181,215 @@ def cmd_vectors(args: argparse.Namespace) -> int:
         print(f"error: malformed vectors file: {e}", file=sys.stderr)
         return 2
     rep = verify.verify_bundle(**bundle)
-    _print_report(rep)
-    return 0 if rep.valid else 1
+    # Offline mode uses the SAME tri-state classifier as live, so an honestly
+    # -labelled-but-unproven record (placeholder basis, unsupported scheme,
+    # unanchored readings) reports cannot-verify (2) instead of being called
+    # fraud (1). Previously this returned `0 if valid else 1` and collapsed
+    # every distinction.
+    code = _offline_exit_code(rep)
+    label = {0: "VALID", 1: "INVALID", 2: "CANNOT-VERIFY"}[code]
+    badge = verify.verification_badge(rep, sealed=True, unverifiable=(code == 2))
+    _print_report(
+        rep, as_json=bool(getattr(args, "json", False)),
+        result_label=label, badge=badge,
+    )
+    return code
 
 
 def cmd_live(args: argparse.Namespace) -> int:
-    print("Live DataLayer verification is not wired yet.")
-    print("Next step: fetch node, readings, attest, latest, and the DataLayer "
-          "inclusion proof for")
-    print(f"  store={args.store_id} node={args.node_id} "
-          f"season={int(args.season):08d} hour={int(args.hour):02d}")
-    print("then run the same checks as `vectors`, plus on-chain get_proof (SPEC §7).")
-    return 2
+    """Fetch a bundle from DataLayer RPC and run the same offline checks, plus a
+    live on-chain inclusion check (SPEC §7 check 1) prepended as a Check.
+
+    The inclusion check requires a confirmed store root (get_root.confirmed),
+    a get_proof covering every readings key, verify_proof's current_root, and a
+    value-hash bind of each key to the readings record being verified.
+    """
+    try:
+        cfg = config.load()
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    store_id = args.store_id or cfg.data_layer.store_id
+    if not store_id:
+        print("error: --store-id required (or set datalayer.store_id in config)",
+              file=sys.stderr)
+        return 2
+
+    from ..datalayer.parse import parse_hour, parse_season
+
+    try:
+        season_n = parse_season(args.season)
+        hours = [parse_hour(args.hour)] if args.hour is not None else None
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    rpc = DataLayerRpc(
+        cfg.data_layer.host,
+        cfg.data_layer.port,
+        cfg.data_layer.cert_path,
+        cfg.data_layer.key_path,
+    )
+    try:
+        bundle = fetch.fetch_bundle(
+            rpc,
+            store_id,
+            node_id=args.node_id,
+            season=season_n,
+            hours=hours,
+        )
+    except fetch.FetchError as e:
+        print(f"error: cannot assemble bundle: {e}", file=sys.stderr)
+        return 2
+    except ChiaRpcError as e:
+        print(f"error: DataLayer RPC failed: {e}", file=sys.stderr)
+        return 2
+
+    print(
+        f"[live] store={store_id[:16]}… node={args.node_id[:8]}… "
+        f"season={season_n} hours="
+        f"{hours if hours is not None else 'auto'}"
+    )
+    # A single --hour is a KNOWN partial slice: the season-level checks can't be
+    # recomputed from one hour, so skip them rather than misreport tampering.
+    partial = args.hour is not None
+    rep = verify.verify_bundle(**bundle, expect_full_season=not partial)
+
+    # SPEC §7.1 — DataLayer inclusion / permanence (RPC-level). Prove and
+    # value-bind every key the verdict trusts: meta (oracle pubkey), node
+    # (device pubkey), attest (reward anchor), and each readings hour.
+    proof_pairs = _bundle_proof_pairs(bundle, args.node_id, season_n)
+    incl = inclusion.check_inclusion(
+        rpc, store_id, list(proof_pairs), expected_values=proof_pairs
+    )
+    rep.checks.insert(
+        0,
+        verify.Check(
+            INCLUSION_CHECK_NAME,
+            incl.ok,
+            incl.detail,
+        ),
+    )
+
+    code = _live_exit_code(rep, incl)
+    base = {0: "VALID", 1: "INVALID", 2: "CANNOT-VERIFY"}[code]
+    # Never claim a bare "VALID" for a partial slice — it verified only the
+    # present hour, not the whole season.
+    label = f"{base} (partial: hour {args.hour:02d})" if partial else base
+    # SPEC §8 badge: 'Live' for a healthy partial/in-progress slice, 'Verified'
+    # for a full-season pass, 'Unverified' when inclusion was cannot-verify.
+    badge = verify.verification_badge(
+        rep, sealed=not partial, unverifiable=(code == 2)
+    )
+    _print_report(
+        rep, as_json=bool(getattr(args, "json", False)),
+        result_label=label, badge=badge,
+    )
+    return code
+
+
+def _fetch_and_verify_reading(
+    rpc, store_id: str, node_id: str, season: int, hour: int, ts_ms: int
+) -> tuple[verify.ReadingCheck | None, str | None, dict]:
+    """Fetch the node pubkey + hour record and verify one reading by ts_ms.
+
+    Returns (ReadingCheck, None, ctx) on success or (None, error, {}) if the
+    node/hour/reading can't be found. ``ctx`` carries the fetched node and
+    readings records + their canonical value hexes so the caller can prove
+    on-chain inclusion. Pure over the RPC interface (testable with a fake).
+    """
+    node = schema.parse_value(rpc.get_value(store_id, schema.node_key(node_id)))
+    if not node:
+        return None, f"node:{node_id} not found in store", {}
+    rec = schema.parse_value(
+        rpc.get_value(store_id, schema.readings_key(node_id, season, hour))
+    )
+    if not rec:
+        return None, f"readings hour {hour:02d} not found for season {season}", {}
+    match = next(
+        (r for r in rec.get("readings", []) if int(r.get("ts_ms", -1)) == int(ts_ms)),
+        None,
+    )
+    if match is None:
+        return None, f"no reading with ts_ms={ts_ms} in hour {hour:02d}", {}
+    check = verify.verify_reading_in_hour(match, node.get("pubkey", ""), rec)
+    ctx = {
+        "proof_pairs": {
+            schema.node_key(node_id): schema.value_hex(node),
+            schema.readings_key(node_id, season, hour): schema.value_hex(rec),
+        }
+    }
+    return check, None, ctx
+
+
+def cmd_reading(args: argparse.Namespace) -> int:
+    """Verify a single reading (SPEC §8) from the live store by ts_ms."""
+    try:
+        cfg = config.load()
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    store_id = args.store_id or cfg.data_layer.store_id
+    if not store_id:
+        print("error: --store-id required (or set datalayer.store_id)", file=sys.stderr)
+        return 2
+
+    from ..datalayer.parse import parse_hour, parse_season
+
+    try:
+        season_n = parse_season(args.season)
+        hour_n = parse_hour(args.hour)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    rpc = DataLayerRpc(
+        cfg.data_layer.host, cfg.data_layer.port,
+        cfg.data_layer.cert_path, cfg.data_layer.key_path,
+    )
+    try:
+        check, err, ctx = _fetch_and_verify_reading(
+            rpc, store_id, args.node_id, season_n, hour_n, int(args.ts_ms)
+        )
+        # Prove the fetched data is on chain (confirmed root + value-bound),
+        # so the verdict doesn't merely trust the RPC's get_value.
+        incl = inclusion.check_inclusion(
+            rpc, store_id, list(ctx["proof_pairs"]),
+            expected_values=ctx["proof_pairs"],
+        ) if ctx else None
+    except ChiaRpcError as e:
+        print(f"error: DataLayer RPC failed: {e}", file=sys.stderr)
+        return 2
+    if err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
+
+    incl_ok = bool(incl and incl.ok)
+    local_ok = check.ok
+    # A cannot-verify inclusion (RPC/unconfirmed/stale) is exit 2; a value
+    # mismatch (tampering) or a failed local check is exit 1.
+    if local_ok and incl_ok:
+        code, result = 0, "VALID"
+    elif incl is not None and incl.cannot_verify and local_ok:
+        code, result = 2, "CANNOT-VERIFY"
+    else:
+        code, result = 1, "INVALID"
+
+    if bool(getattr(args, "json", False)):
+        out = check.as_dict()
+        out["inclusion_ok"] = incl_ok
+        out["inclusion_detail"] = incl.detail if incl else "not checked"
+        out["result"] = result
+        print(json.dumps(out, indent=2, sort_keys=True))
+    else:
+        ok, fail = _marks()
+        print("Orchard Verify — single reading\n")
+        print(f"{ok if check.signature_ok else fail} Device signature")
+        print(f"{ok if check.in_hour_tree else fail} Merkle membership in hour tree")
+        print(f"{ok if check.hour_root_ok else fail} Hour root matches recompute")
+        print(f"{ok if incl_ok else fail} On-chain inclusion  ({incl.detail if incl else 'n/a'})")
+        print(f"\nResult: {result}")
+    return code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,14 +401,42 @@ def build_parser() -> argparse.ArgumentParser:
 
     v = sub.add_parser("vectors", help="verify the offline golden-vectors bundle")
     v.add_argument("path", help="path to vectors.json")
+    v.add_argument("--json", action="store_true", help="emit Report.as_dict JSON")
     v.set_defaults(func=cmd_vectors)
 
-    live = sub.add_parser("live", help="(stub) verify a live DataLayer store")
-    live.add_argument("--store-id", required=True)
+    live = sub.add_parser(
+        "live",
+        help="fetch a store via DataLayer RPC and verify the season bundle",
+    )
+    live.add_argument(
+        "--store-id",
+        default=None,
+        help="DataLayer store id (default: config.yaml datalayer.store_id)",
+    )
     live.add_argument("--node-id", required=True)
     live.add_argument("--season", required=True, type=int)
-    live.add_argument("--hour", required=True, type=int)
+    live.add_argument(
+        "--hour",
+        type=int,
+        default=None,
+        help="single hour 0-23; omit to discover all hours present in the store",
+    )
+    live.add_argument("--json", action="store_true", help="emit Report.as_dict JSON")
     live.set_defaults(func=cmd_live)
+
+    rd = sub.add_parser(
+        "reading",
+        help="verify a single reading (by ts_ms) from the live store (SPEC §8)",
+    )
+    rd.add_argument("--store-id", default=None,
+                    help="DataLayer store id (default: config.yaml datalayer.store_id)")
+    rd.add_argument("--node-id", required=True)
+    rd.add_argument("--season", required=True, type=int)
+    rd.add_argument("--hour", required=True, type=int)
+    rd.add_argument("--ts-ms", required=True, type=int, dest="ts_ms",
+                    help="device epoch-millis timestamp identifying the reading")
+    rd.add_argument("--json", action="store_true", help="emit ReadingCheck JSON")
+    rd.set_defaults(func=cmd_reading)
     return p
 
 

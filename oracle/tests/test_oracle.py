@@ -18,6 +18,9 @@ from hashlib import sha256
 # Force a fresh in-memory DB BEFORE importing the app so settings()
 # doesn't latch in a file-backed URL from the env.
 os.environ["ORCHARD_ORACLE_DB_URL"] = "sqlite:///:memory:"
+# Disable the /network/stats cache so per-request count assertions see live
+# data (the cache itself is covered in test_network_cache.py).
+os.environ.setdefault("ORCHARD_NETWORK_STATS_TTL_S", "0")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -176,6 +179,14 @@ def test_post_reading_happy_path_and_retrieve(client: TestClient):
     assert rows[0]["gps_lat"] == pytest.approx(40.0000)
     assert rows[0]["gps_fix"] is True
     assert rows[0]["payload"]["sensors"]["mq135"]["adc_raw"] == 1820.0
+
+    # DataLayer publisher window: since_ms/until_ms on tree_ts_ms.
+    assert len(client.get(f"/readings/{NODE_ID}", params={"since_ms": 12345}).json()) == 1
+    assert len(client.get(f"/readings/{NODE_ID}", params={"until_ms": 12345}).json()) == 0
+    assert len(client.get(
+        f"/readings/{NODE_ID}", params={"since_ms": 12345, "until_ms": 12346}
+    ).json()) == 1
+    assert len(client.get(f"/readings/{NODE_ID}", params={"since_ms": 99999}).json()) == 0
 
     # Uptime bucket incremented.
     season = client.get("/").json()["current_season"]
@@ -357,7 +368,9 @@ def test_pass_verify_cache_hit(client: TestClient, fake_indexer, monkeypatch):
     pass_verify.clear_cache()
 
     calls = {"n": 0}
-    original = pass_verify.nft_verify.list_passes_by_address
+    # nft_verify is imported lazily now (so the oracle can boot without
+    # orchard_chia); reach it through the accessor rather than module scope.
+    original = pass_verify._nft_verify().list_passes_by_address
 
     def counting(address: str):
         calls["n"] += 1
@@ -1147,6 +1160,14 @@ def test_delete_node_owner_succeeds_cascade(auth_client):
         ).scalars().all()
         assert n_left == []
 
+    # The destructive delete is audited, with the blast radius, and the audit
+    # record survives the node's cascade (no FK to nodes).
+    ev = auth_client.get("/audit", params={"node_id": NID}).json()
+    dels = [e for e in ev if e["action"] == "node.delete"]
+    assert len(dels) == 1
+    assert dels[0]["actor"] == addr
+    assert dels[0]["detail"]["readings_deleted"] == 1
+
 
 def test_delete_node_non_owner_returns_404(auth_client):
     """Trying to delete someone else's node returns 404 (not 403)."""
@@ -1235,6 +1256,67 @@ def test_readings_gps_hidden_from_non_owner(auth_client):
         f"/readings/{NODE_ID}", headers={"Authorization": f"Bearer {token}"}).json()[0]
     assert row2["gps_lat"] == pytest.approx(40.0000)
     assert row2["payload"]["sensors"]["gps"]["lat"] == pytest.approx(40.0000)
+
+
+def test_geohash_encode_known_vector():
+    """Coarse-location encoder is correct (canonical geohash example) and
+    rejects out-of-range coordinates."""
+    from oracle.app.routes.nodes import _geohash_encode
+
+    assert _geohash_encode(57.64911, 10.40744, 5) == "u4pru"
+    # Placeholder coords only -- real operator coordinates were redacted from
+    # the test corpus (#42, "redact home GPS coordinates"); keep them out.
+    assert _geohash_encode(40.0000, -83.0000, 5) is not None
+    assert _geohash_encode(999.0, 0.0, 5) is None
+
+
+def test_nodes_public_geohash_sensors_and_wallet_scrub(auth_client):
+    """worldview globe contract: /nodes exposes a COARSE ~5 km geohash and
+    the node's sensor classes to everyone, and scrubs wallet_address to null
+    for the public (returned only to the owning session). The Pass binding
+    stays public (it's an on-chain credential)."""
+    import oracle.app.sessions as sm
+    from oracle.app import models
+    from oracle.app.routes.nodes import _geohash_encode
+    from sqlalchemy import update
+
+    _, addr = _test_keypair()
+    auth_client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    with auth_client.Session() as s:
+        s.execute(update(models.Node).where(models.Node.node_id == NODE_ID).values(
+            wallet_address=addr, pass_nft_id="nft1testpass0000"))
+        s.commit()
+
+    payload = {"node_id": NODE_ID, "ts_ms": 1, "sensors": {
+        "mq135": {"adc_raw": 1820.0},
+        "gps": {"fix": True, "lat": 40.0000, "lon": -83.0000, "satellites": 7},
+    }}
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    pr = auth_client.post("/readings", content=body, headers={
+        "Content-Type": "application/json", "X-Orchard-Node": NODE_ID,
+        "X-Orchard-Sig": _sign(body)})
+    assert pr.status_code == 202, pr.text
+
+    # Public / the globe (no session): coarse geohash + sensors present;
+    # wallet + Pass scrubbed to null.
+    pub = auth_client.get(f"/nodes/{NODE_ID}").json()
+    assert pub["geohash"] == _geohash_encode(40.0000, -83.0000, 5)
+    assert pub["geohash"] is not None and len(pub["geohash"]) == 5
+    assert pub["sensors"] == ["gps", "mq135"]
+    assert pub["wallet_address"] is None              # wallet scrubbed for public
+    assert pub["pass_nft_id"] == "nft1testpass0000"   # Pass binding stays public
+    # The list view is scrubbed for the public too.
+    lst = auth_client.get("/nodes").json()
+    assert lst[0]["wallet_address"] is None
+    assert lst[0]["geohash"] == pub["geohash"]
+
+    # Owner session: wallet + Pass visible again; coarse geohash unchanged.
+    token, _ = sm.issue(addr)
+    own = auth_client.get(f"/nodes/{NODE_ID}",
+                          headers={"Authorization": f"Bearer {token}"}).json()
+    assert own["wallet_address"] == addr
+    assert own["pass_nft_id"] == "nft1testpass0000"
+    assert own["geohash"] == pub["geohash"]
 
 
 def test_fixed_window_limiter():
@@ -1495,3 +1577,122 @@ def test_missing_schema_version_is_null(client: TestClient):
         "X-Orchard-Node": NODE_ID, "X-Orchard-Sig": _sign(body)})
     rows = client.get(f"/readings/{NODE_ID}").json()
     assert rows[0]["schema_version"] is None
+
+
+def test_register_device_pubkey_and_nodes_expose(client: TestClient):
+    """ADR-0003: device_pubkey is stored at register and public on /nodes."""
+    pub = "02" + "ab" * 32
+    r = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "device_pubkey": pub,
+        },
+    )
+    assert r.status_code == 201, r.text
+    nodes = client.get("/nodes").json()
+    assert nodes[0]["device_pubkey"] == pub
+    one = client.get(f"/nodes/{NODE_ID}").json()
+    assert one["device_pubkey"] == pub
+
+    # Same key re-register ok; different key conflicts.
+    ok = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "device_pubkey": pub,
+        },
+    )
+    assert ok.status_code == 201
+    bad = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "device_pubkey": "03" + "cd" * 32,
+        },
+    )
+    assert bad.status_code == 409
+
+
+def test_beacon_placeholder_and_env(client: TestClient, monkeypatch):
+    import oracle.app.routes.beacon as be
+    be._cache = None
+    be._cache_mono = 0.0
+    monkeypatch.delenv("ORCHARD_BEACON_BLOCK_ANCHOR", raising=False)
+    monkeypatch.delenv("ORCHARD_BEACON_BLOCK_HEIGHT", raising=False)
+    r = client.get("/beacon")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["block_anchor"] == "0" * 16
+    assert body["ok"] is False
+
+    be._cache = None
+    monkeypatch.setenv("ORCHARD_BEACON_BLOCK_ANCHOR", "a1b2c3d4e5f6071899")
+    monkeypatch.setenv("ORCHARD_BEACON_BLOCK_HEIGHT", "42")
+    r2 = client.get("/beacon")
+    assert r2.status_code == 200
+    b2 = r2.json()
+    assert b2["ok"] is True
+    assert b2["block_anchor"] == "a1b2c3d4e5f60718"
+    assert b2["block_height"] == 42
+    assert b2["source"] == "env"
+
+
+def test_register_rejects_bad_device_pubkey(client: TestClient):
+    r = client.post(
+        "/register",
+        json={
+            "node_id": NODE_ID,
+            "signing_key_hex": KEY_HEX,
+            "device_pubkey": "01" + "aa" * 32,  # bad prefix
+        },
+    )
+    assert r.status_code == 422
+
+def test_beacon_cache_hits_second_call(client, monkeypatch):
+    """Second /beacon within TTL should set cached=true without re-load."""
+    monkeypatch.setenv("ORCHARD_BEACON_BLOCK_ANCHOR", "a1b2c3d4e5f6071899")
+    monkeypatch.setenv("ORCHARD_BEACON_BLOCK_HEIGHT", "9")
+    # Reset module cache
+    import oracle.app.routes.beacon as be
+    be._cache = None
+    be._cache_mono = 0.0
+    be._CACHE_TTL_S = 60.0
+    r1 = client.get("/beacon")
+    assert r1.status_code == 200
+    assert r1.json()["cached"] is False
+    r2 = client.get("/beacon")
+    assert r2.json()["cached"] is True
+    assert r2.json()["block_anchor"] == "a1b2c3d4e5f60718"
+
+def test_post_reading_learns_device_pubkey(client: TestClient):
+    """If registration omitted device_pubkey, a later reading can set it once."""
+    client.post("/register", json={"node_id": NODE_ID, "signing_key_hex": KEY_HEX})
+    pub = "02" + "ab" * 32
+    payload = {
+        "node_id": NODE_ID, "ts_ms": 99, "fw": "0.4.8",
+        "device_pubkey": pub,
+        "sensors": {"mq135": {"adc_raw": 1}},
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    r = client.post("/readings", content=body, headers={
+        "Content-Type": "application/json",
+        "X-Orchard-Node": NODE_ID,
+        "X-Orchard-Sig": _sign(body),
+    })
+    assert r.status_code == 202, r.text
+    node = client.get(f"/nodes/{NODE_ID}").json()
+    assert node["device_pubkey"] == pub
+
+
+def test_root_includes_datalayer_schema(client):
+    """The advertised schema must track orchard_chia, not a hardcoded literal
+    (a literal here drifted from the real schema version once already)."""
+    from orchard_chia.datalayer import SCHEMA_VERSION
+
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.json().get("datalayer_schema") == SCHEMA_VERSION
