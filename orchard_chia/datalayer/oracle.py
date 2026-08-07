@@ -45,7 +45,21 @@ class OracleClient:
             return None
         if r.status_code != 200:
             raise OracleError(f"GET {path} -> {r.status_code}: {r.text}")
-        return r.json()
+        # HTTP 200 is not a promise of JSON. A proxy landing page, a Cloudflare
+        # challenge, or an empty body all arrive as 200 with a body json()
+        # cannot parse — and this call used to sit OUTSIDE the try, so the
+        # resulting JSONDecodeError was never an OracleError, sailed past every
+        # `except OracleError`, and killed the process with a traceback instead
+        # of the intended exit 3. That is exactly how the 2026-07-26 publish and
+        # attest runs died in under 35 ms, against a URL answering 200 with HTML.
+        try:
+            return r.json()
+        except ValueError as e:
+            body = (r.text or "")[:200].replace("\n", " ")
+            raise OracleError(
+                f"GET {path} -> 200 but the body is not JSON ({e}). "
+                f"Is {self.base} really the oracle? First 200 bytes: {body!r}"
+            ) from e
 
     def root(self) -> dict:
         info = self._get("/")
