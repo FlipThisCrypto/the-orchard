@@ -39,6 +39,17 @@ from ..wallet.rpc import WalletRpc
 
 # MintGarden public REST API. Read-only, no auth.
 MINTGARDEN_API_BASE = "https://api.mintgarden.io"
+
+# Identify ourselves. urllib sends "Python-urllib/3.x" by default, which
+# MintGarden's edge blocks outright — every Pass verification failed with
+# "indexer error: MintGarden … -> HTTP 403". Reproduced from an unrelated IP:
+# same URL, same library, default UA -> 403, a real UA -> 200. So it is the
+# header, not the address, and not rate limiting.
+#
+# This gates registration, so a blanket 403 means nobody can bind a wallet to a
+# Tree. Worth stating plainly: it is polite to identify a bot, and it is the
+# difference between working and not.
+USER_AGENT = "TheOrchard-Oracle/1.0 (+https://theorchard.network)"
 # Per-request page size — collection has 10 items so one page covers it;
 # but we page anyway in case the collection grows.
 INDEXER_PAGE_SIZE = 50
@@ -181,9 +192,16 @@ def _fetch_mintgarden_collection_items(
             url += f"&page={urllib.parse.quote(str(cursor), safe='')}"
         try:
             raw = (_opener(url) if _opener
-                   else urllib.request.urlopen(url, timeout=timeout).read())
+                   else urllib.request.urlopen(
+                       urllib.request.Request(url, headers={"User-Agent": USER_AGENT}),
+                       timeout=timeout,
+                   ).read())
         except urllib.error.HTTPError as e:
-            raise IndexerError(f"MintGarden {url} -> HTTP {e.code}") from e
+            hint = (
+                "  (403 usually means the request was not identified — check the "
+                "User-Agent)" if e.code == 403 else ""
+            )
+            raise IndexerError(f"MintGarden {url} -> HTTP {e.code}{hint}") from e
         except (urllib.error.URLError, TimeoutError) as e:
             raise IndexerError(f"MintGarden {url} unreachable: {e}") from e
         try:
