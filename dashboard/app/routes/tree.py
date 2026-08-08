@@ -37,7 +37,11 @@ def _read_datalayer_store_id() -> str:
 
 @bp.route("/tree/<node_id>")
 def tree_page(node_id: str):
-    node = oracle_client.get_node(node_id.upper())
+    try:
+        node = oracle_client.get_node(node_id.upper())
+    except oracle_client.OracleError:
+        # Oracle down / non-JSON — treat as not found rather than 500.
+        abort(404)
     if node is None:
         abort(404)
     # Don't expose the operator's DataLayer store id on the public tree

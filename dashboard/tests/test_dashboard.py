@@ -113,12 +113,14 @@ def test_api_serial_identify_happy(client, monkeypatch):
     monkeypatch.setattr(tree_serial, "get_signing_key", lambda port: "AA" * 32)
     monkeypatch.setattr(tree_serial, "get_status", lambda port: {"fw": "0.1.0", "wifi": "unconfigured", "oracle": ""})
     monkeypatch.setattr(tree_serial, "get_hw_info", lambda port: None)
+    monkeypatch.setattr(tree_serial, "get_device_pubkey", lambda port: None)
     r = client.post("/api/serial/identify", json={"port": "COM4"})
     assert r.status_code == 200
     body = r.get_json()
     assert body["node_id"] == "5B9BB022649FA93D4091DA4BA40714B9"
     assert body["status"]["fw"] == "0.1.0"
     assert body["hw_info"] is None
+    assert body["device_pubkey"] is None
 
 
 def test_api_serial_identify_includes_hw_info_when_present(client, monkeypatch):
@@ -143,6 +145,7 @@ def test_api_serial_identify_includes_hw_info_when_present(client, monkeypatch):
     monkeypatch.setattr(tree_serial, "get_status",
                         lambda port: {"fw": "0.4.0", "wifi": "connected", "oracle": ""})
     monkeypatch.setattr(tree_serial, "get_hw_info", lambda port: dict(hw_payload))
+    monkeypatch.setattr(tree_serial, "get_device_pubkey", lambda port: None)
     r = client.post("/api/serial/identify", json={"port": "COM4"})
     assert r.status_code == 200
     body = r.get_json()
@@ -152,6 +155,53 @@ def test_api_serial_identify_includes_hw_info_when_present(client, monkeypatch):
     bme = next(s for s in body["hw_info"]["sensors"] if s["name"] == "bme280")
     assert bme["active"] is True
     assert bme["addr"]   == 0x76
+
+
+def test_api_serial_identify_includes_device_pubkey(client, monkeypatch):
+    """ADR-0003: identify returns compressed secp256r1 device_pubkey for
+    registration → DataLayer node:<id>.pubkey."""
+    pub = "02" + "ab" * 32
+    monkeypatch.setattr(tree_serial, "ping", lambda port: True)
+    monkeypatch.setattr(tree_serial, "get_node_id", lambda port: "5B9BB022649FA93D4091DA4BA40714B9")
+    monkeypatch.setattr(tree_serial, "get_signing_key", lambda port: "AA" * 32)
+    monkeypatch.setattr(tree_serial, "get_status",
+                        lambda port: {"fw": "0.4.8", "wifi": "connected", "oracle": ""})
+    monkeypatch.setattr(tree_serial, "get_hw_info", lambda port: {"pubkey": pub, "board": "wroom"})
+    monkeypatch.setattr(tree_serial, "get_device_pubkey", lambda port: pub)
+    r = client.post("/api/serial/identify", json={"port": "COM4"})
+    assert r.status_code == 200
+    assert r.get_json()["device_pubkey"] == pub
+
+
+def test_get_device_pubkey_parses_ok_line(monkeypatch):
+    pub = "03" + "cd" * 32
+    monkeypatch.setattr(tree_serial, "_send_and_read_line",
+                        lambda port, cmd: f"OK {pub}")
+    assert tree_serial.get_device_pubkey("COM4") == pub
+
+
+def test_get_device_pubkey_legacy_none(monkeypatch):
+    monkeypatch.setattr(tree_serial, "_send_and_read_line",
+                        lambda port, cmd: "ERR unknown")
+    assert tree_serial.get_device_pubkey("COM4") is None
+
+
+def test_api_oracle_register_forwards_device_pubkey(client, monkeypatch):
+    captured = {}
+
+    def fake_register(**kw):
+        captured.update(kw)
+        return {"node_id": kw["node_id"], "new": True}
+
+    monkeypatch.setattr(oracle_client, "register_node", fake_register)
+    pub = "02" + "11" * 32
+    r = client.post("/api/oracle/register", json={
+        "node_id": "0123456789ABCDEF0123456789ABCDEF",
+        "signing_key_hex": "AA" * 32,
+        "device_pubkey": pub,
+    })
+    assert r.status_code == 200
+    assert captured.get("device_pubkey") == pub
 
 
 def test_get_hw_info_returns_none_on_legacy_firmware(monkeypatch):
@@ -616,11 +666,14 @@ def test_api_auth_challenge_forwards_to_oracle(client, monkeypatch):
     import requests
     class FakeResp:
         status_code = 200
+        content = b'{"nonce":"deadbeef"}'
+        text = '{"nonce":"deadbeef"}'
         def json(self): return {"nonce": "deadbeef", "expires_at": 1, "message": "x"}
-    def fake_post(url, timeout, **kw):
+    def fake_request(method, url, json=None, timeout=None, **kw):
+        assert method == "POST"
         assert url.endswith("/auth/challenge"), url
         return FakeResp()
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "request", fake_request)
     r = client.post("/api/auth/challenge")
     assert r.status_code == 200
     assert r.get_json()["nonce"] == "deadbeef"
@@ -632,12 +685,14 @@ def test_api_auth_verify_forwards_body(client, monkeypatch):
     captured = {}
     class FakeResp:
         status_code = 200
+        content = b'{"session_token":"T"}'
+        text = '{"session_token":"T"}'
         def json(self): return {"session_token": "T", "address": "xch1...", "expires_at": 1}
-    def fake_post(url, json=None, timeout=None, **kw):
+    def fake_request(method, url, json=None, timeout=None, **kw):
         captured["url"] = url
         captured["body"] = json
         return FakeResp()
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "request", fake_request)
     r = client.post(
         "/api/auth/verify",
         json={"address": "xch1abc", "public_key": "ab"*48,
@@ -648,13 +703,55 @@ def test_api_auth_verify_forwards_body(client, monkeypatch):
     assert captured["body"]["nonce"] == "deadbeef"
 
 
-def test_base_template_includes_connect_slot(client):
+def test_base_template_includes_connect_slot(client, monkeypatch):
     """The Connect Wallet area must be wired into base.html so every
-    page picks it up via the script tag."""
+    page picks it up via the script tag.
+
+    Hermetic: mock the oracle so a flaky/empty LAN response cannot
+    500 the home page (and so this test never depends on a live oracle).
+    """
+    monkeypatch.setattr(
+        oracle_client,
+        "root",
+        lambda: {"version": "0.1.0", "current_season": 1, "now_utc": "2026-05-27T20:00:00+00:00"},
+    )
+    monkeypatch.setattr(oracle_client, "list_nodes", lambda: [])
     r = client.get("/")
+    assert r.status_code == 200
     html = r.get_data(as_text=True)
     assert 'id="connect-slot"' in html
     assert "connect.js" in html
+
+
+def test_oracle_client_root_non_json_becomes_oracle_error(monkeypatch):
+    """Empty / HTML oracle body must not raise JSONDecodeError into Flask."""
+    class FakeResp:
+        status_code = 200
+        content = b""
+        text = ""
+
+        def json(self):
+            raise ValueError("Expecting value")
+
+    monkeypatch.setattr(
+        "dashboard.app.oracle_client.requests.request",
+        lambda *a, **k: FakeResp(),
+    )
+    with pytest.raises(oracle_client.OracleError, match="non-JSON|non-object"):
+        oracle_client.root()
+
+
+def test_index_survives_non_json_oracle(client, monkeypatch):
+    """Home page shows unreachable banner instead of HTTP 500."""
+    def boom():
+        raise oracle_client.OracleError(
+            "oracle GET / returned non-JSON body (0 bytes)"
+        )
+    monkeypatch.setattr(oracle_client, "root", boom)
+    monkeypatch.setattr(oracle_client, "list_nodes", boom)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b"Oracle unreachable" in r.data or b"non-JSON" in r.data
 
 
 # ---------------- 2026-06-09 security hardening ----------------
@@ -719,3 +816,32 @@ def test_public_mode_auth_config_hides_wc_project_id(monkeypatch):
         assert body["wc_project_id"] == ""
         assert body["wc_configured"] is False
     dash_config.reset_settings_for_tests()
+
+def test_auth_challenge_non_json_oracle_returns_502(client, monkeypatch):
+    class FakeResp:
+        status_code = 200
+        content = b"<html>bad</html>"
+        text = "<html>bad</html>"
+        def json(self):
+            raise ValueError("no json")
+    monkeypatch.setattr(
+        "requests.request",
+        lambda *a, **k: FakeResp(),
+    )
+    r = client.post("/api/auth/challenge")
+    assert r.status_code == 502
+    assert r.get_json()["ok"] is False
+
+def test_tree_page_oracle_error_is_404(client, monkeypatch):
+    def boom(node_id):
+        raise oracle_client.OracleError("down")
+    monkeypatch.setattr(oracle_client, "get_node", boom)
+    r = client.get("/tree/" + "AB" * 16)
+    assert r.status_code == 404
+def test_api_health(client):
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["service"] == "orchard-view"
+    assert "public_mode" in body

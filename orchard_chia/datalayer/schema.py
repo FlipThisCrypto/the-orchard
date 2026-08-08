@@ -34,8 +34,16 @@ from ecdsa.util import sigencode_string
 
 from . import merkle
 
-SCHEMA_VERSION = "1.0.0"
+# 1.1.0 adds the attest verification-basis fields (seal_source / sigs_verified /
+# root_mismatches) so a sealed record self-describes whether its verified_hours
+# and season_root are proof-backed. Minor bump: same major, so verifiers built
+# for 1.x keep working and pre-1.1 records still verify.
+SCHEMA_VERSION = "1.1.0"
 HOURS_PER_SEASON = 24  # v1 day-aligned Season; block-aligned generalizes later.
+
+# Verification basis of a sealed attest (SPEC §2.4).
+SEAL_SOURCE_READINGS = "readings"      # season_root is a real Merkle root
+SEAL_SOURCE_PLACEHOLDER = "placeholder"  # no public readings; NOT proof-backed
 
 # Integer fixed-point metric keys → how the dashboard renders them.
 # human_value = raw * 10**pow10. Everything signed is an integer; the scale
@@ -180,6 +188,11 @@ def _sign(body: dict, seed_hex: str) -> str:
 
 
 def _verify(body: dict, sig_hex: str, pubkey_hex: str) -> bool:
+    # Robust to hostile/corrupt on-chain input: a node: card with a null or
+    # non-string pubkey (or a non-string sig) must yield False, never an
+    # exception — verify_bundle is contracted never to raise on bad data.
+    if not isinstance(sig_hex, str) or not isinstance(pubkey_hex, str):
+        return False
     try:
         sig = bytes.fromhex(sig_hex)
         if len(sig) != 64:
@@ -192,7 +205,7 @@ def _verify(body: dict, sig_hex: str, pubkey_hex: str) -> bool:
         )
         pk.verify(der, canonical_bytes(body), ec.ECDSA(hashes.SHA256()))
         return True
-    except (InvalidSignature, ValueError):
+    except (InvalidSignature, ValueError, TypeError):
         return False
 
 
@@ -267,6 +280,119 @@ def verified_hours(readings_by_hour: dict[int, list[dict]], pubkey_hex: str) -> 
         for readings in readings_by_hour.values()
         if any(verify_reading(r, pubkey_hex) for r in readings)
     )
+
+
+def schema_declares_basis(schema_version: str | None) -> bool:
+    """Does a store on ``schema_version`` owe a ``seal_source`` declaration?
+
+    True for >= 1.1.0. Used to close the downgrade hole: in a store that
+    declares 1.1.0, an attest with NO basis is not "legacy", it is a record
+    dodging its own caveat.
+
+    Fails **closed**: only a version that positively parses as pre-1.1 (e.g.
+    "1.0.0") is exempt. A present-but-unparseable version ("1", "v1.1.0",
+    "next") is treated as declaring a basis, so a malformed string can't be used
+    to re-open the exemption. Only an absent version is "unknown".
+    """
+    if schema_version is None:
+        return False
+    raw = str(schema_version).strip()
+    if not raw:
+        return False
+    parts = raw.split(".")
+    if len(parts) < 2:
+        return True  # can't prove it's pre-1.1 — fail closed
+    try:
+        major, minor = int(parts[0]), int(parts[1])
+    except (TypeError, ValueError):
+        return True  # unparseable — fail closed
+    return (major, minor) >= (1, 1)
+
+
+def attest_basis(
+    attest_record: dict, *, store_schema: str | None = None
+) -> tuple[bool | None, str]:
+    """How much of this sealed attest is actually proven? ``(proof_backed, why)``.
+
+    ``True``  — declares ``seal_source == "readings"`` **and** ``sigs_verified``:
+                ``season_root`` is a Merkle root over published readings whose
+                device signatures were actually checked.
+    ``False`` — not proof-backed, for any of:
+                * ``seal_source == "placeholder"`` (nothing was published),
+                * ``sigs_verified is False`` (hours counted by reading
+                  *presence* because no device pubkey was available — the count
+                  is not signature-derived, whatever the root says),
+                * an unrecognized ``seal_source`` (fail closed on the unknown),
+                * no declaration at all in a store that declares >= 1.1.0
+                  (a record cannot dodge the caveat by omitting it).
+    ``None``  — undeclared in a pre-1.1.0 / unknown store: genuinely unknown.
+                Never treat as proven.
+    """
+    rec = attest_record or {}
+    src = rec.get("seal_source")
+    if src is None:
+        if schema_declares_basis(store_schema):
+            return False, (
+                f"store declares schema {store_schema} but the attest declares "
+                f"no seal_source — a >=1.1.0 record must state its basis"
+            )
+        return None, "record predates schema 1.1.0 and declares no basis"
+    src = str(src)
+    if src == SEAL_SOURCE_PLACEHOLDER:
+        return False, (
+            "seal_source=placeholder — no readings were published, so "
+            "verified_hours/season_root prove nothing"
+        )
+    if src != SEAL_SOURCE_READINGS:
+        return False, f"unrecognized seal_source {src!r} — cannot treat as proven"
+    # sigs_verified must be POSITIVELY true. Honoring only the literal False
+    # would let an oracle assert "signatures verified" by simply omitting the
+    # field (or sending null/0/"false") — the same omission hole seal_source
+    # closes. Anything that is not exactly True is not a claim of verification.
+    sv = rec.get("sigs_verified")
+    if sv is not True:
+        return False, (
+            f"seal_source=readings but sigs_verified={sv!r} is not true — hours "
+            f"were not established by verifying device signatures"
+        )
+    return True, f"seal_source={src} (Merkle-rooted, signatures verified)"
+
+
+def attest_declares_placeholder(attest_record: dict) -> bool:
+    """Does the record explicitly declare the placeholder basis?"""
+    return str((attest_record or {}).get("seal_source")) == SEAL_SOURCE_PLACEHOLDER
+
+
+def placeholder_inconsistency(attest_record: dict) -> str | None:
+    """Why a placeholder-declared record contradicts itself, or None if consistent.
+
+    A placeholder means *nothing was published*, so the writer sets
+    ``verified_hours``/``season_score``/``reading_count`` to 0. A record that
+    declares placeholder while claiming a non-zero verified count is
+    self-contradictory: it wants the leniency of "unproven" **and** the credit of
+    a verified number. That is a definitive defect, not a cannot-verify.
+    """
+    rec = attest_record or {}
+    if not attest_declares_placeholder(rec):
+        return None
+    bad = []
+    for field in ("verified_hours", "season_score", "reading_count"):
+        val = rec.get(field)
+        if val is not None and int(val) != 0:
+            bad.append(f"{field}={val}")
+    if bad:
+        return (
+            "declares seal_source=placeholder (nothing published) yet claims "
+            + ", ".join(bad)
+        )
+    return None
+
+
+def attest_is_proof_backed(
+    attest_record: dict, *, store_schema: str | None = None
+) -> bool | None:
+    """Tri-state convenience wrapper over :func:`attest_basis`."""
+    return attest_basis(attest_record, store_schema=store_schema)[0]
 
 
 def season_score(verified_hrs: int, hours_per_season: int = HOURS_PER_SEASON) -> int:
@@ -360,9 +486,30 @@ def build_attest(
     block_height_at_write: int,
     season_root_hex: str,
     signed_at: str,
+    seal_source: str = SEAL_SOURCE_READINGS,
+    sigs_verified: bool = True,
+    root_mismatches: int = 0,
 ) -> dict:
     """Unsigned attest payload. ``data_hash`` is kept (== ``season_root``) so the
-    existing payout ``reader.py`` keeps working. Call :func:`sign_attest` next."""
+    existing payout ``reader.py`` keeps working. Call :func:`sign_attest` next.
+
+    **Verification basis (schema 1.1.0).** The record self-describes how much of
+    it is actually proven, so no consumer can mistake an oracle self-report for
+    evidence:
+
+    - ``seal_source`` — ``"readings"`` when ``season_root`` is a real Merkle root
+      over published device-signed readings, ``"placeholder"`` when nothing was
+      published and the root is only a hash of ``node:season:hours``. A
+      placeholder record is **not proof-backed**; its ``verified_hours`` must be
+      0 because nothing was verified.
+    - ``sigs_verified`` — False when hours were counted by reading *presence*
+      because no device pubkey was available to check signatures against.
+    - ``root_mismatches`` — hours whose stored ``hour_root`` disagreed with a
+      recompute (>0 is a tampering/corruption red flag).
+
+    These are inside the signed body deliberately: an intermediary must not be
+    able to strip the caveat and leave the number looking proven.
+    """
     return {
         "node_id": node_id.upper(),
         "season": int(season),
@@ -370,6 +517,9 @@ def build_attest(
         "season_end_utc": season_end_utc,
         "hours_online": int(hours_online),
         "verified_hours": int(verified_hrs),
+        "seal_source": str(seal_source),
+        "sigs_verified": bool(sigs_verified),
+        "root_mismatches": int(root_mismatches),
         "season_score": season_score(verified_hrs),
         "reading_count": int(reading_count),
         "block_height_at_write": int(block_height_at_write),

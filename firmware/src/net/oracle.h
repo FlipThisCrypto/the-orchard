@@ -22,4 +22,9 @@ String oracle_base_url();
 // firmware version, and timestamp, then signs the body.
 bool oracle_post_reading(JsonDocument& payload);
 
+// GET /beacon from the oracle origin and cache block_anchor for the next
+// device_reading signature (SPEC §4.2 anti-backdate). Returns true if a
+// 16-hex anchor was obtained and applied. Soft-fails (keeps prior/zero).
+bool oracle_refresh_beacon();
+
 }  // namespace orchard::net

@@ -27,7 +27,7 @@ import yaml
 _XCH_ADDR = re.compile(r"^xch1[0-9a-z]{50,80}$")
 
 from .. import datalayer as dl_pkg  # type: ignore  # noqa: F401
-from ..datalayer import attest, config as base_config
+from ..datalayer import attest, config as base_config, exit_codes
 from ..datalayer.oracle import OracleClient, OracleError
 from ..datalayer.rpc import ChiaRpcError, DataLayerRpc
 from ..wallet.rpc import WalletRpc, WalletRpcError
@@ -87,8 +87,15 @@ def _attestations_to_plan(
     node_cache: dict[str, dict | None] = {}
 
     for s in attestations:
-        # 1. Verify signature against the oracle's own signing key.
-        if not attest.verify_signature(s.signed, signing_key_hex):
+        # 1. Verify oracle_sig. Prefer public secp256r1 (ADR-0003 / schema);
+        # fall back to legacy HMAC for pre-migration attestations still on
+        # chain so operators aren't blocked mid-cutover.
+        from ..datalayer import schema as dl_schema
+        season_pub = dl_schema.pubkey_for_seed(signing_key_hex.lower())
+        sig_ok = dl_schema.verify_attest(s.signed, season_pub)
+        if not sig_ok:
+            sig_ok = attest.verify_signature(s.signed, signing_key_hex)
+        if not sig_ok:
             plan.append({
                 "node_id":   s.node_id,
                 "season":    s.season,
@@ -129,19 +136,67 @@ def _attestations_to_plan(
             })
             continue
 
-        # 4. Compute reward.
-        mojos = calculator.juice_mojos_for_attestation(
-            s.signed, daily_rate=daily_rate,
-        )
+        # 4. Compute reward on the verifiable metric (verified_hours when
+        #    present), and record the hours actually paid on — not a claim.
+        #    One malformed record must not abort the whole run: every other
+        #    failure mode in this loop appends a skipped:* row, so do the same
+        #    here instead of letting a bad value propagate out and kill the
+        #    payout for every node.
+        try:
+            hours_paid, basis = calculator.paid_hours(s.signed)
+            mojos = calculator.juice_mojos_for_attestation(
+                s.signed, daily_rate=daily_rate,
+            )
+        except (ValueError, TypeError) as e:
+            plan.append({
+                "node_id":  s.node_id,
+                "season":   s.season,
+                "status":   "skipped:invalid_attestation",
+                "hours":    "?",
+                "mojos":    0,
+                "detail":   str(e)[:120],
+            })
+            continue
         plan.append({
             "node_id":         s.node_id,
             "season":          s.season,
             "wallet_address":  wallet_address,
-            "hours":           int(s.signed.get("hours_online", 0)),
+            "hours":           hours_paid,
+            "hours_basis":     basis,
+            "claimed_hours":   int(s.signed.get("hours_online", 0)),
             "mojos":           mojos,
             "status":          "ready" if mojos > 0 else "skipped:zero",
         })
     return plan
+
+
+def _hours_cell(p: dict) -> str:
+    """Hours paid on, annotated with what the number actually rests on.
+
+    - ``N (claim M)`` — paid the verifiable count, below the oracle's claim
+      (an over-count surfaced at the payment boundary).
+    - ``N (unverified)`` — the attestation declares a placeholder basis: nothing
+      was published on chain, so this payment rests on the oracle's self-report,
+      not on proof. Same amount as always; the operator can now SEE that.
+    """
+    hours = p.get("hours", "?")
+    claimed = p.get("claimed_hours")
+    basis = p.get("hours_basis") or ""
+    if basis.startswith("hours_online (unverified)"):
+        return f"{hours} (unverified)"
+    if basis.startswith("unpayable"):
+        return f"{hours} (unpayable)"
+    if basis.startswith("verified_hours ("):
+        # e.g. "(sigs unchecked)" / "(basis unrecognized)" / "(basis undeclared)"
+        return f"{hours} {basis[len('verified_hours '):]}"
+    if (
+        basis == "verified_hours"
+        and isinstance(claimed, int)
+        and isinstance(hours, int)
+        and claimed != hours
+    ):
+        return f"{hours} (claim {claimed})"
+    return str(hours)
 
 
 def _format_table(plan: list[dict]) -> str:
@@ -152,7 +207,7 @@ def _format_table(plan: list[dict]) -> str:
         rows.append((
             p["node_id"][:8] + "..",
             str(p["season"]),
-            str(p.get("hours", "?")),
+            _hours_cell(p),
             (p.get("wallet_address") or "—")[:24] + ("…" if len(p.get("wallet_address") or "") > 24 else ""),
             f"{calculator.mojos_to_juice(int(p.get('mojos', 0))):.3f}",
             p["status"],
@@ -212,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     daily_rate = _daily_rate()
-    oracle = OracleClient(cfg.oracle.url)
+    oracle = OracleClient(cfg.oracle.url, cfg.oracle.writer_token)
     dl = DataLayerRpc(
         cfg.data_layer.host, cfg.data_layer.port,
         cfg.data_layer.cert_path, cfg.data_layer.key_path,
@@ -262,6 +317,36 @@ def main(argv: list[str] | None = None) -> int:
               f"-> {len(per_wallet)} wallet(s) -> {total_juice:.3f} $JUICE total")
 
         if not per_wallet:
+            # "nothing to send" is indistinguishable from "everyone is already
+            # paid", which is exactly how a total payout failure hid before: the
+            # oracle scrubs wallet_address for anyone who can't prove they are
+            # the operator's writer, so an unconfigured token made EVERY node
+            # resolve to no_wallet while the run exited 0. Diagnose it loudly.
+            no_wallet = [p for p in plan if p["status"] == "skipped:no_wallet"]
+            if no_wallet and len(no_wallet) == len([p for p in plan if p["mojos"] == 0]):
+                token_set = bool((cfg.oracle.writer_token or "").strip())
+                print(
+                    f"[orchard.payout] ERROR: every attestation ({len(no_wallet)}) "
+                    f"resolved to an empty wallet_address.",
+                    file=sys.stderr,
+                )
+                if not token_set:
+                    print(
+                        "[orchard.payout] Cause: no writer token configured, so the "
+                        "oracle withholds operator-private wallet_address. Set "
+                        "ORCHARD_ORACLE_WRITER_TOKEN (or oracle.writer_token in "
+                        "config.yaml) to the SAME value as the oracle's "
+                        "ORCHARD_ORACLE_WRITER_TOKEN and re-run.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "[orchard.payout] A writer token IS configured, so either it "
+                        "does not match the oracle's, or these Trees genuinely have "
+                        "no wallet bound (operator never completed registration).",
+                        file=sys.stderr,
+                    )
+                return exit_codes.ORACLE
             print("[orchard.payout] nothing to send.")
             return 0
 

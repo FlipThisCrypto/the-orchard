@@ -17,6 +17,13 @@ from ..config import settings
 
 bp = Blueprint("api", __name__)
 
+
+@bp.get("/health")
+def health():
+    """Liveness for reverse proxies; does not call the oracle."""
+    return _ok({"service": "orchard-view", "public_mode": settings().public_mode})
+
+
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
@@ -72,33 +79,38 @@ def _private(fn):
 # CORS on the oracle. The Authorization: Bearer <session_token> is
 # carried by all downstream /api/oracle/* requests after auth.
 
+def _proxy_oracle_json(method: str, path: str, *, json_body=None, timeout: float = 5):
+    """Forward to the oracle; never raise JSONDecodeError into Flask.
+
+    Returns (response_payload, status_code) or an error tuple via _err.
+    """
+    import requests
+    url = f"{settings().oracle_url.rstrip('/')}{path}"
+    try:
+        r = requests.request(method, url, json=json_body, timeout=timeout)
+    except requests.RequestException as e:
+        return _err(f"oracle unreachable: {e}", code=502)
+    if not (r.content or b"").strip():
+        return _err("oracle returned empty body", code=502)
+    try:
+        payload = r.json()
+    except ValueError:
+        snippet = (r.text or "")[:120]
+        return _err(f"oracle returned non-JSON ({r.status_code}): {snippet}", code=502)
+    return jsonify(payload), r.status_code
+
+
 @bp.post("/auth/challenge")
 def auth_challenge():
     """Forward to oracle /auth/challenge to get a single-use nonce."""
-    import requests
-    try:
-        r = requests.post(
-            f"{settings().oracle_url.rstrip('/')}/auth/challenge",
-            timeout=5,
-        )
-    except requests.RequestException as e:
-        return _err(f"oracle unreachable: {e}", code=502)
-    return jsonify(r.json()), r.status_code
+    return _proxy_oracle_json("POST", "/auth/challenge")
 
 
 @bp.post("/auth/verify")
 def auth_verify():
     """Forward signed-challenge payload to oracle /auth/verify."""
-    import requests
     body = request.get_json(silent=True) or {}
-    try:
-        r = requests.post(
-            f"{settings().oracle_url.rstrip('/')}/auth/verify",
-            json=body, timeout=5,
-        )
-    except requests.RequestException as e:
-        return _err(f"oracle unreachable: {e}", code=502)
-    return jsonify(r.json()), r.status_code
+    return _proxy_oracle_json("POST", "/auth/verify", json_body=body)
 
 
 @bp.get("/auth/config")
@@ -131,6 +143,7 @@ def auth_config():
 
 @bp.get("/oracle/status")
 def oracle_status():
+    """Oracle liveness; root payload may include ``datalayer_schema``."""
     try:
         info = oracle_client.root()
         return _ok({"oracle": info})
@@ -215,6 +228,7 @@ def oracle_register():
             label=body.get("label"),
             wallet_address=body.get("wallet_address"),
             fw_version=body.get("fw_version"),
+            device_pubkey=body.get("device_pubkey"),
             authorization=auth,
         )
         return _ok({"register": result})
@@ -243,6 +257,12 @@ def serial_identify():
     HW_INFO. None when the connected Tree runs firmware <0.4.0 (or
     forgets to register the HW_INFO command). The wizard falls back
     to its pre-9.0 identify card in that case.
+
+    ADR-0003: also returns ``device_pubkey`` (compressed secp256r1) from
+    the Tree's PUBKEY command, falling back to ``hw_info.pubkey``. Null
+    on legacy firmware without a device key — registration still works
+    but DataLayer node: records will lack a verifiable pubkey until the
+    Tree is upgraded and re-provisioned.
     """
     body = request.get_json(silent=True) or {}
     port = body.get("port")
@@ -255,9 +275,15 @@ def serial_identify():
         signing_key = tree_serial.get_signing_key(port)
         status = tree_serial.get_status(port)
         hw_info = tree_serial.get_hw_info(port)
+        device_pubkey = tree_serial.get_device_pubkey(port)
+        if not device_pubkey and isinstance(hw_info, dict):
+            raw = hw_info.get("pubkey")
+            if isinstance(raw, str) and raw.strip():
+                device_pubkey = raw.strip().lower()
         return _ok({
             "node_id": node_id,
             "signing_key_hex": signing_key,
+            "device_pubkey": device_pubkey,
             "status": status,
             "hw_info": hw_info,
         })

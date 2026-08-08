@@ -112,6 +112,34 @@ def test_parse_datalayer_value_handles_garbage():
     assert attest.parse_datalayer_value("00" * 8) is None
 
 
+def test_schema_sign_attest_public_verify():
+    """Sealed path (main.py) uses schema.sign_attest — publicly verifiable."""
+    from orchard_chia.datalayer import schema
+
+    seed = "01" + "00" * 31
+    pub = schema.pubkey_for_seed(seed)
+    body = schema.build_attest(
+        node_id=NODE,
+        season=42,
+        season_start_utc="2026-07-07T00:00:00Z",
+        season_end_utc="2026-07-08T00:00:00Z",
+        hours_online=23,
+        verified_hrs=23,
+        reading_count=0,
+        block_height_at_write=8392104,
+        season_root_hex="a" * 64,
+        signed_at="2026-07-08T00:05:00Z",
+    )
+    signed = schema.sign_attest(body, seed)
+    assert len(signed["oracle_sig"]) == 128  # r||s
+    assert schema.verify_attest(signed, pub) is True
+    tampered = {**signed, "hours_online": 24}
+    assert schema.verify_attest(tampered, pub) is False
+    # DataLayer key/value helpers stay aligned with schema.
+    assert schema.attest_key(NODE, 42) == attest.datalayer_key_for(NODE, 42)
+    assert schema.parse_value(schema.value_hex(signed)) == signed
+
+
 def test_sign_and_verify_reject_malformed_key():
     """M4/L3: a signing key must be 64 hex chars — refuse to HMAC under a
     short/empty/non-hex key (which would be guessable/forgeable)."""

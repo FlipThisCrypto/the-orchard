@@ -7,6 +7,7 @@
 #include <WiFiClientSecure.h>
 
 #include "config.h"
+#include "device_reading.h"
 #include "identity.h"
 #include "timekeeping.h"
 #include "version.h"
@@ -24,6 +25,30 @@ String load_url_() {
   prefs.end();
   return u;
 }
+
+// Beacon lives at the oracle origin. NVS normally holds the base URL (the
+// fleet's provisioned form — oracle_post_reading() appends /readings itself),
+// but older units were provisioned with the full …/readings path, so strip
+// that suffix when present and derive /beacon from the origin either way.
+String beacon_url_from_base_(const String& configured_url) {
+  // Strip trailing slashes, then a trailing /readings segment → /beacon
+  String base = configured_url;
+  while (base.endsWith("/")) {
+    base.remove(base.length() - 1);
+  }
+  const int idx = base.lastIndexOf('/');
+  if (idx > (int)strlen("http://")) {
+    const String last = base.substring(idx + 1);
+    if (last.equalsIgnoreCase("readings")) {
+      base = base.substring(0, idx);
+    }
+  }
+  return base + "/beacon";
+}
+
+// Throttle beacon refresh: reuse anchor for ~5 minutes.
+uint32_t last_beacon_ms_ = 0;
+constexpr uint32_t kBeaconRefreshMs = 5 * 60 * 1000;
 
 }  // namespace
 
@@ -47,6 +72,66 @@ bool oracle_set_url(const String& url) {
   return true;
 }
 
+bool oracle_refresh_beacon() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  // Same resolution the POST path uses: NVS override if the operator set one,
+  // else the baked default (ADR-0005 §5), so an un-overridden Tree still
+  // anchors instead of silently signing with the zero placeholder.
+  const String configured = oracle_base_url();
+  if (configured.length() == 0) return false;
+
+  // Skip if we refreshed recently (unless never).
+  if (last_beacon_ms_ != 0 &&
+      (millis() - last_beacon_ms_) < kBeaconRefreshMs) {
+    return true;
+  }
+
+  const String url = beacon_url_from_base_(configured);
+  HTTPClient http;
+  // Same TLS handling as the POST path / provisioning client: the oracle is
+  // Cloudflare-fronted https, and a plain http.begin(url) does not reliably
+  // negotiate it. `secure` must outlive the request (HTTPClient borrows it).
+  WiFiClientSecure secure;
+  bool began;
+  if (url.startsWith("https://")) {
+    secure.setInsecure();
+    began = http.begin(secure, url);
+  } else {
+    began = http.begin(url);
+  }
+  if (!began) {
+    Serial.printf("[oracle] beacon begin failed: %s\n", url.c_str());
+    return false;
+  }
+  http.setTimeout(5000);
+  const int code = http.GET();
+  if (code != 200) {
+    Serial.printf("[oracle] beacon GET -> %d\n", code);
+    http.end();
+    return false;
+  }
+  String body = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) {
+    Serial.println("[oracle] beacon JSON parse failed");
+    return false;
+  }
+  const char* anchor = doc["block_anchor"] | "";
+  if (strlen(anchor) < 16) {
+    Serial.println("[oracle] beacon missing block_anchor");
+    return false;
+  }
+  orchard::set_block_anchor(anchor);
+  last_beacon_ms_ = millis();
+  Serial.printf("[oracle] beacon anchor=%s height=%ld source=%s\n",
+                anchor,
+                static_cast<long>(doc["block_height"] | 0),
+                doc["source"] | "?");
+  return true;
+}
+
 bool oracle_post_reading(JsonDocument& payload) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[oracle] WiFi not connected; skipping POST");
@@ -64,21 +149,37 @@ bool oracle_post_reading(JsonDocument& payload) {
   while (url.endsWith("/")) url.remove(url.length() - 1);
   url += "/readings";
 
+  // SPEC §4.2: refresh block_anchor before signing the device reading.
+  oracle_refresh_beacon();
+
   // Add identity fields.
   payload["schema"]  = 1;  // ADR-0006/T14: payload format version (start at 1)
   payload["node_id"] = identity::node_id_hex();
   payload["fw"]      = orchard::kFirmwareVersion;
-  payload["ts_ms"]   = (uint32_t)millis();  // monotonic per boot (not wall-clock)
+  // Monotonic per-boot placeholder (not wall-clock). Wall-clock is preferred:
+  // attach_device_reading() below overwrites this with epoch millis whenever
+  // GPS UTC or a synced system clock is available. A caller-supplied ts_ms is
+  // never clobbered.
+  if (!payload["ts_ms"].is<int64_t>() && !payload["ts_ms"].is<int>()) {
+    payload["ts_ms"] = static_cast<int64_t>(millis());
+  }
   payload["seq"]     = identity::next_seq();  // replay protection — inside the
                                               // HMAC'd body, so it can't be
                                               // bumped on a captured packet
   // D6/T6: real UTC epoch seconds once SNTP has synced (GPS UTC, when a
   // fix exists, is also in sensors.gps.utc). Omitted until first sync so a
-  // pre-sync reading never carries a bogus 1970 timestamp.
+  // pre-sync reading never carries a bogus 1970 timestamp. The oracle's
+  // freshness guard reads this field, so it must survive the merge.
   const uint32_t epoch = utc_now();
   if (epoch > 0) {
     payload["ts"] = epoch;
   }
+
+  // ADR-0003: attach secp256r1-signed SPEC reading for DataLayer publish.
+  // Runs last so the signed reading covers the final metric set and can
+  // normalise ts_ms to wall-clock. Failure is non-fatal — the sensors blob +
+  // HMAC transport (and therefore the live ingest path) still work.
+  orchard::attach_device_reading(payload);
 
   String body;
   serializeJson(payload, body);

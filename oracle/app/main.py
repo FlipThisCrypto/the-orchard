@@ -11,18 +11,20 @@ live in oracle/migrations (Alembic) — see that dir's README.
 """
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import db
+from . import db, observability
 from .config import settings
 from .ratelimit import FixedWindowLimiter
 from .routes import (
     attestations,
     auth,
+    beacon,
     claim_page,
     health,
     network,
@@ -37,6 +39,10 @@ from .session_deps import LOOPBACK_HOSTS
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Emit the observability logs at the configured level (they propagate to
+    # uvicorn's root handlers). Without this the request/error lines default to
+    # WARNING and INFO request logs would be dropped.
+    observability.logger.setLevel(settings().log_level.upper())
     db.create_all()
     yield
 
@@ -77,6 +83,7 @@ app.include_router(nodes.router)
 app.include_router(uptime.router)
 app.include_router(attestations.router)
 app.include_router(network.router)
+app.include_router(beacon.router)
 
 
 # --- Rate limiting (2026-06-09 hardening) ---------------------------------
@@ -111,6 +118,60 @@ async def _rate_limit(request: Request, call_next):
                 content={"detail": "rate limit exceeded; slow down"},
             )
     return await call_next(request)
+
+
+# --- Request body-size guard (before observability so 413s are logged) -----
+# Reject an oversized body early via Content-Length so a single request can't
+# force the server to buffer an unbounded payload. Covers every POST/PUT path.
+@app.middleware("http")
+async def _limit_body_size(request: Request, call_next):
+    max_bytes = settings().max_request_body_bytes
+    if max_bytes > 0:
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > max_bytes:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "request body too large"},
+                    )
+            except ValueError:
+                pass  # malformed header — let the normal parse path reject it
+    return await call_next(request)
+
+
+# --- Observability (outermost: wraps the rate limiter + all routes) --------
+# Defined AFTER _rate_limit so Starlette runs it first/outermost — it times and
+# logs every response (including 429s), captures unhandled exceptions as a clean
+# JSON 500, and stamps a correlation id on every response.
+@app.middleware("http")
+async def _observe(request: Request, call_next):
+    rid = request.headers.get("X-Request-ID") or observability.new_request_id()
+    request.state.request_id = rid
+    label = observability.route_label(request.method, request.url.path)
+    start = time.perf_counter()
+    client = request.client.host if request.client else "?"
+    try:
+        response = await call_next(request)
+    except Exception:  # noqa: BLE001 — last-resort capture for operator signal
+        dur = (time.perf_counter() - start) * 1000.0
+        observability.METRICS.record(label, 500, dur)
+        observability.logger.exception(
+            "request_error rid=%s %s dur_ms=%.1f client=%s", rid, label, dur, client
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "internal server error", "request_id": rid},
+            headers={"X-Request-ID": rid},
+        )
+    dur = (time.perf_counter() - start) * 1000.0
+    observability.METRICS.record(label, response.status_code, dur)
+    observability.logger.info(
+        "request rid=%s %s status=%s dur_ms=%.1f client=%s",
+        rid, label, response.status_code, dur, client,
+    )
+    response.headers["X-Request-ID"] = rid
+    return response
 
 
 def main() -> None:

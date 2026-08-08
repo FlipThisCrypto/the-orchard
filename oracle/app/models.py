@@ -42,6 +42,12 @@ class Node(Base):
     node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     signing_key_hex: Mapped[str] = mapped_column(String(64), nullable=False)
 
+    # ADR-0003 / ADR-0007: compressed secp256r1 public key (33 bytes → 66 hex,
+    # lowercase). Published in DataLayer node:<id>.pubkey so anyone can verify
+    # device-signed readings without trusting the oracle. Nullable so legacy
+    # Trees registered before device keys remain loadable.
+    device_pubkey: Mapped[str | None] = mapped_column(String(66), nullable=True)
+
     wallet_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
     label: Mapped[str | None] = mapped_column(String(128), nullable=True)
     fw_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -119,6 +125,25 @@ class UptimeHour(Base):
     reading_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class AuditEvent(Base):
+    """Append-only record of a consequential action (node register/delete, …).
+
+    Deliberately has NO foreign key to ``nodes`` — an audit row must outlive the
+    node it references (a delete cascades the node away but the record of the
+    deletion must remain). ``request_id`` correlates with the observability
+    request log (X-Request-ID). ``detail_json`` holds non-secret context only.
+    """
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    node_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    actor: Mapped[str] = mapped_column(String(128), default="unknown")
+    request_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    detail_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class Season(Base):
     """Season metadata. v1 = UTC-day-aligned; Phase 5 swaps to Chia blocks."""
     __tablename__ = "seasons"
@@ -150,6 +175,7 @@ class Attestation(Base):
     season_number: Mapped[int] = mapped_column(Integer, ForeignKey("seasons.season_number"), index=True)
     hours_online: Mapped[int] = mapped_column(Integer, nullable=False)
     data_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 128 hex chars fits secp256r1 r||s (64 bytes); legacy HMAC used 64 hex.
     oracle_sig: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Phase 5.5: chain tracking. dl_tx_id is the Chia DataLayer batch
     # transaction id (0x...64hex); dl_key_hex is the hex-encoded

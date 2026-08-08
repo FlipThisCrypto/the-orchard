@@ -23,7 +23,21 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from orchard_chia.nft import verify as nft_verify
+
+def _nft_verify():
+    """Import the sibling orchard_chia NFT verifier lazily.
+
+    It was imported at module scope, and register.py imports this module at app
+    startup — so the oracle transitively required orchard_chia AND its `requests`
+    / `urllib3` dependencies just to BOOT, even though they are only needed when
+    a Pass is actually verified. Those two packages are not declared in
+    oracle/requirements.{txt,lock}, so a clean oracle-only install crashed on
+    startup with an ImportError. Deferring the import means a missing optional
+    dependency degrades to an actionable 503 on /register instead of taking the
+    whole service down (readings ingestion keeps working).
+    """
+    from orchard_chia.nft import verify as nft_verify  # noqa: PLC0415
+    return nft_verify
 
 # 5 minutes is a comfortable balance: long enough to amortize a
 # registration retry storm or a wizard verify/register pair, short
@@ -78,6 +92,13 @@ def list_passes_for_address(address: str) -> list[dict]:
     cached = _get_cached(address)
     if cached is not None:
         return cached
+    try:
+        nft_verify = _nft_verify()
+    except ImportError as e:  # optional dep missing — actionable, not a crash
+        raise PassVerifyError(
+            f"Orchard Pass verification is unavailable: {e}. Install the oracle's "
+            f"requirements (requests, urllib3) or omit wallet binding."
+        ) from e
     try:
         passes = nft_verify.list_passes_by_address(address)
     except nft_verify.IndexerError as e:

@@ -35,11 +35,11 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from .. import models, pass_verify, sessions
+from .. import audit, models, pass_verify, sessions
 from ..config import settings
 from ..db import get_db
 from ..session_deps import maybe_session
@@ -49,6 +49,8 @@ log = logging.getLogger("orchard.oracle.register")
 
 _HEX32 = re.compile(r"^[0-9A-Fa-f]{32}$")  # 16 bytes / node_id
 _HEX64 = re.compile(r"^[0-9A-Fa-f]{64}$")  # 32 bytes / signing key
+# Compressed SEC1 secp256r1 pubkey: 02/03 + 32 bytes → 66 hex (ADR-0007).
+_HEX66_P256 = re.compile(r"^(?:02|03)[0-9A-Fa-f]{64}$")
 # bech32m XCH address: hrp "xch1" + base32 payload. Don't try to
 # fully validate bech32 here — that's the wallet's job. Just sanity-
 # check the prefix and a reasonable length so a typo doesn't get fed
@@ -59,6 +61,14 @@ _XCH_ADDR = re.compile(r"^xch1[0-9a-z]{50,80}$")
 class RegisterRequest(BaseModel):
     node_id: str = Field(..., description="32 hex chars (16 bytes)")
     signing_key_hex: str = Field(..., description="64 hex chars (32 bytes HMAC secret)")
+    device_pubkey: str | None = Field(
+        None,
+        description=(
+            "Optional compressed secp256r1 public key (66 hex, 02/03 prefix). "
+            "From the Tree's PUBKEY / HW_INFO serial command. Published to "
+            "DataLayer as node:<id>.pubkey for public reading verification."
+        ),
+    )
     wallet_address: str | None = Field(
         None,
         description=(
@@ -83,6 +93,19 @@ class RegisterRequest(BaseModel):
         if not _HEX64.match(v):
             raise ValueError("signing_key_hex must be 64 hex characters")
         return v.upper()
+
+    @field_validator("device_pubkey")
+    @classmethod
+    def _device_pubkey(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        s = v.strip().lower()
+        if not _HEX66_P256.match(s):
+            raise ValueError(
+                "device_pubkey must be a compressed secp256r1 SEC1 point: "
+                "66 hex chars starting with 02 or 03"
+            )
+        return s
 
     @field_validator("wallet_address")
     @classmethod
@@ -205,6 +228,7 @@ def _resolve_wallet_for_register(
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 def register(
     req: RegisterRequest,
+    request: Request,
     db: Session = Depends(get_db),
     sess: sessions.Session | None = Depends(maybe_session),
 ) -> RegisterResponse:
@@ -226,12 +250,43 @@ def register(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="node_id already registered with a different signing key",
             )
-        # Update mutable metadata if provided. With a session, the
-        # resolved wallet_address is always set (== sess.address) so
-        # any re-registration through the wizard re-binds the wallet
-        # to the connected one. That's correct: the operator's
-        # intent in clicking Provision again is "this Tree is mine
-        # now under the wallet I'm currently connected with."
+        # OWNERSHIP GUARD. Re-registration may refresh a Tree's metadata, but it
+        # must never silently transfer the Tree to a different wallet.
+        #
+        # The signing key is NOT an ownership credential: it is readable over
+        # USB, returned verbatim by the dashboard's own /api/serial/identify,
+        # and stored in plaintext here. Without this check, anyone who has ever
+        # seen the device secret can re-register the node under their own wallet
+        # and redirect every future $JUICE payout — the previous code assumed
+        # "re-provisioning means it's mine now", which is only true when the
+        # Tree is unclaimed or you already own it.
+        if (
+            existing.wallet_address is not None
+            and wallet_address is not None
+            and existing.wallet_address != wallet_address
+        ):
+            audit.record(
+                db,
+                action="node.takeover_blocked",
+                node_id=existing.node_id,
+                actor=audit.actor_for(sess, fallback="legacy"),
+                request_id=audit.request_id_of(request),
+                bound_to_other_wallet=True,
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "node_id is already bound to a different wallet. Knowing the "
+                    "device signing key does not transfer ownership. If this Tree "
+                    "genuinely changed hands, the current owner must release it "
+                    "(DELETE /nodes/{node_id}) before it can be re-registered."
+                ),
+            )
+
+        # Update mutable metadata if provided. With a session the resolved
+        # wallet_address is sess.address, so re-provisioning re-binds the wallet
+        # — now only when the Tree is unclaimed or already yours (guard above).
         if wallet_address is not None:
             existing.wallet_address = wallet_address
             # When wallet changes, re-bind the Pass (or clear if the
@@ -244,12 +299,45 @@ def register(
             existing.label = req.label
         if req.fw_version is not None:
             existing.fw_version = req.fw_version
+        # Device pubkey is sticky once set; allow first write or same-value
+        # refresh. Refuse a different key (would break historical verification).
+        #
+        # Note the ordering: this rejection runs BEFORE the last_seq reset
+        # below, so a refused provenance-key rotation can never also reset a
+        # Tree's replay watermark as a side effect. Reaching this point also
+        # means the request already cleared the same-signing-key check and the
+        # ownership guard above, so a device_pubkey can only ever be written by
+        # someone holding the device secret for a Tree that is unclaimed or
+        # already bound to their own wallet.
+        if req.device_pubkey is not None:
+            if (
+                existing.device_pubkey
+                and existing.device_pubkey.lower() != req.device_pubkey.lower()
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "node_id already registered with a different device_pubkey "
+                        "— refuse to rotate provenance key"
+                    ),
+                )
+            existing.device_pubkey = req.device_pubkey
         # NVS-wipe recovery: a wiped Tree restarts its seq counter near
         # zero, and /readings would then 409 everything it sends.
         # Re-registration is already the recovery ritual for a wiped
         # Tree — and is itself protected (wallet session + same signing
-        # key) — so resetting the watermark here is safe.
+        # key + the ownership guard above) — so resetting the watermark
+        # here is safe.
         existing.last_seq = 0
+        audit.record(
+            db,
+            action="node.reregister",
+            node_id=existing.node_id,
+            actor=audit.actor_for(sess, fallback="legacy"),
+            request_id=audit.request_id_of(request),
+            wallet_bound=wallet_address is not None,
+            pass_bound=pass_nft_id is not None,
+        )
         db.commit()
         db.refresh(existing)
         return RegisterResponse(
@@ -263,6 +351,7 @@ def register(
     node = models.Node(
         node_id=req.node_id,
         signing_key_hex=req.signing_key_hex,
+        device_pubkey=req.device_pubkey,
         wallet_address=wallet_address,
         label=req.label,
         fw_version=req.fw_version,
@@ -271,6 +360,15 @@ def register(
         registered_at=datetime.now(timezone.utc),
     )
     db.add(node)
+    audit.record(
+        db,
+        action="node.register",
+        node_id=node.node_id,
+        actor=audit.actor_for(sess, fallback="legacy"),
+        request_id=audit.request_id_of(request),
+        wallet_bound=wallet_address is not None,
+        pass_bound=pass_nft_id is not None,
+    )
     db.commit()
     db.refresh(node)
     return RegisterResponse(
