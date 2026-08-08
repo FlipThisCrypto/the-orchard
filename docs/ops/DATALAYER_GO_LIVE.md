@@ -50,16 +50,30 @@ Both the `publish` and `attest` runs died in under 35 ms with a raw
 
 This PR fixes (1)–(3). Item (3)'s firmware half is the one physical step below.
 
+## Two machines — which command runs where
+
+This trips people up, so it is worth stating before any commands:
+
+| Machine | OS | What lives there |
+|---|---|---|
+| **Operator / build machine** | Windows | Chia wallet + `data_layer` services, the publisher (`orchard_chia`), the firmware build and flashing |
+| **Oracle box** (`honeypot`) | Linux | `oracle.theorchard.network` — FastAPI/uvicorn served from `/opt/orchard/app`, behind Cloudflare |
+
+Step 2 below is the **only** one that runs on the Linux oracle box — that is why
+it uses `sudo` and POSIX paths. Steps 3, 4 and 5 all run on the Windows machine,
+in PowerShell.
+
 ## Order of operations
 
 ### 1. Merge this PR
 
 Nothing deploys automatically. Merging is safe on its own.
 
-### 2. Deploy the oracle — **on the box, by the founder**
+### 2. Deploy the oracle — **on the Linux oracle box** (`honeypot`)
 
-SSH from the build machine is key-denied by design, so these are yours to run.
-The service reads its code from `/opt/orchard/app`:
+SSH in as `chia2@honeypot` (SSH from the Windows build machine is key-denied by
+design, so this is the founder's to run). The service reads its code from
+`/opt/orchard/app`:
 
 ```bash
 sudo git -C /opt/orchard/app fetch origin
@@ -85,7 +99,7 @@ curl -s https://oracle.theorchard.network/health
 curl -s https://oracle.theorchard.network/nodes | head -c 400   # expect device_pubkey present, wallet_address absent
 ```
 
-### 3. Flash one Tree with the signing firmware
+### 3. Flash one Tree — **Windows operator machine, USB to the Tree**
 
 This is the gating data prerequisite and it is physical work. Until a Tree
 signs its readings there is **nothing publishable** — the publisher discards
@@ -102,7 +116,7 @@ After it reports once, confirm the oracle learned the key:
 curl -s "https://oracle.theorchard.network/nodes/<NODE_ID>" | python -m json.tool | grep device_pubkey
 ```
 
-### 4. Publish (operator machine, Windows)
+### 4. Publish — **on the Windows operator machine**
 
 Requires the Chia **wallet** and **data_layer** services running and synced on
 the `miner` key. A full node is **not** needed for `publish`.
@@ -119,7 +133,7 @@ At hourly cadence that is ≤ 0.0024 XCH/day.
 Only **fully closed** UTC hours are published, so allow at least an hour after
 the Tree starts reporting.
 
-### 5. Verify — the step that matters
+### 5. Verify — the step that matters (Windows operator machine)
 
 ```powershell
 chia rpc data_layer get_root '{"id": "0xd0bb705e…fd2e37"}'
