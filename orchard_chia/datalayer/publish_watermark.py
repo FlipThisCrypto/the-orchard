@@ -75,6 +75,27 @@ class PublishWatermark:
             return None
         return int(row["h"])
 
+    def published_hours_count(self, node_id: str, season: int) -> int:
+        """How many hours this node has ACTUALLY had published in a season.
+
+        The honest source for ``latest:.running_hours_online``. That field was
+        previously ``hour + 1`` — the UTC hour-of-day index, which has nothing
+        to do with uptime: publishing a single hour numbered 14 asserted "15
+        hours online". Caught on the first real publish, where the store proved
+        exactly one hour and the node had only existed for 12.25 hours, so the
+        claim exceeded even the physical ceiling.
+
+        A count of rows in this table is measurable and provable: every row is
+        an hour whose readings were written and confirmed on chain.
+        """
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM published_hours "
+            "WHERE node_id=? AND season=?",
+            (node_id.upper(), int(season)),
+        )
+        row = cur.fetchone()
+        return int(row["n"] if row is not None else 0)
+
     def record(
         self,
         *,

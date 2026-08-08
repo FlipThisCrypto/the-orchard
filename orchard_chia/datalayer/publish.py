@@ -250,8 +250,18 @@ def harvest_closed_hour_batches(
     *,
     already_published: Callable[[str, int, int], bool],
     current_season: int,
+    published_hours: Callable[[str, int], int] | None = None,
+    sealed_season: Callable[[str, int], int | None] | None = None,
 ) -> tuple[list[HourBatchInput], list[str]]:
     """Fetch device-signed readings for closed hours not yet watermarked.
+
+    ``published_hours(node_id, season) -> int`` and
+    ``sealed_season(node_id, season) -> int | None`` supply the two values that
+    ``latest:`` publishes about a node beyond its readings. Both are injected
+    rather than computed here because both must be MEASURED — the previous
+    inline expressions asserted them, and both assertions were false on the
+    first real publish. When either is absent the honest answer is used
+    (0 / None), never a guess.
 
     Uses oracle ``since_ms``/``until_ms`` so each hour is a bounded window
     rather than a full-history scan (Round 2: operational scale).
@@ -310,9 +320,17 @@ def harvest_closed_hour_batches(
                     geohash=node.get("geohash") or "",
                     first_seen_utc=first_seen,
                     label=node.get("label"),
-                    running_hours_online=ch.hour + 1,
+                    # MEASURED, not asserted. See HourBatchInput for why both
+                    # of these were wrong, and why it mattered.
+                    running_hours_online=(
+                        published_hours(node_id, ch.season) + 1  # +1 = this hour
+                        if published_hours is not None
+                        else 0
+                    ),
                     last_sealed_season=(
-                        current_season - 1 if current_season > 1 else None
+                        sealed_season(node_id, ch.season)
+                        if sealed_season is not None
+                        else None
                     ),
                 )
             )
@@ -393,12 +411,39 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
     )
 
     # Closed hours only, windowed harvest, skip watermarked (SPEC §6).
+    # Built before the harvest, because _sealed() below reads the store while
+    # batches are being assembled. Constructing the client does no I/O.
+    dl: DataLayerRpc | None = None
+    if not dry_run and cfg.data_layer.store_id:
+        dl = DataLayerRpc(
+            cfg.data_layer.host,
+            cfg.data_layer.port,
+            cfg.data_layer.cert_path,
+            cfg.data_layer.key_path,
+        )
+
+    # A season counts as sealed only if its attest record is actually IN the
+    # store. Asserting `current_season - 1` published "last_sealed_season: 73"
+    # into a store holding zero attest records for that node.
+    def _sealed(node_id: str, season: int) -> int | None:
+        if dl is None or not cfg.data_layer.store_id:
+            return None
+        for s in range(season - 1, max(0, season - 13), -1):
+            try:
+                if dl.get_value(cfg.data_layer.store_id, schema.attest_key(node_id, s)):
+                    return s
+            except ChiaRpcError:
+                return None       # can't see the store — claim nothing
+        return None
+
     batches, harvest_notes = harvest_closed_hour_batches(
         oracle,
         nodes,
         closed,
         already_published=wm.is_published,
         current_season=current_season,
+        published_hours=wm.published_hours_count,
+        sealed_season=_sealed,
     )
     gap_notes = [n for n in harvest_notes if "watermarked" not in n]
     for n in gap_notes:
@@ -412,14 +457,7 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
 
     # Resolve existing store values for keys we might touch (idempotency).
     existing: dict[str, str | None] = {}
-    dl: DataLayerRpc | None = None
-    if not dry_run and cfg.data_layer.store_id:
-        dl = DataLayerRpc(
-            cfg.data_layer.host,
-            cfg.data_layer.port,
-            cfg.data_layer.cert_path,
-            cfg.data_layer.key_path,
-        )
+    if dl is not None:
         keys_to_check = [schema.meta_key()]
         for b in batches:
             keys_to_check.append(schema.node_key(b.node_id))
