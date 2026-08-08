@@ -380,6 +380,12 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
         return 0
 
     print(f"[orchard.attest] sending {len(changelist)} changelist items to DataLayer ...")
+    # Root BEFORE the write — confirmation means "this hash moved", not merely
+    # "a root is confirmed" (the pre-write root is confirmed too).
+    try:
+        root_before = (dl.get_root(cfg.data_layer.store_id) or {}).get("hash")
+    except Exception:
+        root_before = None
     try:
         result = dl.batch_update(
             cfg.data_layer.store_id, changelist, fee=cfg.data_layer.fee or None
@@ -404,13 +410,33 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
     print(f"[orchard.attest] stats: {dict(stats)}")
 
     inserts = confirm.inserts_from_changelist(changelist)
-    conf = confirm.confirm_inserts(dl, cfg.data_layer.store_id, inserts)
+    print("[orchard.attest] waiting for the write to confirm on chain…")
+    conf = confirm.confirm_after_write(
+        dl, cfg.data_layer.store_id, inserts, root_before=root_before
+    )
     print(f"[orchard.attest] {conf.detail}")
+    if conf.pending:
+        print(
+            f"NOTE: tx {txn_id} is accepted but not yet confirmed. This is not a "
+            f"failure. Wait for it to confirm, then re-run — re-running NOW would "
+            f"submit the same write again and pay the fee twice.",
+            file=sys.stderr,
+        )
+        run.finish(
+            "pending",
+            error="ConfirmPending",
+            error_msg=conf.detail,
+            stats=dict(stats),
+            tx_id=str(txn_id),
+            rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        )
+        return exit_codes.CONFIRM
     if not conf.ok:
         print(
             f"ERROR: post-write confirm failed "
             f"(missing={conf.missing[:5]} mismatched={conf.mismatched[:5]}). "
-            f"Oracle NOT updated — re-run to converge.",
+            f"The root moved but the values are wrong — a real failure. "
+            f"Oracle NOT updated.",
             file=sys.stderr,
         )
         run.finish(

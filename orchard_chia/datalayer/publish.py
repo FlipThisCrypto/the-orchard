@@ -473,6 +473,13 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
         return 0
 
     assert dl is not None
+    # Read the root BEFORE the write. Confirmation means "this hash moved and
+    # the new one is confirmed" — polling for `confirmed` alone would pass
+    # instantly against the pre-write root and prove nothing.
+    try:
+        root_before = (dl.get_root(cfg.data_layer.store_id) or {}).get("hash")
+    except Exception:
+        root_before = None          # unknown: fall back to confirmed-only
     try:
         result = dl.batch_update(
             cfg.data_layer.store_id,
@@ -497,15 +504,40 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
             f"[orchard.publish] succeeded after {dl.last_retry_attempts} RPC attempt(s)"
         )
 
-    # Round 3: confirm inserts landed before advancing watermark.
+    # Round 3: wait for the write to reach a block, THEN confirm the values,
+    # then advance the watermark. Reading back immediately reported a perfectly
+    # good write as missing — see confirm.py's docstring.
     inserts = confirm.inserts_from_changelist(plan.changelist)
-    conf = confirm.confirm_inserts(dl, cfg.data_layer.store_id, inserts)
+    print("[orchard.publish] waiting for the write to confirm on chain…")
+    conf = confirm.confirm_after_write(
+        dl, cfg.data_layer.store_id, inserts, root_before=root_before
+    )
     print(f"[orchard.publish] {conf.detail}")
+    if conf.pending:
+        # Submitted, not yet in a block. Nothing is wrong — and "re-run to
+        # converge" would be the wrong advice here, because a re-run still sees
+        # the old value, plans the same write, and pays the fee twice.
+        print(
+            f"NOTE: tx {txn_id} is accepted but not yet confirmed. This is not a "
+            f"failure. Wait for it to confirm, then re-run — re-running NOW would "
+            f"submit the same write again and pay the fee twice.",
+            file=sys.stderr,
+        )
+        wm.close()
+        run.finish(
+            "pending",
+            error="ConfirmPending",
+            error_msg=conf.detail,
+            tx_id=str(txn_id),
+            rpc_attempts=getattr(dl, "last_retry_attempts", 1),
+        )
+        return exit_codes.CONFIRM
     if not conf.ok:
         print(
             f"ERROR: post-write confirm failed "
             f"(missing={conf.missing[:5]} mismatched={conf.mismatched[:5]}). "
-            f"Watermark NOT advanced — re-run to converge.",
+            f"The root moved but the values are wrong — this is a real failure. "
+            f"Watermark NOT advanced.",
             file=sys.stderr,
         )
         wm.close()
