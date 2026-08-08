@@ -26,8 +26,25 @@ def key_clvm_hash(key_hex: str) -> str:
     keys we asked for, we recompute that key's CLVM hash and compare. The 0x01
     prefix is the CLVM atom-hash rule (chia-blockchain PR #16845;
     docs/datalayer/reference/CHIA_DATALAYER_RPC.md §4).
+
+    A leading ``0x`` is accepted and stripped. DataLayer hex travels both ways in
+    this codebase — ``batch_update`` keys are bare, everything the node returns is
+    0x-prefixed — and ``bytes.fromhex`` rejects the prefix. Because
+    ``_count_proven_keys`` catches ValueError and treats the key as unproven, a
+    prefixed key did not raise: it silently reported "proof covers 0/N keys" on
+    data that was fully proven on chain. That is the worst shape of bug here —
+    a verifier that says CANNOT-VERIFY about something it could verify.
+    Found on the first real publish (2026-08-08, node D8641AD6…, season 74 hour
+    14), where the same proof verified by hand with current_root: true.
     """
-    return hashlib.sha256(b"\x01" + bytes.fromhex(key_hex)).hexdigest()
+    return hashlib.sha256(
+        b"\x01" + bytes.fromhex(_strip0x(key_hex))
+    ).hexdigest()
+
+
+def _strip0x(h: str) -> str:
+    s = str(h).strip()
+    return s[2:] if s[:2].lower() == "0x" else s
 
 
 # A DataLayer value is hashed by the same CLVM atom rule as a key.
@@ -214,7 +231,18 @@ def check_inclusion(
     # one being displayed.
     values_bound = 0
     if expected_values is not None:
-        val_by_keyhash = proof_value_hashes(proof_resp)
+        # Normalize BOTH sides of every comparison. The node returns 0x-prefixed
+        # hashes; our clvm_hash() returns bare. Comparing the two forms directly
+        # made `.get()` miss, `on_chain` come back None, and `None != want` be
+        # reported as "on-chain value differs (tampered or stale mirror)" —
+        # i.e. a verdict of INVALID against data that was byte-for-byte correct
+        # on chain. A verifier crying tampering at good data is worse than one
+        # that cannot verify: it destroys trust in the thing it is meant to
+        # establish. Caught on the first real publish (2026-08-08).
+        val_by_keyhash = {
+            _strip0x(kh): _strip0x(vh)
+            for kh, vh in proof_value_hashes(proof_resp).items()
+        }
         missing_expected: list[str] = []
         mismatched: list[str] = []
         for k in key_hex_list:
@@ -225,12 +253,12 @@ def check_inclusion(
                 missing_expected.append(k)
                 continue
             try:
-                on_chain = val_by_keyhash.get(key_clvm_hash(k))
-                want = clvm_hash(exp)
+                on_chain = val_by_keyhash.get(_strip0x(key_clvm_hash(k)))
+                want = _strip0x(clvm_hash(exp))
             except ValueError:
                 mismatched.append(k)
                 continue
-            if on_chain == want:
+            if on_chain is not None and on_chain == want:
                 values_bound += 1
             else:
                 mismatched.append(k)
@@ -356,6 +384,9 @@ def _count_proven_keys(proof_resp: dict[str, Any], keys: list[str]) -> int:
             h = key_clvm_hash(k)
         except ValueError:
             continue  # not valid hex — cannot correspond to a stored key
-        if h in proven_hashes:
+        # The node returns 0x-prefixed hashes; ours are bare. Compare on a
+        # normalized form, or every key looks unproven against a proof that
+        # actually covers it.
+        if _strip0x(h) in {_strip0x(p) for p in proven_hashes}:
             count += 1
     return count
