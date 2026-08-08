@@ -27,6 +27,25 @@ from . import attest, config, confirm, exit_codes, ops_log, schema, seal
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
+
+def _wallet_for_height(cfg):
+    """Wallet client used ONLY to read a synced peak height (no spending).
+
+    Built lazily, and only when the full node is unreachable, so the ordinary
+    path never touches the wallet at all.
+    """
+    import yaml
+    from ..wallet.rpc import WalletRpc
+    raw = yaml.safe_load(config.CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    w = raw.get("wallet") or {}
+    return WalletRpc(
+        host=w.get("host", "127.0.0.1"),
+        port=int(w.get("port", 9256)),
+        cert_path=config._expand(w.get("cert_path", "")),
+        key_path=config._expand(w.get("key_path", "")),
+        fingerprint=int(w.get("fingerprint", 0)),
+    )
+
 # T16 confirmation monitoring: after a batch_update is accepted into the
 # mempool, poll the store root until the spend confirms on chain. Bounded +
 # non-fatal — the write is already submitted, and the writer is convergent so
@@ -196,12 +215,34 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
         run.finish("noop", reason="no_trees", season=current_season)
         return 0
 
+    # The anti-backdate anchor. A full node is the ideal source, but requiring
+    # one to seal a season means an operator running only wallet + data_layer
+    # cannot seal at all — which is exactly the state the first real publish
+    # hit: readings on chain, verifier stuck at "attest missing from store",
+    # and a ~200 GB dependency standing between the two.
+    #
+    # A SYNCED wallet's height is the peak, so it is an equivalent anchor. The
+    # sync gate in synced_peak_height() is what makes that true; without it the
+    # height would be a guess, and an anchor that guesses is worse than none.
+    block_height, height_source = None, None
     try:
         block_height = fn.peak_height()
+        height_source = "full_node"
     except ChiaRpcError as e:
-        print(f"ERROR: chia full-node unreachable: {e}", file=sys.stderr)
-        return exit_codes.CHIA
-    print(f"[orchard.attest] chia peak height: {block_height}")
+        print(f"[orchard.attest] full node unavailable ({e}); trying the wallet")
+        try:
+            block_height = _wallet_for_height(cfg).synced_peak_height()
+            height_source = "wallet(synced)"
+        except Exception as e2:
+            print(
+                f"ERROR: no trustworthy block height available — full node: {e}; "
+                f"wallet: {e2}. Refusing to seal a season with an anchor that "
+                f"cannot be substantiated.",
+                file=sys.stderr,
+            )
+            return exit_codes.CHIA
+    print(f"[orchard.attest] chia peak height: {block_height} (via {height_source})")
+    run.note("anchor", block_height=block_height, height_source=height_source)
 
     # Determine Season range to process.
     first_season = 1
