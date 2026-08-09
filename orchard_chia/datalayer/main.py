@@ -23,9 +23,36 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import attest, config, confirm, exit_codes, ops_log, schema, seal
+from . import attest, config, confirm, exit_codes, ops_log, schedule, schema, seal
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
+
+
+def _first_plausible_season(node: dict, *, floor: int = 1) -> int:
+    """Earliest Season this Tree could possibly have uptime in.
+
+    Derived from the Tree's own ``registered_at``/``first_seen_utc``, so it
+    self-tunes as Seasons accumulate rather than needing a config number
+    re-tuned forever. Returns ``floor`` when the date is missing or
+    unparseable — an unknown registration date must widen the search, never
+    narrow it, because skipping a Season a Tree really was online in would
+    silently lose a sealed attestation.
+    """
+    raw = node.get("registered_at") or node.get("first_seen_utc")
+    if not isinstance(raw, str) or not raw.strip():
+        return floor
+    text = raw.strip().replace("Z", "+00:00")
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return floor
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    try:
+        season = schedule.season_number_for(when)
+    except Exception:
+        return floor
+    return max(floor, int(season))
 
 
 def _wallet_for_height(cfg):
@@ -259,7 +286,16 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
 
     for node in nodes:
         node_id = node["node_id"]
-        for season in range(first_season, current_season):
+        # A Tree cannot have uptime in a Season that ended before it existed.
+        # Walking from Season 1 for every Tree meant 73 x 6 = 438 oracle round
+        # trips, 72 Seasons of which predate every Tree in the network — the
+        # run could not finish, and the waste grows by one Season per day
+        # forever. Deriving the floor from the Tree's own registration is
+        # self-tuning: a Tree registered today is checked for today.
+        node_first = _first_plausible_season(node, floor=first_season)
+        if node_first > first_season:
+            stats["seasons_skipped_pre_registration"] += node_first - first_season
+        for season in range(node_first, current_season):
             try:
                 uptime = oracle.get_uptime(node_id, season)
             except OracleError as e:
