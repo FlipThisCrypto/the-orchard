@@ -61,7 +61,7 @@ def _source_fingerprint() -> str:
     return h.hexdigest()[:12]
 
 
-_SOURCE_FINGERPRINT = _source_fingerprint()
+SOURCE_FINGERPRINT = _source_fingerprint()
 
 
 def _check_db() -> tuple[bool, str]:
@@ -94,23 +94,39 @@ def health() -> dict:
     """Liveness: the process is up and serving. Cheap, no dependencies —
     suitable for a load balancer's frequent poll.
 
-    Carries the deploy markers because this is the endpoint that survives the
-    edge: `/` and `/health/ready` are answered with a 403 challenge to script
-    clients, so they cannot be used to check a deployment from outside.
+    Body deliberately unchanged. Deploy markers ride as RESPONSE HEADERS on
+    every response instead (see main.py's observability middleware) — that
+    keeps this contract intact, keeps liveness dependency-free, and works on
+    any endpoint the edge happens to allow rather than betting on one path.
     """
-    return {
-        "ok": True,
-        "source": _SOURCE_FINGERPRINT,          # hash of the .py files running
-        "datalayer_schema": _datalayer_schema_version(),
-        "schema_head": _alembic_head(),          # applied DB migration
-    }
+    return {"ok": True}
 
 
 _SCHEMA_HEAD: str | None = None
 
 
-def _alembic_head() -> str:
-    """The migration revision the live database is actually at.
+def prime_schema_head() -> str:
+    """Read the applied migration revision ONCE, at startup.
+
+    Called from the app lifespan after migrations run, so the request path
+    never touches the database. /health is liveness — "cheap, no dependencies",
+    polled by a load balancer — and an existing test
+    (test_liveness_stays_cheap_and_dependency_free) enforces that it still
+    reports ok when the DB is down. Reading the head lazily on first request
+    would have broken that contract for exactly one unlucky poll.
+    """
+    global _SCHEMA_HEAD
+    _SCHEMA_HEAD = _read_alembic_head()
+    return _SCHEMA_HEAD
+
+
+def schema_head() -> str:
+    """Whatever startup captured. Never queries during a request."""
+    return _SCHEMA_HEAD if _SCHEMA_HEAD is not None else "unknown"
+
+
+def _read_alembic_head() -> str:
+    """Query the migration revision the live database is at.
 
     Distinct from the source fingerprint on purpose: code and schema deploy
     together but can land apart — a checkout without a restart leaves new code
@@ -128,17 +144,12 @@ def _alembic_head() -> str:
     migration has not run yet, and the honest answer then is not the answer a
     caller wants.
     """
-    global _SCHEMA_HEAD
-    if _SCHEMA_HEAD is not None:
-        return _SCHEMA_HEAD
     try:
         with db.engine().connect() as conn:
             row = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
-        head = str(row[0]) if row else "none"
-    except Exception:  # noqa: BLE001 — a health probe must not fail on this
-        return "unknown"     # not cached: a transient DB blip must not stick
-    _SCHEMA_HEAD = head
-    return head
+        return str(row[0]) if row else "none"
+    except Exception:  # noqa: BLE001 — startup must not die on this
+        return "unknown"
 
 
 @router.get("/health/ready")
