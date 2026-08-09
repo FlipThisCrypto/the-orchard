@@ -42,7 +42,12 @@ from .config import settings
 from .db import _sqlite_path_from_url, engine
 
 # Child tables that carry a node_id FK, deleted before the node row itself.
-_CHILD_TABLES = ("readings", "uptime_hours", "attestations")
+# Every table carrying node_id. `claims` was added by migration 03f4c36f5eb6
+# AFTER the delete paths were written and was never added here, so deleting
+# a Tree left an orphaned claim row behind. Silent on SQLite (the connect
+# hook sets journal_mode and busy_timeout but never PRAGMA foreign_keys=ON)
+# and a hard FK violation on Postgres.
+_CHILD_TABLES = ("readings", "uptime_hours", "attestations", "claims")
 
 
 def _all_node_ids(conn) -> list[str]:
@@ -121,6 +126,32 @@ def _delete(conn, ids: list[str]) -> None:
         conn.execute(stmt, {"ids": ids})
 
 
+def _retire(conn, ids: list[str], reason: str) -> None:
+    """Mark Trees retired. Nothing is deleted — this is the reversible answer.
+
+    A retired Tree leaves the living network (/nodes, trees_registered,
+    trees_active_24h, payout) while its readings, uptime, attestations and
+    claims stay exactly where they are. That matters because DataLayer records
+    are permanent and public: deleting a Tree would leave on-chain attestations
+    pointing at a node_id the oracle then denies ever existed.
+    """
+    stmt = text(
+        "UPDATE nodes SET retired_at = :ts, retired_reason = :reason "
+        "WHERE node_id IN :ids AND retired_at IS NULL"
+    ).bindparams(bindparam("ids", expanding=True))
+    conn.execute(stmt, {"ids": ids, "ts": datetime.now(timezone.utc).isoformat(),
+                        "reason": (reason or "")[:200]})
+
+
+def _unretire(conn, ids: list[str]) -> None:
+    """Bring retired Trees back. Clearing the column restores them exactly."""
+    stmt = text(
+        "UPDATE nodes SET retired_at = NULL, retired_reason = NULL "
+        "WHERE node_id IN :ids"
+    ).bindparams(bindparam("ids", expanding=True))
+    conn.execute(stmt, {"ids": ids})
+
+
 def cmd_modify(eng, cmd: str, ids: list[str], apply: bool) -> int:
     with eng.connect() as conn:
         present = _all_node_ids(conn)
@@ -164,6 +195,56 @@ def cmd_modify(eng, cmd: str, ids: list[str], apply: bool) -> int:
     return 0
 
 
+def cmd_retire(eng, cmd: str, ids: list[str], reason: str, apply: bool) -> int:
+    """Retire or un-retire Trees. Dry-run by default, like delete."""
+    want = {i.strip().upper() for i in ids if i.strip()}
+    with eng.connect() as conn:
+        present = set(_all_node_ids(conn))
+        rows = {r[0]: r[1] for r in conn.execute(text(
+            "SELECT node_id, retired_at FROM nodes"))}
+    for u in sorted(want - present):
+        print(f"warning: node_id not found: {u}", file=sys.stderr)
+    targets = sorted(want & present)
+    if not targets:
+        print("Nothing to do.", file=sys.stderr)
+        return 1
+
+    # Only act on Trees that actually change state, so a re-run is a no-op
+    # rather than a silent second retirement with a different timestamp.
+    if cmd == "retire":
+        acting = [n for n in targets if not rows.get(n)]
+        skipped = [n for n in targets if rows.get(n)]
+        verb, note = "Retiring", "already retired"
+    else:
+        acting = [n for n in targets if rows.get(n)]
+        skipped = [n for n in targets if not rows.get(n)]
+        verb, note = "Un-retiring", "not retired"
+
+    for n in skipped:
+        print(f"  skip   {n}  ({note})")
+    for n in acting:
+        print(f"  {verb.lower():<10} {n}")
+    if not acting:
+        print("No state change needed.")
+        return 0
+    if not apply:
+        print(f"\nDRY RUN — {verb.lower()} {len(acting)} node(s). Re-run with --yes to apply.")
+        print("No data is deleted either way; retirement only changes visibility.")
+        return 0
+
+    backup = _backup_db()
+    if backup:
+        print(f"\nBacked up DB -> {backup}")
+    with eng.begin() as conn:
+        conn.exec_driver_sql("PRAGMA busy_timeout=10000")
+        if cmd == "retire":
+            _retire(conn, acting, reason)
+        else:
+            _unretire(conn, acting)
+    print(f"{verb} {len(acting)} node(s). Readings, uptime and attestations untouched.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m oracle.app.admin",
                                 description="Oracle node administration.")
@@ -174,12 +255,27 @@ def main(argv: list[str] | None = None) -> int:
         sp = sub.add_parser(name, help=helptext)
         sp.add_argument("node_id", nargs="+")
         sp.add_argument("--yes", action="store_true", help="apply (default is dry-run)")
+
+    # Retire is the reversible answer, and should be reached for before delete.
+    rp = sub.add_parser("retire", help="retire node(s): leave the living network, keep all data")
+    rp.add_argument("node_id", nargs="+")
+    rp.add_argument("--reason", required=True,
+                    help="why (recorded; an unexplained retirement is a gap in the record)")
+    rp.add_argument("--yes", action="store_true", help="apply (default is dry-run)")
+
+    up = sub.add_parser("unretire", help="bring retired node(s) back")
+    up.add_argument("node_id", nargs="+")
+    up.add_argument("--yes", action="store_true", help="apply (default is dry-run)")
+
     args = p.parse_args(argv)
 
     eng = engine()
     if args.cmd == "list":
         with eng.connect() as conn:
             return cmd_list(conn)
+    if args.cmd in ("retire", "unretire"):
+        return cmd_retire(eng, args.cmd, args.node_id,
+                          getattr(args, "reason", ""), args.yes)
     return cmd_modify(eng, args.cmd, args.node_id, args.yes)
 
 
