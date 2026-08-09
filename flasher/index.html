@@ -274,8 +274,11 @@
         <p>Click <b>Install</b> below, then pick your board from the serial-port
            dialog — <code>Silicon Labs CP210x</code> (Windows),
            <code>cu.SLAB_USBtoUART</code> (macOS), or <code>ttyUSB0</code> (Linux).
-           The installer erases the board, writes the latest signed Orchard
-           firmware (~1&nbsp;MB), and reboots it.</p>
+           The installer writes the latest signed Orchard firmware
+           (~1&nbsp;MB) and reboots it. Your Tree <b>keeps its identity</b> —
+           its Tree&nbsp;ID, device keys and Orchard&nbsp;Pass link survive the
+           update, so re-flashing upgrades the same Tree instead of
+           creating a new one.</p>
         <p style="margin: 18px 0 6px 0;">
           <esp-web-install-button manifest="./manifest.json">
             <button slot="activate">Install Tree Firmware</button>

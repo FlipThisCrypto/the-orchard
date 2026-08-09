@@ -52,6 +52,29 @@ class Node(Base):
     label: Mapped[str | None] = mapped_column(String(128), nullable=True)
     fw_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    # Retirement. NULL = live. A retired Tree stops counting anywhere that
+    # describes the network — /nodes, trees_registered, trees_active_24h,
+    # payout — but NOTHING is deleted: its readings, uptime, attestations and
+    # claims all remain, and clearing this column brings it back exactly as it
+    # was.
+    #
+    # This exists because re-flashing a board used to mint a NEW node_id (the
+    # installer erased NVS), so the oracle accumulated ghost Trees that no
+    # hardware would ever claim again — six registered ids for four physical
+    # boards. Deleting them would have destroyed real history and, worse,
+    # left DataLayer attestations pointing at a node_id the oracle denies
+    # exists. Retiring says "this is not part of the living network" without
+    # ever claiming it never was.
+    #
+    # A timestamp rather than a boolean: when something was retired is part of
+    # the answer, and NULL/NOT NULL needs no separate "is it set" convention.
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Free text, operator-supplied. A retirement without a reason is an
+    # unexplained gap in the record six months from now.
+    retired_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
     # Replay protection: highest `seq` value accepted from this Tree.
     # The firmware persists a monotonic counter in NVS and includes it
     # in every signed body; /readings rejects anything <= this value

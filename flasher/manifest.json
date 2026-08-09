@@ -1,20 +1,27 @@
 {
-  "name": "The Orchard — Tree Firmware",
+  "name": "The Orchard \u2014 Tree Firmware",
   "version": "0.5.1",
   "funding_url": "https://github.com/FlipThisCrypto/the-orchard",
-  "new_install_prompt_erase": true,
+  "new_install_prompt_erase": false,
   "builds": [
     {
       "chipFamily": "ESP32",
       "parts": [
-        { "path": "/fw/v0.5.1/orchard-freenove_esp32_wroom-web-v0.5.1.bin", "offset": 0 }
+        {
+          "path": "/fw/v0.5.1/orchard-freenove_esp32_wroom-web-v0.5.1.bin",
+          "offset": 0
+        }
       ]
     },
     {
       "chipFamily": "ESP32-S3",
       "parts": [
-        { "path": "/fw/v0.5.1/orchard-freenove_esp32s3_uart-web-v0.5.1.bin", "offset": 0 }
+        {
+          "path": "/fw/v0.5.1/orchard-freenove_esp32s3_uart-web-v0.5.1.bin",
+          "offset": 0
+        }
       ]
     }
-  ]
+  ],
+  "_note_new_install_prompt_erase": "MUST stay false. Erasing wipes NVS, where a Tree's node_id, secp256r1 provenance key, HMAC secret and Pass claim nonce live. The firmware then boots, finds nothing, and mints a NEW identity \u2014 so every reflash created a new Tree and orphaned the old one. Six 'Trees' on one Orchard Pass, three registered within six minutes on 2026-06-16, were one board reflashed. Partition layouts are stable per board (ESP32 uses Arduino's default.csv; S3 uses partitions.csv) and the image is written at offset 0, so an erase is not needed for an update. Set it true ONLY to deliberately retire a board's identity."
 }

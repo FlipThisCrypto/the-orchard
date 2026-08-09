@@ -69,7 +69,14 @@ def test_keep_deletes_the_rest_and_cascades(eng):
     assert rc == 0
     assert _node_ids(eng) == {"AA" * 16}
     # No child rows left pointing at the deleted nodes.
-    assert _orphans(eng) == {"readings": 0, "uptime_hours": 0, "attestations": 0}
+    #
+    # Derived from _CHILD_TABLES rather than hardcoded. The previous hardcoded
+    # list omitted `claims`, which carries an FK to nodes.node_id and was added
+    # by migration 03f4c36f5eb6 AFTER the delete paths were written — so the
+    # cascade leaked orphaned claim rows and this test could not see it. Silent
+    # on SQLite (the connect hook never sets PRAGMA foreign_keys=ON) and a hard
+    # FK violation on Postgres. A literal list here is what let it hide.
+    assert _orphans(eng) == {t: 0 for t in admin._CHILD_TABLES}
     # Kept node's own rows survive.
     with eng.connect() as c:
         assert c.execute(text("SELECT count(*) FROM readings")).scalar() == 3
@@ -93,3 +100,22 @@ def test_keep_with_no_valid_ids_refuses(eng):
     rc = admin.cmd_modify(eng, "keep", ["DD" * 16], apply=True)
     assert rc == 2  # refused — would have deleted everything
     assert _node_ids(eng) == before
+
+
+def test_every_table_carrying_node_id_is_in_the_cascade():
+    """The cascade must be complete by construction, not by memory.
+
+    `claims` was added months after the delete paths and nobody updated
+    _CHILD_TABLES, so deleting a Tree silently orphaned its claim row. This
+    asserts the list against the models, so the next table to carry node_id
+    fails here instead of leaking.
+    """
+    from oracle.app import models
+    carrying = {
+        t.name for t in models.Base.metadata.sorted_tables
+        if "node_id" in t.columns and t.name != "nodes"
+    }
+    missing = carrying - set(admin._CHILD_TABLES) - {"audit_events"}
+    assert not missing, (
+        f"these tables carry node_id but are not in the delete cascade: {sorted(missing)}"
+    )

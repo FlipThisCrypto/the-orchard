@@ -44,6 +44,10 @@ async def _lifespan(app: FastAPI):
     # WARNING and INFO request logs would be dropped.
     observability.logger.setLevel(settings().log_level.upper())
     db.create_all()
+    # Capture the applied migration revision once, here, AFTER create_all /
+    # migrations. /health then serves it from memory and never touches the DB
+    # during a request — liveness must survive a dead database.
+    health.prime_schema_head()
     yield
 
 
@@ -171,6 +175,16 @@ async def _observe(request: Request, call_next):
         rid, label, response.status_code, dur, client,
     )
     response.headers["X-Request-ID"] = rid
+    # Deploy markers on EVERY response, so "did my deploy land?" is one curl
+    # against any endpoint the edge allows — instead of an SSH session and two
+    # greps, which is how it was answered twice on 2026-08-08, once wrongly.
+    #
+    # Headers rather than a body field: /health's body is a contract an
+    # existing test pins ({"ok": true} exactly), `/` and `/health/ready` are
+    # 403'd to script clients, and a new path would be a bet on opaque edge
+    # rules. A header sidesteps all three.
+    response.headers["X-Orchard-Source"] = health.SOURCE_FINGERPRINT
+    response.headers["X-Orchard-Schema"] = health.schema_head()
     return response
 
 

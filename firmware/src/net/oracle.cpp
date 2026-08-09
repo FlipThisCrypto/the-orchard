@@ -156,6 +156,28 @@ bool oracle_post_reading(JsonDocument& payload) {
   payload["schema"]  = 1;  // ADR-0006/T14: payload format version (start at 1)
   payload["node_id"] = identity::node_id_hex();
   payload["fw"]      = orchard::kFirmwareVersion;
+
+  // ADR-0003/0007: tell the oracle which key signs our readings.
+  //
+  // Without this a Tree signs every reading and never says what verifies them,
+  // so the oracle cannot populate node.device_pubkey, the publisher refuses the
+  // node as unverifiable, and NOTHING that Tree measures can ever be published.
+  // That is what happened to the first signing Tree (2026-08-08): its key had
+  // to be recovered off-chain from its own ECDSA signatures and written into
+  // the production database by hand. Elegant once; not a fleet procedure, and
+  // not something that belongs in a provenance chain.
+  //
+  // TOP LEVEL, deliberately — not inside device_reading:
+  //   * it rides inside the HMAC'd body, so only the holder of this Tree's
+  //     device secret can assert it;
+  //   * it does NOT change the secp256r1-signed canonical bytes, so signatures
+  //     stay valid and the publisher's SPEC field-stripping is unaffected;
+  //   * the key reaches the chain once, in the node: card, rather than being
+  //     repeated inside every published reading.
+  // The oracle writes it once and never rotates it, so a wrong value cannot
+  // silently replace a good one — and a wrong value fails signature checks
+  // loudly rather than passing quietly.
+  payload["device_pubkey"] = identity::p256_pubkey_hex();
   // Monotonic per-boot placeholder (not wall-clock). Wall-clock is preferred:
   // attach_device_reading() below overwrites this with epoch millis whenever
   // GPS UTC or a synced system clock is available. A caller-supplied ts_ms is

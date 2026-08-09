@@ -138,6 +138,12 @@ def _migrate_node_pass_columns(eng) -> None:
     if "device_pubkey" not in existing_cols:
         # ADR-0003: compressed secp256r1 pubkey (66 hex chars). Nullable.
         additions.append("ALTER TABLE nodes ADD COLUMN device_pubkey VARCHAR(66)")
+    if "retired_at" not in existing_cols:
+        # NULL = live. Retirement removes a Tree from the living network
+        # without deleting anything it produced.
+        additions.append("ALTER TABLE nodes ADD COLUMN retired_at DATETIME")
+    if "retired_reason" not in existing_cols:
+        additions.append("ALTER TABLE nodes ADD COLUMN retired_reason VARCHAR(200)")
     if not additions:
         return
     with eng.begin() as conn:

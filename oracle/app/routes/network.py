@@ -97,14 +97,23 @@ def _compute_stats(db: Session) -> NetworkStats:
     now = datetime.now(timezone.utc)
     cutoff_24h = now - timedelta(hours=24)
 
+    # Retired Trees are excluded from every count that describes the network.
+    # They are not deleted — their readings, uptime and attestations all remain
+    # — but a ghost from a re-flash, or a board sitting on a shelf awaiting
+    # sensors, is not part of the living Orchard and must not inflate it. The
+    # network claiming more Trees than it has is the same class of dishonesty
+    # as claiming more uptime than it can prove.
+    live = models.Node.retired_at.is_(None)
+
     trees_registered = db.execute(
-        select(func.count(models.Node.node_id))
+        select(func.count(models.Node.node_id)).where(live)
     ).scalar_one()
 
     # "Active" = had at least one reading land in the past 24h.
     # last_reading_at is updated on every reading, so this is cheap.
     trees_active_24h = db.execute(
         select(func.count(models.Node.node_id))
+        .where(live)
         .where(models.Node.last_reading_at >= cutoff_24h)
     ).scalar_one()
 

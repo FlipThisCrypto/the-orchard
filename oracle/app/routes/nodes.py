@@ -174,10 +174,19 @@ def list_nodes(
     db: Session = Depends(get_db),
     sess: sessions.Session | None = Depends(_maybe_session),
     writer: bool = Depends(writer_authenticated),
+    include_retired: bool = Query(default=False),
 ) -> list[NodePublic]:
     """List nodes. With a session, scoped to that operator's wallet.
-    Without, returns all (existing public-dashboard behavior)."""
+    Without, returns all (existing public-dashboard behavior).
+
+    Retired Trees are omitted unless ``include_retired=1``."""
     q = select(models.Node)
+    # Retired Trees drop out of the living network. This ONE filter is what
+    # removes them from the public map, the worldview globe, the DataLayer
+    # publisher and the attestation writer — all four consume this endpoint.
+    # ?include_retired=1 is for an operator auditing what was retired.
+    if not include_retired:
+        q = q.where(models.Node.retired_at.is_(None))
     if sess is not None:
         q = q.where(models.Node.wallet_address == sess.address)
     rows = db.execute(q.order_by(models.Node.registered_at.desc())).scalars().all()

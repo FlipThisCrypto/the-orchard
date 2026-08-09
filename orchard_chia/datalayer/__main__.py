@@ -16,6 +16,27 @@ import sys
 
 def _dispatch(argv: list[str]) -> int:
     if not argv or argv[0] in ("attest", "attestation", "season"):
+        # attest takes no flags, and main() accepts none — so ANY flag given
+        # here used to be silently discarded while the job ran for real.
+        # `attest --dry-run` therefore performed a live batch_update, spent a
+        # fee, and wrote 185 permanent records to a public store (2026-08-08,
+        # tx 0x583aa051…). The operator had every reason to believe it was a
+        # rehearsal: --dry-run is real on `publish`.
+        #
+        # A tool must refuse a flag it does not understand rather than proceed
+        # with its default, irreversible action. Silently ignoring input is the
+        # worst option available: it is indistinguishable from honouring it.
+        extra = argv[1:] if argv else []
+        if extra:
+            print(
+                f"attest takes no options, but got: {' '.join(extra)}\n"
+                f"Refusing to run rather than ignore them — attest writes to the "
+                f"blockchain and cannot be undone.\n"
+                f"There is no --dry-run for attest. To preview without writing, "
+                f"use:  python -m orchard_chia.datalayer reconcile",
+                file=sys.stderr,
+            )
+            return 2
         from .main import main
         return int(main() or 0)
 

@@ -70,6 +70,34 @@ class WalletRpc:
     # Discovery / identity
     # ------------------------------------------------------------------
 
+    def synced_peak_height(self) -> int:
+        """Current peak height, but ONLY from a fully synced wallet.
+
+        A stand-in for the full node's ``peak_height`` so season sealing does
+        not require running one. ``block_height_at_write`` is an anti-backdate
+        anchor: it must never claim a height the chain had not reached.
+
+        The sync gate is what makes the substitution sound. A synced wallet's
+        height IS the peak. A *syncing* wallet is behind, and while a lower
+        height only understates the anchor (conservative, never a false claim),
+        an anchor is a promise about time — so refuse rather than quietly
+        weaken it, and say which it was.
+
+        Raises WalletRpcError if the wallet is not synced.
+        """
+        status = self._post("get_sync_status", {})
+        if not status.get("synced") or status.get("syncing"):
+            raise WalletRpcError(
+                "wallet is not synced, so its height cannot stand in for the "
+                "chain peak (an anti-backdate anchor must not be a guess); "
+                f"status={ {k: status.get(k) for k in ('synced', 'syncing')} }"
+            )
+        info = self._post("get_height_info", {})
+        height = int(info.get("height") or 0)
+        if height <= 0:
+            raise WalletRpcError(f"wallet returned no usable height: {info!r}")
+        return height
+
     def get_wallets(self, wallet_type: int | None = None) -> list[dict]:
         """List all wallets in the current key. ``wallet_type``:
             0 = standard XCH
