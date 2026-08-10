@@ -68,6 +68,24 @@ class Node(Base):
     #
     # A timestamp rather than a boolean: when something was retired is part of
     # the answer, and NULL/NOT NULL needs no separate "is it set" convention.
+    # Operator-declared location, as a COARSE geohash cell — never coordinates.
+    #
+    # The oracle derives a cell from a Tree's own GPS when it has one, which is
+    # the better answer because it is measured. Most Trees have no GPS module,
+    # so without this they are simply unplaced and cannot appear on the map at
+    # all. Declaring lets an operator say where their Tree is, on their own
+    # authority, wallet-signed.
+    #
+    # Stored at the same ~5 km precision the privacy contract promises, and
+    # coarsened at the boundary: a caller may send lat/lon for convenience, but
+    # the precise value is never persisted. A cell cannot express a finer
+    # position than itself, so over-precision is unrepresentable rather than
+    # merely forbidden.
+    declared_geohash: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    declared_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     retired_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

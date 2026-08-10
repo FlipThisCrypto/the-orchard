@@ -144,6 +144,12 @@ def _migrate_node_pass_columns(eng) -> None:
         additions.append("ALTER TABLE nodes ADD COLUMN retired_at DATETIME")
     if "retired_reason" not in existing_cols:
         additions.append("ALTER TABLE nodes ADD COLUMN retired_reason VARCHAR(200)")
+    if "declared_geohash" not in existing_cols:
+        # Operator-declared COARSE cell (~5 km). Lets a Tree with no GPS
+        # module appear on the map at all. Never precise coordinates.
+        additions.append("ALTER TABLE nodes ADD COLUMN declared_geohash VARCHAR(12)")
+    if "declared_at" not in existing_cols:
+        additions.append("ALTER TABLE nodes ADD COLUMN declared_at DATETIME")
     if not additions:
         return
     with eng.begin() as conn:
