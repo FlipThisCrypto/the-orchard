@@ -188,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--season", type=int, required=True)
     sp.add_argument("--yes", action="store_true",
                     help="actually write (default is dry-run)")
+    sub.add_parser("status", help="pool balance, runway, unpaid backlog")
     pp = sub.add_parser("pay", help="plan (and with two explicit acts, send) "
                                     "the spend for settled unpaid days")
     pp.add_argument("--day", type=int, default=None,
@@ -206,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "pay":
         return _cmd_pay(ledger_path, args)
+    if args.cmd == "status":
+        return _cmd_status(ledger_path, current)
 
     with ledger_mod.PoolLedger(ledger_path) as led:
         snap = led.snapshot()
@@ -246,6 +249,45 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nrecorded. pool: {format_juice(led.snapshot().remaining_mojos)} "
               f"JUICE remaining.")
         return 0
+
+
+def _cmd_status(ledger_path: Path, current_season: int) -> int:
+    """Where the programme stands. Reads only; always safe to run."""
+    from . import payment
+    from .constants import format_juice, TREE_REWARDS_POOL_MOJOS
+    from .emission import runway_days_remaining, emission_year_for_day
+
+    with ledger_mod.PoolLedger(ledger_path) as led:
+        snap = led.snapshot()
+        unpaid = payment.unpaid_days(led)
+        day_now = max(0, current_season - 1)
+        spent_pct = 100 * snap.distributed_total_mojos / TREE_REWARDS_POOL_MOJOS
+        print("POOL")
+        print(f"  remaining     {format_juice(snap.remaining_mojos)} JUICE "
+              f"({100 - spent_pct:.4f}%)")
+        print(f"  distributed   {format_juice(snap.distributed_total_mojos)} "
+              f"across {snap.days_settled} settled day(s)")
+        print(f"  emission year {emission_year_for_day(day_now)} "
+              f"(season {current_season})")
+        print(f"  runway        >= {runway_days_remaining(snap.remaining_mojos, day_now):,} days "
+              f"at the current ceiling — longer at real uptime")
+        behind = (current_season - 2) - (snap.last_day_index
+                                         if snap.last_day_index is not None else -1)
+        print("SETTLEMENT")
+        print(f"  last settled  "
+              + (f"day {snap.last_day_index} (season {snap.last_day_index + 1})"
+                 if snap.last_day_index is not None else "never"))
+        if behind > 0:
+            print(f"  BEHIND by {behind} closed season(s) — run: "
+                  f"python -m orchard_chia.economics settle")
+        print("PAYMENT")
+        if unpaid:
+            print(f"  {len(unpaid)} settled day(s) unpaid: "
+                  f"{', '.join(str(d) for d in unpaid[:8])}"
+                  + (" …" if len(unpaid) > 8 else ""))
+        else:
+            print("  nothing owed.")
+    return 0
 
 
 def _cmd_pay(ledger_path: Path, args) -> int:

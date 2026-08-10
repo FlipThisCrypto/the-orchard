@@ -66,3 +66,18 @@ def test_nothing_unpaid_is_a_clean_zero(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("DRY_RUN", raising=False)
     assert main(["pay"]) == 0
     assert "no settled unpaid days" in capsys.readouterr().out
+
+
+def test_status_reads_the_ledger(settled, capsys):
+    assert main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "POOL" in out and "remaining" in out
+    assert "1 settled day(s) unpaid" in out
+
+
+def test_status_on_a_fresh_ledger(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "f.db"))
+    monkeypatch.setenv("ORCHARD_ASSET_ID", ASSET)
+    assert main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "85,000,000.000" in out and "never" in out and "nothing owed" in out
