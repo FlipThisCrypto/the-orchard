@@ -221,3 +221,17 @@ def test_settle_writes_an_ops_journal_entry(tmp_path, monkeypatch):
     events = [json.loads(l) for l in journal.read_text(encoding="utf-8").splitlines()]
     assert any(e.get("event") == "finish" and e.get("season") == 1
                for e in events) or any(e.get("season") == 1 for e in events)
+
+
+def test_status_warns_when_the_ledger_fails_its_own_audit(settled, monkeypatch,
+                                                          capsys):
+    """audit-on-demand only protects those who remember it exists; status is
+    what people actually run."""
+    import os
+    path = os.environ["ORCHARD_POOL_LEDGER"]
+    with PoolLedger(path) as led:
+        led._c.execute("UPDATE settled_days SET pool_closing_mojos = "
+                       "pool_closing_mojos - 1 WHERE day_index=0")
+        led._c.commit()
+    assert main(["status"]) == 0
+    assert "FAILS ITS OWN AUDIT" in capsys.readouterr().out

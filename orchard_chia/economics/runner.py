@@ -344,6 +344,13 @@ def _cmd_status(ledger_path: Path, current_season: int) -> int:
     with ledger_mod.PoolLedger(ledger_path) as led:
         snap = led.snapshot()
         unpaid = payment.unpaid_days(led)
+        # The self-check is cheap and status is what people actually run;
+        # audit-on-demand only protects those who remember it exists.
+        contradictions = led.audit()
+        if contradictions:
+            print(f"!! LEDGER FAILS ITS OWN AUDIT — {len(contradictions)} "
+                  f"contradiction(s). Run `economics audit` for detail; do "
+                  f"not settle or pay until resolved.")
         day_now = max(0, current_season - 1)
         spent_pct = 100 * snap.distributed_total_mojos / TREE_REWARDS_POOL_MOJOS
         print("POOL")
