@@ -113,7 +113,16 @@ def load() -> Config:
             ),
         ),
         attestation=AttestationConfig(
-            max_lookback_seasons=att.get("max_lookback_seasons"),
+            # Bounded by default. Unbounded lookback re-reads every season
+            # since each Tree's registration on every run — ~150 RPCs per Tree
+            # per day at 75 seasons, growing forever, to conclude "unchanged"
+            # each time. 45 covers a six-week outage with margin; re-sealing
+            # older seasons is a deliberate act: set the key to null (explicit
+            # null still means unlimited — an operator's stated choice is
+            # honoured, only the ABSENT key gets the bound).
+            max_lookback_seasons=(
+                att["max_lookback_seasons"] if "max_lookback_seasons" in att
+                else 45),
             skip_empty_seasons=bool(att.get("skip_empty_seasons", True)),
         ),
         signing_key_hex=_load_or_make_signing_key(),
