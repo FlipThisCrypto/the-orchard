@@ -67,11 +67,48 @@ def _duplicate_pubkeys(nodes: list[dict]) -> set[str]:
     return {pk for pk, count in seen.items() if count > 1}
 
 
+def _chain_hours_for_season(season: int) -> dict[str, tuple[int, str]]:
+    """node_id -> (hours, basis) from sealed on-chain attestations.
+
+    Opt-in via ORCHARD_SETTLE_CHAIN=1 (the runner does not always sit where a
+    DataLayer daemon does). When a seal exists it DOMINATES the oracle's
+    accounting: paid_hours() prices it exactly as the payout rules do — a
+    proof-backed seal yields its verified_hours, a placeholder yields 0, and
+    that zero is the honest answer for a sealed season with no evidence.
+    Failures return {} and the run falls back to oracle hours, labelled so.
+    """
+    if os.environ.get("ORCHARD_SETTLE_CHAIN", "").strip() not in ("1", "true", "on"):
+        return {}
+    try:
+        from ..datalayer import config as dl_config
+        from ..datalayer.rpc import DataLayerRpc
+        from ..payout import reader
+        from ..payout.calculator import paid_hours
+        cfg = dl_config.load()
+        dl = cfg.data_layer
+        rpc = DataLayerRpc(host=dl.host, port=dl.port,
+                           cert_path=dl.cert_path, key_path=dl.key_path)
+        out: dict[str, tuple[int, str]] = {}
+        for att in reader.read_all_attestations(rpc, dl.store_id):
+            if int(att.season) != int(season):
+                continue
+            hours, basis = paid_hours(att.signed)
+            out[att.node_id.upper()] = (int(hours), f"chain:{basis}")
+        return out
+    except Exception as e:               # noqa: BLE001 — fall back, visibly
+        print(f"[economics] chain consult failed ({e}); using oracle hours",
+              file=sys.stderr)
+        return {}
+
+
 def observe_season(oracle: OracleClient, season: int) -> list:
-    """One TreeDay per registered Tree, from the oracle's own accounting."""
+    """One TreeDay per registered Tree. A sealed on-chain season dominates
+    the oracle's accounting; otherwise the oracle's hours are used, and each
+    Tree's basis says which."""
     trees = []
     nodes = oracle.list_nodes()
     dup_keys = _duplicate_pubkeys(nodes)
+    chain = _chain_hours_for_season(season)
     for node in nodes:
         node_id = str(node.get("node_id") or "")
         if not node_id:
@@ -104,10 +141,16 @@ def observe_season(oracle: OracleClient, season: int) -> list:
         # visible per Tree.
         q = uptime.get("qualifying_sensor_classes")
         sensors = q if isinstance(q, list) else (node.get("sensors") or [])
-        trees.append(tree_day_from_observation(
+        basis = "oracle-hours"
+        if node_id.upper() in chain:
+            hours, basis = chain[node_id.upper()]
+        td = tree_day_from_observation(
             tree_id=node_id, wallet_address=node.get("wallet_address"),
             declared_sensors=sensors,
-            hours_with_readings=hours))
+            hours_with_readings=hours)
+        import dataclasses as _dc
+        td = _dc.replace(td, heartbeat_basis=basis)
+        trees.append(td)
     return trees
 
 

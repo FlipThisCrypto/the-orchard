@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timezone
 
 from orchard_chia.economics import PoolLedger, TREE_REWARDS_POOL_MOJOS
 from orchard_chia.economics.runner import (day_index_for_season, main,
                                            observe_season)
 
+NOW = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
 W = "xch1wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
 
 
@@ -124,3 +126,62 @@ def test_nodes_without_a_pubkey_are_not_treated_as_clones_of_each_other():
         {"T1": {"hours_online": 24}, "T2": {"hours_online": 24}})
     trees = observe_season(src, 74)
     assert all(t.eligible for t in trees)
+
+
+def test_a_sealed_season_on_chain_dominates_the_oracle(monkeypatch, tmp_path):
+    """Once the chain holds a seal, it is the truth. A proof-backed seal pays
+    its verified_hours; the oracle's larger self-report is ignored."""
+    monkeypatch.setenv("ORCHARD_SETTLE_CHAIN", "1")
+
+    class Att:
+        node_id = "T1"
+        season = 74
+        signed = {"verified_hours": 9, "hours_online": 24,
+                  "seal_source": "readings", "sigs_verified": True}
+
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner._chain_hours_for_season",
+        lambda season: {"T1": (9, "chain:verified_hours")})
+    src = FakeOracle(
+        [{"node_id": "T1", "wallet_address": W, "sensors": ["s"],
+          "last_reading_at": NOW.isoformat()}],
+        {"T1": {"hours_online": 24}})
+    trees = observe_season(src, 74)
+    assert trees[0].verified_heartbeats == 9
+    assert trees[0].heartbeat_basis == "chain:verified_hours"
+
+
+def test_a_sealed_placeholder_pays_zero_not_the_oracle_claim(monkeypatch):
+    """A sealed season with no evidence is worth zero — the honest answer for
+    that season, not a fallback to the oracle's word."""
+    monkeypatch.setenv("ORCHARD_SETTLE_CHAIN", "1")
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner._chain_hours_for_season",
+        lambda season: {"T1": (0, "chain:unproven (placeholder)")})
+    src = FakeOracle(
+        [{"node_id": "T1", "wallet_address": W, "sensors": ["s"],
+          "last_reading_at": NOW.isoformat()}],
+        {"T1": {"hours_online": 24}})
+    trees = observe_season(src, 74)
+    assert trees[0].verified_heartbeats == 0
+    assert "placeholder" in trees[0].heartbeat_basis
+
+
+def test_without_the_opt_in_the_chain_is_not_consulted(monkeypatch):
+    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+    from orchard_chia.economics.runner import _chain_hours_for_season
+    assert _chain_hours_for_season(74) == {}
+
+
+def test_an_unsealed_season_falls_back_to_oracle_hours(monkeypatch):
+    monkeypatch.setenv("ORCHARD_SETTLE_CHAIN", "1")
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner._chain_hours_for_season",
+        lambda season: {})
+    src = FakeOracle(
+        [{"node_id": "T1", "wallet_address": W, "sensors": ["s"],
+          "last_reading_at": NOW.isoformat()}],
+        {"T1": {"hours_online": 18}})
+    trees = observe_season(src, 74)
+    assert trees[0].verified_heartbeats == 18
+    assert trees[0].heartbeat_basis == "oracle-hours"

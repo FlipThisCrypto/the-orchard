@@ -89,6 +89,10 @@ class TreeDay:
     verified_heartbeats: int
     eligible: bool = True
     ineligible_reason: str | None = None
+    # Where the heartbeat count came from: "oracle-hours" (the oracle's own
+    # accepted-readings accounting) or "chain-verified" (recomputed from the
+    # sealed on-chain attestation). Money should say what it rests on.
+    heartbeat_basis: str = "oracle-hours"
 
     def __post_init__(self) -> None:
         if not self.tree_id:
