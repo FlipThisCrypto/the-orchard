@@ -65,6 +65,38 @@ class PublishPlan:
     nodes_written: list[str] = field(default_factory=list)
 
 
+def _stable_meta_created_at(prior: dict | None, writer_version: str,
+                            season_pubkey: str, fallback: str) -> str:
+    """Keep the store's existing meta timestamp unless the declaration changed.
+
+    Returns the on-chain ``created_at`` when the parts of ``meta:schema`` that
+    carry meaning — the schema version, the writer version, the season pubkey —
+    all still match. Otherwise this really is a new declaration and gets a new
+    timestamp.
+
+    Without this the record differs on every run purely because time passed,
+    which is not a change worth paying a blockchain fee to record.
+    """
+    if not isinstance(prior, dict):
+        return fallback
+    existing = prior.get("created_at")
+    if not isinstance(existing, str) or not existing:
+        return fallback
+    # Rebuild the whole record with the stored timestamp and compare. Checking
+    # named fields instead was wrong twice over: the first version compared
+    # `schema_version` and `season_pubkey`, which this record calls
+    # `orchard_schema` and `signer`, so nothing ever matched and the fix did
+    # nothing. Comparing the rebuilt record has no field names to get wrong and
+    # catches changes anywhere in it — including the units table, which is the
+    # part a reader most needs to be told about.
+    candidate = schema.build_meta(
+        writer_version=writer_version,
+        created_at=existing,
+        season_pubkey=season_pubkey,
+    )
+    return existing if candidate == prior else fallback
+
+
 def _upsert(changelist: list[dict], key_hex: str, value_hex: str, existing: str | None) -> bool:
     """Append delete+insert if value changed. Returns True if a write is needed."""
     if existing == value_hex:
@@ -97,13 +129,25 @@ def plan_publish(
     now = created_at or clock.utc_now_iso()
     plan = PublishPlan(changelist=[])
 
-    # Always ensure meta:schema is present / current.
+    # Ensure meta:schema is present and current.
+    #
+    # `created_at` is when this schema declaration was established, NOT when
+    # the job happened to run. Stamping it with the wall clock made the record
+    # different on every single run, so `_upsert` always saw a change and every
+    # publish submitted a fee-bearing spend — including runs with zero new
+    # readings, which is most of them under a scheduler. Observed on 2026-08-09:
+    # a real run reporting `batches: 0` still performed a batch_update.
+    #
+    # So: keep whatever the store already says, unless something that actually
+    # matters (the writer version, the season pubkey) has changed. Then the
+    # bytes are identical, the upsert is a no-op, and a quiet hour is free.
+    mk = schema.meta_key()
+    prior = schema.parse_value(existing.get(mk))
     meta = schema.build_meta(
         writer_version=writer_version,
-        created_at=now,
+        created_at=_stable_meta_created_at(prior, writer_version, season_pubkey, now),
         season_pubkey=season_pubkey,
     )
-    mk = schema.meta_key()
     mv = schema.value_hex(meta)
     if _upsert(plan.changelist, mk, mv, existing.get(mk)):
         plan.meta_written = True
