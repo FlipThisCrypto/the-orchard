@@ -185,3 +185,42 @@ def test_an_unsealed_season_falls_back_to_oracle_hours(monkeypatch):
     trees = observe_season(src, 74)
     assert trees[0].verified_heartbeats == 18
     assert trees[0].heartbeat_basis == "oracle-hours"
+
+
+def test_a_recently_retired_tree_still_earns_its_past_season(monkeypatch):
+    """Retirement ends the future, not the history. The retire flow promises
+    'nothing it produced is deleted'; settlement must not confiscate a season
+    the Tree demonstrably ran."""
+    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+
+    class RetiringOracle(FakeOracle):
+        def list_nodes(self, include_retired=False):
+            live = [{"node_id": "LIVE", "wallet_address": W, "sensors": ["s"]}]
+            if include_retired:
+                return live + [{"node_id": "GONE", "wallet_address": W,
+                                "sensors": ["s"]}]
+            return live
+
+    src = RetiringOracle([], {"LIVE": {"hours_online": 24},
+                              "GONE": {"hours_online": 20}})
+    trees = observe_season(src, 74)
+    by_id = {t.tree_id: t for t in trees}
+    assert "GONE" in by_id, "the retired Tree must be observed for its past"
+    assert by_id["GONE"].verified_heartbeats == 20
+
+
+def test_a_long_dead_ghost_still_earns_nothing(monkeypatch):
+    """Including retired Trees is not a payout to ghosts: a Tree with no hours
+    that season earns zero through the ordinary uptime rule."""
+    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+
+    class RetiringOracle(FakeOracle):
+        def list_nodes(self, include_retired=False):
+            if include_retired:
+                return [{"node_id": "GHOST", "wallet_address": W,
+                         "sensors": ["s"]}]
+            return []
+
+    src = RetiringOracle([], {"GHOST": {"hours_online": 0}})
+    trees = observe_season(src, 74)
+    assert trees[0].verified_heartbeats == 0

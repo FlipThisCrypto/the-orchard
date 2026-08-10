@@ -106,7 +106,16 @@ def observe_season(oracle: OracleClient, season: int) -> list:
     the oracle's accounting; otherwise the oracle's hours are used, and each
     Tree's basis says which."""
     trees = []
-    nodes = oracle.list_nodes()
+    # include_retired: settlement is about a PAST season, and retirement ends
+    # a Tree's future, not its history. A Tree retired yesterday genuinely
+    # earned two days ago; excluding it here would confiscate rewards the
+    # retire flow explicitly promised to preserve ("nothing it produced is
+    # deleted"). It still has to prove that season's uptime like everyone
+    # else, so a long-dead ghost earns nothing anyway — its hours are zero.
+    try:
+        nodes = oracle.list_nodes(include_retired=True)
+    except TypeError:       # an older client without the parameter
+        nodes = oracle.list_nodes()
     dup_keys = _duplicate_pubkeys(nodes)
     chain = _chain_hours_for_season(season)
     for node in nodes:
