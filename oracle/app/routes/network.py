@@ -68,6 +68,15 @@ class NetworkStats(BaseModel):
     readings_total:         int = Field(..., description="Total readings stored across all Trees")
     readings_last_24h:      int = Field(..., description="Readings received in the past 24h")
     attestations_total:     int = Field(..., description="On-chain attestations recorded by the writer")
+    # Pipeline liveness. Readings flowing while attestation goes quiet is the
+    # one failure the outside world could never see: exit codes and ops
+    # journals live on the operator's box, so a stalled writer looked exactly
+    # like a healthy quiet one. An external heartbeat can now alert on
+    # "last_attestation_at is old while readings_last_24h is not".
+    last_attestation_at:    str | None = Field(
+        None, description="When the writer last recorded an on-chain attestation")
+    last_reading_at:        str | None = Field(
+        None, description="When any Tree last posted an accepted reading")
     current_season:         int = Field(..., description="Current Season number per oracle's clock")
     as_of_utc:              str = Field(..., description="When this snapshot was taken (server clock)")
 
@@ -130,12 +139,21 @@ def _compute_stats(db: Session) -> NetworkStats:
         select(func.count(models.Attestation.id))
     ).scalar_one()
 
+    last_att = db.execute(
+        select(func.max(models.Attestation.written_to_datalayer_at))
+    ).scalar_one()
+    last_reading = db.execute(
+        select(func.max(models.Reading.received_at))
+    ).scalar_one()
+
     return NetworkStats(
         trees_registered=trees_registered,
         trees_active_24h=trees_active_24h,
         readings_total=readings_total,
         readings_last_24h=readings_last_24h,
         attestations_total=attestations_total,
+        last_attestation_at=last_att.isoformat() if last_att else None,
+        last_reading_at=last_reading.isoformat() if last_reading else None,
         current_season=seasons.current_season(),
         as_of_utc=now.isoformat(),
     )
