@@ -49,12 +49,40 @@ def day_index_for_season(season: int) -> int:
     return season - 1
 
 
+def _duplicate_pubkeys(nodes: list[dict]) -> set[str]:
+    """Device pubkeys claimed by more than one live node_id.
+
+    A cloned key is one physical device earning as several Trees — top of the
+    tokenomics spec's anti-gaming list, and not hypothetical here: re-flashing
+    used to mint fresh node_ids for the same board. ALL claimants go
+    ineligible, not just the newer one, because between a clone and its
+    original the oracle has no way to know which is the imposter — and the
+    honest operator is the one person who can fix it (re-key one board).
+    """
+    seen: dict[str, int] = {}
+    for n in nodes:
+        pk = (n.get("device_pubkey") or "").strip().lower()
+        if pk:
+            seen[pk] = seen.get(pk, 0) + 1
+    return {pk for pk, count in seen.items() if count > 1}
+
+
 def observe_season(oracle: OracleClient, season: int) -> list:
     """One TreeDay per registered Tree, from the oracle's own accounting."""
     trees = []
-    for node in oracle.list_nodes():
+    nodes = oracle.list_nodes()
+    dup_keys = _duplicate_pubkeys(nodes)
+    for node in nodes:
         node_id = str(node.get("node_id") or "")
         if not node_id:
+            continue
+        pk = (node.get("device_pubkey") or "").strip().lower()
+        if pk and pk in dup_keys:
+            trees.append(tree_day_from_observation(
+                tree_id=node_id, wallet_address=node.get("wallet_address"),
+                declared_sensors=[], hours_with_readings=0, eligible=False,
+                ineligible_reason=f"device key shared with another Tree "
+                                  f"({pk[:12]}…) — one board, one identity"))
             continue
         try:
             uptime = oracle.get_uptime(node_id, season)

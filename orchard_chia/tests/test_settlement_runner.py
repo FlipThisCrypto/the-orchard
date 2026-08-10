@@ -93,3 +93,34 @@ def test_settle_with_yes_records_and_a_rerun_reports_already_settled(
     capsys.readouterr()
     assert main(["settle", "--season", "1", "--yes"]) == 0
     assert "already settled" in capsys.readouterr().out
+
+
+def test_a_cloned_device_key_disqualifies_every_claimant():
+    """One physical board earning as two Trees. Both go ineligible — between a
+    clone and its original the oracle cannot tell which is the imposter, and
+    the honest operator is the one who can fix it."""
+    pk = "02" + "ab" * 32
+    src = FakeOracle(
+        [{"node_id": "T1", "wallet_address": W, "sensors": ["s"],
+          "device_pubkey": pk},
+         {"node_id": "T2", "wallet_address": W, "sensors": ["s"],
+          "device_pubkey": pk},
+         {"node_id": "T3", "wallet_address": W, "sensors": ["s"],
+          "device_pubkey": "02" + "cd" * 32}],
+        {"T1": {"hours_online": 24}, "T2": {"hours_online": 24},
+         "T3": {"hours_online": 24}})
+    trees = observe_season(src, 74)
+    by_id = {t.tree_id: t for t in trees}
+    assert not by_id["T1"].eligible and not by_id["T2"].eligible
+    assert "one board, one identity" in by_id["T1"].ineligible_reason
+    assert by_id["T3"].eligible, "an honest Tree is untouched"
+
+
+def test_nodes_without_a_pubkey_are_not_treated_as_clones_of_each_other():
+    """Absent is not equal: two legacy nodes with no pubkey share nothing."""
+    src = FakeOracle(
+        [{"node_id": "T1", "wallet_address": W, "sensors": ["s"]},
+         {"node_id": "T2", "wallet_address": W, "sensors": ["s"]}],
+        {"T1": {"hours_online": 24}, "T2": {"hours_online": 24}})
+    trees = observe_season(src, 74)
+    assert all(t.eligible for t in trees)
