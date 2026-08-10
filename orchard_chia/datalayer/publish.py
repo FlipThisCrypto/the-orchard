@@ -23,6 +23,7 @@ from . import ops_log, schedule, schema
 from .config import CONFIG_PATH, load
 from .oracle import OracleClient, OracleError
 from .publish_watermark import PublishWatermark
+from ..allocation.lock import LockBusy, RunLock
 from . import exit_codes
 from .rpc import ChiaRpcError, DataLayerRpc
 
@@ -407,6 +408,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         return exit_codes.USAGE
 
+    # One lock for every DataLayer writer, held for the whole run. The
+    # scheduler and an operator's manual run WILL coincide eventually, and two
+    # concurrent batch_updates mean two fees and a final state decided by
+    # mempool ordering. Publish and attest share the lock because they mutate
+    # the same store. Dry runs skip it: they read, and blocking a report
+    # because a write is in flight teaches people to delete lock files.
+    if not dry_run:
+        try:
+            _writer_lock = RunLock(DEFAULT_WATERMARK_PATH.parent / "datalayer-writer.lock",
+                                   break_after_seconds=6 * 3600).acquire()
+        except LockBusy as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return exit_codes.USAGE
+    else:
+        _writer_lock = None
+    try:
+        return _publish_run(cfg, dry_run, lookback)
+    finally:
+        if _writer_lock is not None:
+            _writer_lock.release()
+
+
+def _publish_run(cfg, dry_run, lookback):
     with ops_log.ops_run(
         "publish",
         dry_run=dry_run,

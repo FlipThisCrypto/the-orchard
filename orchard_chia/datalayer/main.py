@@ -27,6 +27,7 @@ from . import (attest, config, confirm, exit_codes, ops_log, provenance, schedul
                schema, seal)
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
+from ..allocation.lock import LockBusy, RunLock
 
 
 ATTEST_WRITE_PLACEHOLDERS_ENV = "ORCHARD_ATTEST_WRITE_PLACEHOLDERS"
@@ -219,8 +220,21 @@ def main() -> int:
         )
         return exit_codes.USAGE
 
-    with ops_log.ops_run("attest", store_id_set=True) as run:
-        return _attest_body(cfg, run)
+    # Same lock as publish: both writers mutate the same store, and attest has
+    # no watermark at all — two overlapping attest runs each read get_value,
+    # each see the old bytes, and each pay to write.
+    from pathlib import Path as _P
+    lock_path = _P(__file__).resolve().parents[1] / "data" / "datalayer-writer.lock"
+    try:
+        _writer_lock = RunLock(lock_path, break_after_seconds=6 * 3600).acquire()
+    except LockBusy as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return exit_codes.USAGE
+    try:
+        with ops_log.ops_run("attest", store_id_set=True) as run:
+            return _attest_body(cfg, run)
+    finally:
+        _writer_lock.release()
 
 
 def _attest_body(cfg, run: ops_log.OpsRun) -> int:
