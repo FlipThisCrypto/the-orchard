@@ -132,3 +132,20 @@ def test_dry_run_is_the_default_and_spends_nothing(world):
     spender = FakeSpender()
     report = execute(p.plan, store=store, spender=spender)
     assert report.dry_run and spender.sends == []
+
+
+def test_a_paid_day_records_the_paying_cycle(world):
+    """ledger -> cycle -> tx ids, no hash reconstruction."""
+    ledger, store, _ = world
+    p = plan_day_payment(ledger, 0, store=store, asset_id=ASSET,
+                         genesis=GENESIS, limits=limits(),
+                         available_balance_mojos=10**12, dry_run=False)
+    execute(p.plan, store=store, spender=FakeSpender())
+    mark_paid(ledger, 0, cycle_id=p.plan.cycle_id)
+
+    row = ledger._c.execute(
+        "SELECT paid_cycle FROM settled_days WHERE day_index=0").fetchone()
+    assert row["paid_cycle"] == p.plan.cycle_id
+    # And the join lands: the audit store has that cycle's instructions.
+    ins = store.instructions(p.plan.cycle_id)
+    assert ins and all(i.tx_id for i in ins)

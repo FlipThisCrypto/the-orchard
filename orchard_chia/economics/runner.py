@@ -432,7 +432,7 @@ def _cmd_pay(ledger_path: Path, args) -> int:
             print("some instructions failed; day stays unpaid — see the audit "
                   "store.", file=sys.stderr)
             return 3
-        payment.mark_paid(led, day)
+        payment.mark_paid(led, day, cycle_id=dp.plan.cycle_id)
         print(f"paid. day {day} marked in the ledger.")
         return 0
 

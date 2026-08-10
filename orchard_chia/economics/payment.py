@@ -50,13 +50,21 @@ class DayPayment:
 
 
 def ensure_paid_column(ledger: PoolLedger) -> None:
-    """Additive column recording when a day's payment fully left the wallet."""
+    """Additive columns recording when — and via WHICH cycle — a day was paid.
+
+    paid_cycle is the join key into the payment audit store, where the
+    per-wallet instructions and their tx ids live. An auditor walks
+    ledger -> cycle -> transactions without reconstructing a hash.
+    """
     cols = {r[1] for r in ledger._c.execute(
         "PRAGMA table_info(settled_days)").fetchall()}
     if "paid_at" not in cols:
         ledger._c.execute(
             "ALTER TABLE settled_days ADD COLUMN paid_at TEXT")
-        ledger._c.commit()
+    if "paid_cycle" not in cols:
+        ledger._c.execute(
+            "ALTER TABLE settled_days ADD COLUMN paid_cycle TEXT")
+    ledger._c.commit()
 
 
 def unpaid_days(ledger: PoolLedger) -> list[int]:
@@ -68,11 +76,12 @@ def unpaid_days(ledger: PoolLedger) -> list[int]:
     return [int(r["day_index"]) for r in rows]
 
 
-def mark_paid(ledger: PoolLedger, day_index: int) -> None:
+def mark_paid(ledger: PoolLedger, day_index: int,
+              cycle_id: str | None = None) -> None:
     ensure_paid_column(ledger)
     ledger._c.execute(
-        "UPDATE settled_days SET paid_at=? WHERE day_index=?",
-        (datetime.now(timezone.utc).isoformat(), day_index))
+        "UPDATE settled_days SET paid_at=?, paid_cycle=? WHERE day_index=?",
+        (datetime.now(timezone.utc).isoformat(), cycle_id, day_index))
     ledger._c.commit()
 
 
