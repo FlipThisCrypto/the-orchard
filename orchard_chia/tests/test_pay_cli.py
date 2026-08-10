@@ -151,3 +151,52 @@ def test_settle_without_season_or_all_explains(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ORCHARD_ASSET_ID", ASSET)
     assert main(["settle"]) == 2
     assert "--season N or --all" in capsys.readouterr().err
+
+
+def test_a_crash_between_send_and_mark_paid_heals(settled, tmp_path,
+                                                  monkeypatch, capsys):
+    """Simulate the wedge: pay live, executor sends, mark_paid never runs.
+    The next pay must recognise the fully-sent cycle and record it, not refuse
+    forever."""
+    from orchard_chia.allocation import audit as audit_mod
+    from orchard_chia.allocation.executor import execute
+    from orchard_chia.allocation.planner import PlannerLimits
+    from orchard_chia.economics import payment
+    from orchard_chia.economics.runner import _cmd_pay  # noqa: F401 (import check)
+
+    class Spender:
+        def spendable_balance(self):
+            return 10**12
+
+        def send(self, ins):
+            return "0xtxdead"
+
+        def confirmed(self, tx):
+            return True
+
+    ledger_path = tmp_path / "pool.db"
+    audit_path = ledger_path.with_name("payment_audit.db")
+    genesis = datetime(2026, 5, 27, tzinfo=timezone.utc)
+    with PoolLedger(ledger_path) as led, audit_mod.AuditStore(audit_path) as store:
+        dp = payment.plan_day_payment(
+            led, 0, store=store, asset_id=ASSET, genesis=genesis,
+            limits=PlannerLimits(max_per_cycle_mojos=10**12,
+                                 max_per_wallet_mojos=10**12),
+            available_balance_mojos=10**12, dry_run=False)
+        report = execute(dp.plan, store=store, spender=Spender())
+        assert report.ok
+        # crash here: mark_paid never runs.
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("ORCHARD_PAY_MAX_CYCLE_MOJOS", str(10**12))
+    monkeypatch.setenv("ORCHARD_PAY_MAX_WALLET_MOJOS", str(10**12))
+    monkeypatch.setenv("ORCHARD_PAY_WALLET_ID", "3")
+    rc = main(["pay", "--day", "0", "--i-understand-this-spends-real-tokens"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "healed" in out
+
+    with PoolLedger(ledger_path) as led:
+        row = led._c.execute(
+            "SELECT paid_at, paid_cycle FROM settled_days WHERE day_index=0"
+        ).fetchone()
+        assert row["paid_at"] and row["paid_cycle"]

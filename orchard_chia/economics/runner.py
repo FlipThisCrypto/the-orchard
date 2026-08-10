@@ -428,6 +428,23 @@ def _cmd_pay(ledger_path: Path, args) -> int:
             print(f"refused: {e}", file=sys.stderr)
             return 2
 
+        # Crash-heal: a death between "executor sent everything" and
+        # "mark_paid" leaves the ledger saying unpaid while the audit store
+        # says sent — and every re-run is then blocked "already sent", forever,
+        # unless someone edits a database by hand. When the plan is blocked AND
+        # the cycle's every instruction reads SENT, the money demonstrably
+        # moved: record the fact rather than refusing to acknowledge it.
+        # Anything short of ALL sent (a mid-send row, a failed row) stays
+        # blocked — healing is only for the case where nothing is in doubt.
+        if dp.plan.blocked_by:
+            rows = store.instructions(dp.plan.cycle_id)
+            if rows and all(r.state == "sent" and r.tx_id for r in rows):
+                payment.mark_paid(led, day, cycle_id=dp.plan.cycle_id)
+                print(f"healed: day {day} was fully sent in a previous run "
+                      f"(cycle {dp.plan.cycle_id[:12]}, every instruction has "
+                      f"a tx id) but the ledger was never marked. Marked paid.")
+                return 0
+
         print(f"day {day}: {format_juice(dp.total_mojos)} JUICE across "
               f"{len(dp.plan.instructions)} wallet(s)"
               + ("   DRY RUN — nothing sent" if dry else ""))
