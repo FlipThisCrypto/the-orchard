@@ -177,9 +177,14 @@ def render(settlement: Settlement, *, season: int, dry: bool) -> str:
          f"  pool after   {format_juice(settlement.pool_closing_mojos)}",
          ""]
     for x in r.rewards:
+        # The basis is the difference between "the chain proves this" and "the
+        # oracle says so" — exactly what the human deciding on --yes needs in
+        # front of them, not only in the ledger afterwards.
         L.append(f"   {x.tree_id[:12]:12} {x.verified_heartbeats:2d}/24  "
                  f"w={float(x.sensor_weight):.2f}  "
-                 f"-> {format_juice(x.reward_mojos):>14}  {x.wallet_address[:18]}…")
+                 f"-> {format_juice(x.reward_mojos):>14}  "
+                 f"[{getattr(x, 'heartbeat_basis', 'oracle-hours')}]  "
+                 f"{x.wallet_address[:18]}…")
     for t in r.ineligible:
         L.append(f"   {t.tree_id[:12]:12} ineligible: {t.ineligible_reason}")
     if not r.rewards and not r.ineligible:

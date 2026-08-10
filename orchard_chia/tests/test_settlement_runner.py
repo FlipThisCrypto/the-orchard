@@ -224,3 +224,16 @@ def test_a_long_dead_ghost_still_earns_nothing(monkeypatch):
     src = RetiringOracle([], {"GHOST": {"hours_online": 0}})
     trees = observe_season(src, 74)
     assert trees[0].verified_heartbeats == 0
+
+
+def test_the_report_shows_each_trees_basis(monkeypatch, capsys):
+    """The reviewer deciding on --yes must see whether a number is
+    chain-verified or oracle-trusted, per Tree, in the report itself."""
+    from orchard_chia.economics.runner import render
+    from orchard_chia.economics import TreeDay, settle_day
+    import dataclasses
+    t = TreeDay(tree_id="T1", wallet_address=W, qualifying_sensors=1,
+                verified_heartbeats=9, heartbeat_basis="chain:verified_hours")
+    s = settle_day([t], day_index=0, pool_remaining_mojos=10**9)
+    text = render(s, season=1, dry=True)
+    assert "[chain:verified_hours]" in text
