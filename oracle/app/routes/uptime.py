@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, seasons
 from ..db import get_db
+from ..sensor_classes import qualifying_sensor_classes
 from ..uptime_calc import hours_online_for
 
 router = APIRouter()
@@ -27,6 +28,11 @@ class UptimeResponse(BaseModel):
     season_end_utc: datetime
     hours_online: int
     hour_buckets: list[str]
+    # Measurement classes that actually earned the sensor bonus this season:
+    # approved class + persistent reporting. NOT the payload's declared names —
+    # six junk keys in one reading is a declaration, not instrumentation.
+    qualifying_sensor_count: int = 0
+    qualifying_sensor_classes: list[str] = []
 
 
 @router.get("/uptime/{node_id}/{season}", response_model=UptimeResponse)
@@ -39,6 +45,7 @@ def uptime_for_season(node_id: str, season: int, db: Session = Depends(get_db)) 
 
     start, end = seasons.season_bounds(season)
     _, hit_buckets = hours_online_for(db, node_id, season)
+    q_count, q_classes = qualifying_sensor_classes(db, node_id, season)
     return UptimeResponse(
         node_id=node_id,
         season=season,
@@ -46,4 +53,6 @@ def uptime_for_season(node_id: str, season: int, db: Session = Depends(get_db)) 
         season_end_utc=end,
         hours_online=len(hit_buckets),
         hour_buckets=hit_buckets,
+        qualifying_sensor_count=q_count,
+        qualifying_sensor_classes=q_classes,
     )

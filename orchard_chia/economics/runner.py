@@ -68,9 +68,17 @@ def observe_season(oracle: OracleClient, season: int) -> list:
                 hours_with_readings=0, eligible=False,
                 ineligible_reason=f"uptime unreadable: {str(e)[:80]}"))
             continue
+        # Prefer the oracle's QUALIFIED sensor classes (approved + persistent)
+        # over the payload's declared names. Declared names are what a Tree
+        # says about itself; qualified classes are what it demonstrated all
+        # day. Fall back to declarations only for an oracle predating the
+        # field, and the report's weight column makes which one was used
+        # visible per Tree.
+        q = uptime.get("qualifying_sensor_classes")
+        sensors = q if isinstance(q, list) else (node.get("sensors") or [])
         trees.append(tree_day_from_observation(
             tree_id=node_id, wallet_address=node.get("wallet_address"),
-            declared_sensors=node.get("sensors") or [],
+            declared_sensors=sensors,
             hours_with_readings=hours))
     return trees
 
