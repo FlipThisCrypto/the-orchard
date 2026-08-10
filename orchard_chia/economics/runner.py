@@ -184,8 +184,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     rp = sub.add_parser("report", help="dry-run the next unsettled closed season")
     rp.add_argument("--season", type=int, default=None)
-    sp = sub.add_parser("settle", help="record one closed season in the ledger")
-    sp.add_argument("--season", type=int, required=True)
+    sp = sub.add_parser("settle", help="record closed season(s) in the ledger")
+    sp.add_argument("--season", type=int, default=None,
+                    help="one season (default with --all: every unsettled closed one)")
+    sp.add_argument("--all", action="store_true", dest="settle_all",
+                    help="settle every unsettled closed season, oldest first")
     sp.add_argument("--yes", action="store_true",
                     help="actually write (default is dry-run)")
     sub.add_parser("status", help="pool balance, runway, unpaid backlog")
@@ -209,6 +212,11 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_pay(ledger_path, args)
     if args.cmd == "status":
         return _cmd_status(ledger_path, current)
+    if args.cmd == "settle" and args.settle_all:
+        return _cmd_settle_all(ledger_path, oracle, current, yes=args.yes)
+    if args.cmd == "settle" and args.season is None:
+        print("settle needs --season N or --all", file=sys.stderr)
+        return 2
 
     with ledger_mod.PoolLedger(ledger_path) as led:
         snap = led.snapshot()
@@ -249,6 +257,51 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nrecorded. pool: {format_juice(led.snapshot().remaining_mojos)} "
               f"JUICE remaining.")
         return 0
+
+
+def _cmd_settle_all(ledger_path: Path, oracle, current: int, *, yes: bool) -> int:
+    """Every unsettled closed season, oldest first, one ledger write each.
+
+    Stops at the first failure rather than skipping it: a gap left silently
+    would make every later day's opening balance wrong, which is exactly the
+    corruption the ledger's settle-backwards refusal exists to catch. Dry by
+    default like everything else; the dry run prints the season list and the
+    would-be totals without touching the ledger.
+    """
+    from .constants import format_juice
+    with ledger_mod.PoolLedger(ledger_path) as led:
+        first = (led.snapshot().last_day_index + 2
+                 if led.snapshot().last_day_index is not None else 1)
+        pending = [s for s in range(first, current)
+                   if not led.is_settled(day_index_for_season(s))]
+        if not pending:
+            print("nothing to settle — the ledger is current.")
+            return 0
+        print(f"{len(pending)} closed season(s) to settle: "
+              f"{pending[0]}..{pending[-1]}"
+              + ("" if yes else "   DRY RUN — ledger untouched"))
+        total = 0
+        for season in pending:
+            try:
+                trees = observe_season(oracle, season)
+            except OracleError as e:
+                print(f"season {season}: oracle unreachable ({e}); stopping "
+                      f"here so no gap is skipped.", file=sys.stderr)
+                return 3
+            snap = led.snapshot()
+            settlement = settle_day(trees, day_index=day_index_for_season(season),
+                                    pool_remaining_mojos=snap.remaining_mojos)
+            total += settlement.distributed_mojos
+            print(f"  season {season:4d}: distributed "
+                  f"{format_juice(settlement.distributed_mojos):>14}, "
+                  f"unearned {format_juice(settlement.unearned_mojos):>14}")
+            if yes:
+                led.record(settlement)
+        print(f"{'recorded' if yes else 'would record'}: "
+              f"{format_juice(total)} JUICE across {len(pending)} day(s); "
+              f"pool {'now' if yes else 'would be'} "
+              f"{format_juice(led.snapshot().remaining_mojos - (0 if yes else total))} JUICE.")
+    return 0
 
 
 def _cmd_status(ledger_path: Path, current_season: int) -> int:

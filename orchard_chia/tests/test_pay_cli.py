@@ -103,3 +103,51 @@ def test_status_surfaces_a_stuck_payment(settled, tmp_path, monkeypatch, capsys)
     assert main(["status"]) == 0
     out = capsys.readouterr().out
     assert "MID-SEND" in out and "blocked until resolved" in out
+
+
+def test_settle_all_is_dry_by_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "a.db"))
+    monkeypatch.setenv("ORCHARD_ASSET_ID", ASSET)
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner.OracleClient",
+        lambda url, tok: _FakeOracleAll())
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner.schedule.season_number_for",
+        lambda now: 4)
+    assert main(["settle", "--all"]) == 0
+    out = capsys.readouterr().out
+    assert "3 closed season(s) to settle: 1..3" in out and "DRY RUN" in out
+    with PoolLedger(tmp_path / "a.db") as led:
+        assert led.snapshot().days_settled == 0
+
+
+class _FakeOracleAll:
+    def list_nodes(self):
+        return [{"node_id": "T1", "wallet_address": W, "sensors": ["s"]}]
+
+    def get_uptime(self, node_id, season):
+        return {"hours_online": 24}
+
+
+def test_settle_all_with_yes_records_everything(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "b.db"))
+    monkeypatch.setenv("ORCHARD_ASSET_ID", ASSET)
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner.OracleClient",
+        lambda url, tok: _FakeOracleAll())
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner.schedule.season_number_for",
+        lambda now: 4)
+    assert main(["settle", "--all", "--yes"]) == 0
+    with PoolLedger(tmp_path / "b.db") as led:
+        assert led.snapshot().days_settled == 3
+    capsys.readouterr()
+    assert main(["settle", "--all", "--yes"]) == 0
+    assert "nothing to settle" in capsys.readouterr().out
+
+
+def test_settle_without_season_or_all_explains(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "c.db"))
+    monkeypatch.setenv("ORCHARD_ASSET_ID", ASSET)
+    assert main(["settle"]) == 2
+    assert "--season N or --all" in capsys.readouterr().err
