@@ -65,6 +65,39 @@ def classes_for(sensor_name: str) -> set[str]:
 
 SENSOR_QUALIFY_MIN_HOURS = 12   # half a day: a sensor, not a declaration
 
+# Physical plausibility per reported field. A value outside its range means
+# the reading, whatever produced it, is not a measurement of the quantity the
+# bonus pays for — a disconnected probe reads -127, a shorted ADC rails high,
+# and a fabricated payload can claim anything. Out-of-range values do not
+# count toward a sensor's persistence (the hour is ignored for that sensor);
+# fields not listed here are not judged. Ranges are generous on purpose:
+# the record low/high on Earth sit comfortably inside them, so an honest
+# operator can never be clipped by weather.
+PLAUSIBLE_RANGES: dict[str, tuple[float, float]] = {
+    "temperature_c": (-90.0, 60.0),
+    "humidity_pct": (0.0, 100.0),
+    "pressure_hpa": (300.0, 1100.0),
+    "co2_ppm": (250.0, 40000.0),
+    "pm25_ugm3": (0.0, 1000.0),
+    "pm10_ugm3": (0.0, 2000.0),
+    "lux": (0.0, 200000.0),
+    "uv_index": (0.0, 15.0),
+    "soil_moisture_pct": (0.0, 100.0),
+}
+
+
+def _values_plausible(value: object) -> bool:
+    """True unless a KNOWN field carries an impossible number."""
+    if not isinstance(value, dict):
+        return True          # scalar / bool payloads carry no judged fields
+    for field, v in value.items():
+        rng = PLAUSIBLE_RANGES.get(str(field).lower())
+        if rng is None or not isinstance(v, (int, float)) or isinstance(v, bool):
+            continue
+        if not (rng[0] <= float(v) <= rng[1]):
+            return False
+    return True
+
 
 def qualifying_sensor_classes(db: Session, node_id: str, season: int,
                               *, min_hours: int = SENSOR_QUALIFY_MIN_HOURS
@@ -96,6 +129,8 @@ def qualifying_sensor_classes(db: Session, node_id: str, season: int,
         for name, value in sensors.items():
             if value is None:
                 continue        # a null is a declaration, not a measurement
+            if not _values_plausible(value):
+                continue        # an impossible number is not a measurement either
             hours_by_sensor.setdefault(str(name).lower(), set()).add(bucket)
 
     qualified: set[str] = set()

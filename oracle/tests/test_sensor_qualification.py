@@ -110,3 +110,42 @@ def test_the_uptime_endpoint_carries_the_qualified_classes(session):
         j = c.get(f"/uptime/{NODE}/{SEASON}").json()
     assert j["qualifying_sensor_count"] == 1
     assert j["qualifying_sensor_classes"] == ["temperature"]
+
+
+def test_impossible_values_do_not_qualify(session):
+    """5000 degrees, persistently, is not a thermometer."""
+    for h in range(20):
+        _reading(session, h, {"ds18b20": {"temperature_c": 5000.0}})
+    assert qualifying_sensor_classes(session, NODE, SEASON) == (0, [])
+
+
+def test_a_disconnected_probe_reading_does_not_qualify(session):
+    """-127 is the DS18B20's disconnected sentinel."""
+    for h in range(20):
+        _reading(session, h, {"ds18b20": {"temperature_c": -127.0}})
+    assert qualifying_sensor_classes(session, NODE, SEASON) == (0, [])
+
+
+def test_plausible_extremes_still_qualify(session):
+    """Ranges are generous: record cold on Earth must never clip an honest
+    operator."""
+    for h in range(14):
+        _reading(session, h, {"ds18b20": {"temperature_c": -67.8}})
+    n, classes = qualifying_sensor_classes(session, NODE, SEASON)
+    assert classes == ["temperature"]
+
+
+def test_unknown_fields_are_not_judged(session):
+    for h in range(14):
+        _reading(session, h, {"ds18b20": {"temperature_c": 20.0,
+                                          "vendor_diag": 99999}})
+    assert qualifying_sensor_classes(session, NODE, SEASON)[0] == 1
+
+
+def test_a_bad_spell_only_costs_those_hours(session):
+    """12 good hours + 8 impossible ones: still qualifies on the good 12."""
+    for h in range(12):
+        _reading(session, h, {"ds18b20": {"temperature_c": 20.0}})
+    for h in range(12, 20):
+        _reading(session, h, {"ds18b20": {"temperature_c": 5000.0}})
+    assert qualifying_sensor_classes(session, NODE, SEASON)[0] == 1
