@@ -350,6 +350,25 @@ def main(argv: list[str] | None = None) -> int:
             print("[orchard.payout] nothing to send.")
             return 0
 
+        # SUPERSEDED MODEL — spending is disarmed. This CLI pays 1 JUICE per
+        # Tree per day with no network ceiling; the ratified model (2026-08-10,
+        # docs/token/EMISSION.md) is `python -m orchard_chia.economics pay`.
+        # Reports and dry runs remain available for reconciling history, but a
+        # spend under a dead model must be an unmistakably deliberate act, not
+        # muscle memory with --yes. Deprecation in a docstring stops nobody.
+        import os as _os
+        if (args.confirm or args.yes) and _os.environ.get(
+                "ORCHARD_PAYOUT_SUPERSEDED_MODEL_ACK", "") != "i-know":
+            print(
+                "[orchard.payout] REFUSED: this pays under the SUPERSEDED "
+                "1-JUICE/Tree/day model with no emission ceiling.\n"
+                "The current model is:  python -m orchard_chia.economics pay\n"
+                "To spend under the old model anyway (e.g. honouring a "
+                "historical obligation), set "
+                "ORCHARD_PAYOUT_SUPERSEDED_MODEL_ACK=i-know and re-run.",
+                file=sys.stderr)
+            return 2
+
         # Dry-run by default.
         if not (args.confirm or args.yes):
             print("[orchard.payout] DRY RUN (re-run with --confirm or --yes "
