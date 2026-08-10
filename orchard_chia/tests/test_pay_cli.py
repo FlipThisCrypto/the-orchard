@@ -200,3 +200,24 @@ def test_a_crash_between_send_and_mark_paid_heals(settled, tmp_path,
             "SELECT paid_at, paid_cycle FROM settled_days WHERE day_index=0"
         ).fetchone()
         assert row["paid_at"] and row["paid_cycle"]
+
+
+def test_settle_writes_an_ops_journal_entry(tmp_path, monkeypatch):
+    """The commands that move value journal like the ones that move data."""
+    import json
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "j.db"))
+    monkeypatch.setenv("ORCHARD_ASSET_ID", ASSET)
+    monkeypatch.setenv("ORCHARD_OPS_LOG_DIR", str(tmp_path / "ops"))
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner.OracleClient",
+        lambda url, tok: _FakeOracleAll())
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner.schedule.season_number_for",
+        lambda now: 3)
+    assert main(["settle", "--season", "1", "--yes"]) == 0
+    journal = tmp_path / "ops" / "settle.jsonl"
+    assert journal.exists()
+    events = [json.loads(l) for l in journal.read_text(encoding="utf-8").splitlines()]
+    assert any(e.get("event") == "finish" and e.get("season") == 1
+               for e in events) or any(e.get("season") == 1 for e in events)

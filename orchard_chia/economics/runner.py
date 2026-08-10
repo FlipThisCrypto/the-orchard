@@ -34,7 +34,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..datalayer import schedule
+from ..datalayer import ops_log, schedule
 from ..datalayer.oracle import OracleClient, OracleError
 from . import ledger as ledger_mod
 from .constants import format_juice
@@ -266,7 +266,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.cmd == "settle":
                 print("\nDry run — re-run with --yes to record.")
             return 0
-        led.record(settlement)
+        with ops_log.ops_run("settle", season=season,
+                             distributed_mojos=settlement.distributed_mojos,
+                             unearned_mojos=settlement.unearned_mojos,
+                             eligible=len(settlement.rewards.rewards)) as run:
+            led.record(settlement)
+            run.note("recorded", pool_closing=settlement.pool_closing_mojos)
         print(f"\nrecorded. pool: {format_juice(led.snapshot().remaining_mojos)} "
               f"JUICE remaining.")
         return 0
@@ -309,7 +314,11 @@ def _cmd_settle_all(ledger_path: Path, oracle, current: int, *, yes: bool) -> in
                   f"{format_juice(settlement.distributed_mojos):>14}, "
                   f"unearned {format_juice(settlement.unearned_mojos):>14}")
             if yes:
-                led.record(settlement)
+                with ops_log.ops_run("settle", season=season,
+                                     distributed_mojos=settlement.distributed_mojos,
+                                     unearned_mojos=settlement.unearned_mojos,
+                                     eligible=len(settlement.rewards.rewards)):
+                    led.record(settlement)
         print(f"{'recorded' if yes else 'would record'}: "
               f"{format_juice(total)} JUICE across {len(pending)} day(s); "
               f"pool {'now' if yes else 'would be'} "
@@ -454,7 +463,13 @@ def _cmd_pay(ledger_path: Path, args) -> int:
             print(f"   ! {b}")
         if dry:
             return 0
-        report = execute(dp.plan, store=store, spender=_spender())
+        with ops_log.ops_run("pay", day=day, cycle=dp.plan.cycle_id,
+                             total_mojos=dp.total_mojos,
+                             wallets=len(dp.plan.instructions)) as run:
+            report = execute(dp.plan, store=store, spender=_spender())
+            run.note("executed", sent=len(report.sent),
+                     failed=len(report.failed),
+                     halted=bool(report.halted_reason))
         if report.halted_reason:
             print(f"HALTED: {report.halted_reason}", file=sys.stderr)
             return 3
