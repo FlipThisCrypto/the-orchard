@@ -137,7 +137,15 @@ class Settings(BaseSettings):
     # 60x overstatement the quorum exists to stop.
     min_readings_per_credited_hour: int = 30
 
-    require_seq: bool = False
+    # Replay protection ON by default. It was off, which meant seq was
+    # TRACKED but a replayed reading was silently accepted — and since hours
+    # became heartbeats became $JUICE, a captured reading replayed 30 times
+    # minted a credited hour. Safe to enforce: firmware has sent seq since the
+    # NVS watermark landed (identity.cpp reserves a block ahead, so seq never
+    # regresses across a reboot), and every seq-less legacy node is retired.
+    # A Tree that genuinely cannot send seq surfaces as a 400 with "reflash",
+    # not as silent uptime loss.
+    require_seq: bool = True
 
     # Reading freshness (HANDOVER D6/T6). When > 0, POST /readings rejects a
     # reading whose signed `ts` (real UTC epoch seconds, set once the Tree's
