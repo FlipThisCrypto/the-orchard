@@ -69,13 +69,29 @@ no write), or another publish/attest is running (shared writer lock,
 ## Rewards (the ratified economics — daily)
 
 The emission model (docs/token/EMISSION.md; fixed 85M pool, network-wide daily
-ceiling, unearned rewards extend the runway) has its own three-step surface:
+ceiling, unearned rewards extend the runway):
 
 ```powershell
+python -m orchard_chia.economics status               # pool, runway, backlog, stuck payments
+python -m orchard_chia.economics audit                # the ledger proves itself (exit 1 on any contradiction)
 python -m orchard_chia.economics report               # dry: next unsettled season
 python -m orchard_chia.economics settle --season N    # dry until --yes
+python -m orchard_chia.economics settle --all         # catch up every closed season, dry until --yes
 python -m orchard_chia.economics pay                  # dry until two acts (below)
 ```
+
+Worth knowing:
+
+- Settlement includes **recently retired Trees** for the season being settled —
+  retirement ends a Tree's future, not its history — and a sealed on-chain
+  season **outranks the oracle's own count** when `ORCHARD_SETTLE_CHAIN=1`.
+- `pay` **self-heals** the crash between "everything sent" and "ledger marked":
+  a fully-sent cycle found unmarked is recorded, not refused forever.
+- settle and live pay write ops journals (`ops/settle.jsonl`, `ops/pay.jsonl`)
+  like publish and attest.
+- Attest lookback defaults to **45 seasons**; `max_lookback_seasons: null`
+  keeps unlimited. The legacy `orchard_chia.allocation` spender is disarmed
+  like the legacy payout (`ORCHARD_ALLOCATION_SUPERSEDED_MODEL_ACK`).
 
 - **settle** records a CLOSED season's per-Tree rewards in the pool ledger
   (`orchard_chia/data/pool_ledger.db`). The balance is derived, append-only,
