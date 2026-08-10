@@ -145,6 +145,12 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--season", type=int, required=True)
     sp.add_argument("--yes", action="store_true",
                     help="actually write (default is dry-run)")
+    pp = sub.add_parser("pay", help="plan (and with two explicit acts, send) "
+                                    "the spend for settled unpaid days")
+    pp.add_argument("--day", type=int, default=None,
+                    help="one settled day (default: oldest unpaid)")
+    pp.add_argument("--i-understand-this-spends-real-tokens",
+                    action="store_true", dest="live_ack")
     args = p.parse_args(argv)
 
     oracle_url = os.environ.get("ORCHARD_ORACLE_URL",
@@ -154,6 +160,9 @@ def main(argv: list[str] | None = None) -> int:
     ledger_path = Path(os.environ.get("ORCHARD_POOL_LEDGER", str(DEFAULT_LEDGER)))
 
     current = schedule.season_number_for(datetime.now(timezone.utc))
+
+    if args.cmd == "pay":
+        return _cmd_pay(ledger_path, args)
 
     with ledger_mod.PoolLedger(ledger_path) as led:
         snap = led.snapshot()
@@ -194,6 +203,104 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nrecorded. pool: {format_juice(led.snapshot().remaining_mojos)} "
               f"JUICE remaining.")
         return 0
+
+
+def _cmd_pay(ledger_path: Path, args) -> int:
+    """Pay one settled day. Dry unless DRY_RUN=false AND the explicit flag —
+    the same two-act rule as the allocation service, for the same reason: a
+    flag alone survives in shell history and systemd units; a flag PLUS an
+    environment variable is a decision made today."""
+    from ..allocation import audit as audit_mod
+    from ..allocation.executor import execute
+    from ..allocation.planner import PlannerLimits
+    from . import payment
+    from .constants import format_juice
+
+    dry = os.environ.get("DRY_RUN", "true").strip().lower() not in (
+        "false", "0", "no", "off")
+    if not dry and not args.live_ack:
+        print("DRY_RUN is false but --i-understand-this-spends-real-tokens "
+              "was not given. Nothing was planned or sent.", file=sys.stderr)
+        return 2
+
+    genesis = datetime.combine(schedule.season_genesis_from_env(),
+                               datetime.min.time(), tzinfo=timezone.utc)
+    asset_id = os.environ.get("ORCHARD_ASSET_ID", "").strip()
+    if not asset_id:
+        print("ORCHARD_ASSET_ID is not set — refusing to guess which CAT to "
+              "send.", file=sys.stderr)
+        return 2
+
+    max_cycle = int(os.environ.get("ORCHARD_PAY_MAX_CYCLE_MOJOS", "0") or 0)
+    max_wallet = int(os.environ.get("ORCHARD_PAY_MAX_WALLET_MOJOS", "0") or 0)
+    if not dry and (max_cycle <= 0 or max_wallet <= 0):
+        print("a live payment needs ORCHARD_PAY_MAX_CYCLE_MOJOS and "
+              "ORCHARD_PAY_MAX_WALLET_MOJOS — ceilings that live outside the "
+              "files holding the amounts.", file=sys.stderr)
+        return 2
+
+    audit_path = ledger_path.with_name("payment_audit.db")
+    with ledger_mod.PoolLedger(ledger_path) as led,             audit_mod.AuditStore(audit_path) as store:
+        day = args.day
+        if day is None:
+            pending = payment.unpaid_days(led)
+            if not pending:
+                print("no settled unpaid days.")
+                return 0
+            day = pending[0]
+        try:
+            dp = payment.plan_day_payment(
+                led, day, store=store, asset_id=asset_id, genesis=genesis,
+                limits=PlannerLimits(
+                    max_per_cycle_mojos=max_cycle or (1 << 62),
+                    max_per_wallet_mojos=max_wallet or (1 << 62)),
+                available_balance_mojos=None if dry else _spender_balance(),
+                dry_run=dry)
+        except payment.PaymentError as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 2
+
+        print(f"day {day}: {format_juice(dp.total_mojos)} JUICE across "
+              f"{len(dp.plan.instructions)} wallet(s)"
+              + ("   DRY RUN — nothing sent" if dry else ""))
+        for i in dp.plan.instructions:
+            print(f"   {i.wallet_address[:24]}…  {format_juice(i.amount_mojos)}")
+        for b in dp.plan.blocked_by:
+            print(f"   ! {b}")
+        if dry:
+            return 0
+        report = execute(dp.plan, store=store, spender=_spender())
+        if report.halted_reason:
+            print(f"HALTED: {report.halted_reason}", file=sys.stderr)
+            return 3
+        if not report.ok:
+            print("some instructions failed; day stays unpaid — see the audit "
+                  "store.", file=sys.stderr)
+            return 3
+        payment.mark_paid(led, day)
+        print(f"paid. day {day} marked in the ledger.")
+        return 0
+
+
+def _spender():
+    from ..allocation.__main__ import _load_config, _spender as build
+    from .runner import os as _os
+    from types import SimpleNamespace
+    settings = SimpleNamespace(
+        wallet_id=int(_os.environ.get("ORCHARD_PAY_WALLET_ID", "0") or 0),
+        fee_mojos=int(_os.environ.get("ORCHARD_PAY_FEE_MOJOS", "0") or 0))
+    if not settings.wallet_id:
+        raise SystemExit("ORCHARD_PAY_WALLET_ID is required for a live payment")
+    return build(settings)
+
+
+def _spender_balance():
+    try:
+        return _spender().spendable_balance()
+    except SystemExit:
+        raise
+    except Exception:
+        return None
 
 
 if __name__ == "__main__":
