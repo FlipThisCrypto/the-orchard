@@ -55,7 +55,13 @@ def read_all_attestations(
     parse as JSON. Returns the surviving rows.
     """
     out: list[StoredAttestation] = []
-    keys = rpc.get_keys(store_id)
+    # STRICT read. The soft get_keys returns [] for an unreachable store,
+    # and this function's caller turns an empty list into "payable: 0 /
+    # refused: 0" and exits 0 — a payout run that reads NOTHING reporting
+    # itself as a correct run that owed nobody. Measured live before the
+    # pagination fix, that was every run. An unreadable store must be an
+    # error, never an empty ledger.
+    keys = rpc.get_keys_strict(store_id)
     for key_hex in keys:
         decoded = _decode_key(key_hex)
         if decoded is None:
