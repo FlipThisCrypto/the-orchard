@@ -235,3 +235,29 @@ def test_status_warns_when_the_ledger_fails_its_own_audit(settled, monkeypatch,
         led._c.commit()
     assert main(["status"]) == 0
     assert "FAILS ITS OWN AUDIT" in capsys.readouterr().out
+
+
+def test_an_absurd_fee_is_refused(monkeypatch):
+    """Fees are XCH, not JUICE — no JUICE ceiling covers them, and two extra
+    zeros would burn real money per instruction, silently."""
+    from orchard_chia.economics.runner import _fee_mojos
+    monkeypatch.setenv("ORCHARD_PAY_FEE_MOJOS", str(10**11))  # 0.1 XCH
+    monkeypatch.delenv("ORCHARD_PAY_FEE_CAP_ACK", raising=False)
+    with pytest.raises(SystemExit, match="sanity cap"):
+        _fee_mojos()
+
+
+def test_a_sane_fee_passes_and_the_ack_lifts_the_cap(monkeypatch):
+    from orchard_chia.economics.runner import _fee_mojos
+    monkeypatch.setenv("ORCHARD_PAY_FEE_MOJOS", "100000000")   # 0.0001 XCH
+    assert _fee_mojos() == 100_000_000
+    monkeypatch.setenv("ORCHARD_PAY_FEE_MOJOS", str(10**11))
+    monkeypatch.setenv("ORCHARD_PAY_FEE_CAP_ACK", "i-know")
+    assert _fee_mojos() == 10**11
+
+
+def test_a_negative_fee_is_refused(monkeypatch):
+    from orchard_chia.economics.runner import _fee_mojos
+    monkeypatch.setenv("ORCHARD_PAY_FEE_MOJOS", "-1")
+    with pytest.raises(SystemExit, match="negative"):
+        _fee_mojos()

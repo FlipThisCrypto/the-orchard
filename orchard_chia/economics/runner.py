@@ -498,6 +498,28 @@ def _cmd_pay(ledger_path: Path, args) -> int:
         return 0
 
 
+# Fees are XCH, not JUICE, and sit outside every JUICE ceiling. 0.01 XCH
+# per spend is far above any congestion need; anything higher is almost
+# certainly a pasted-wrong number, and each instruction would burn it
+# silently. Raising the cap is one deliberate env var, same shape as every
+# other ceiling in this stack.
+MAX_SANE_FEE_MOJOS = 10_000_000_000          # 0.01 XCH
+FEE_CAP_ACK = "ORCHARD_PAY_FEE_CAP_ACK"
+
+
+def _fee_mojos() -> int:
+    fee = int(os.environ.get("ORCHARD_PAY_FEE_MOJOS", "0") or 0)
+    if fee < 0:
+        raise SystemExit("ORCHARD_PAY_FEE_MOJOS cannot be negative")
+    if fee > MAX_SANE_FEE_MOJOS and os.environ.get(FEE_CAP_ACK, "") != "i-know":
+        raise SystemExit(
+            f"ORCHARD_PAY_FEE_MOJOS={fee} is {fee / 1e12:.4f} XCH PER SPEND — "
+            f"above the {MAX_SANE_FEE_MOJOS} (0.01 XCH) sanity cap and almost "
+            f"certainly a typo. Fees are XCH, not JUICE, and no JUICE ceiling "
+            f"covers them. If genuinely intended set {FEE_CAP_ACK}=i-know.")
+    return fee
+
+
 def _spender():
     from ..allocation.__main__ import _load_config
     from ..allocation.executor import build_spender
@@ -506,7 +528,7 @@ def _spender():
         raise SystemExit("ORCHARD_PAY_WALLET_ID is required for a live payment")
     return build_spender(
         wallet_id=wallet_id,
-        fee_mojos=int(os.environ.get("ORCHARD_PAY_FEE_MOJOS", "0") or 0),
+        fee_mojos=_fee_mojos(),
         wallet_cfg=(_load_config().get("wallet") or {}))
 
 
