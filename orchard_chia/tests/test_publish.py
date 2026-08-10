@@ -13,7 +13,7 @@ SEED = "01" + "00" * 31
 PUB = schema.pubkey_for_seed(SEED)
 
 
-def _signed_reading(ts_ms: int = 1_749_480_000_123, temp_mc: int = 21400) -> dict:
+def _signed_reading(ts_ms: int = 1_780_232_400_123, temp_mc: int = 21400) -> dict:
     body = metrics.unsigned_reading_body(
         node_id=NODE,
         ts_ms=ts_ms,

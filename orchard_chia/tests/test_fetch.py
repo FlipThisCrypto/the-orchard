@@ -27,7 +27,7 @@ def _bundle_store() -> dict[str, str]:
     reading = schema.sign_reading(
         {
             "node_id": NODE,
-            "ts_ms": 1_749_480_000_123,
+            "ts_ms": 1_780_232_400_123,
             "block_anchor": "a1b2c3d4e5f60718",
             "metrics": {"temperature_mc": 21400, "gps_fix": True, "gps_sats": 7},
         },

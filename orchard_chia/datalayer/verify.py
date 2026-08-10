@@ -441,7 +441,11 @@ def verify_bundle(
         declared_min = attest.get("min_readings_per_hour")
         min_rph = (int(declared_min) if isinstance(declared_min, int) and declared_min >= 1
                    else schema.LEGACY_MIN_READINGS_PER_HOUR)
-        vh = schema.verified_hours(by_hour, node_pub, min_readings=min_rph)
+        vh = schema.verified_hours(
+            by_hour, node_pub, min_readings=min_rph,
+            window_ms=schema.window_ms_from_utc(
+                attest.get("season_start_utc", ""),
+                attest.get("season_end_utc", "")))
         checks.append(Check(
             "Verified hours recomputed", vh == attest.get("verified_hours"),
             f"recomputed={vh} claimed={attest.get('verified_hours')} "

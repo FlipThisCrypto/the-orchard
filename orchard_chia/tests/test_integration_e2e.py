@@ -25,7 +25,7 @@ def test_sensors_to_verified_roundtrip():
 
     # 2. Sign the reading (no floats under the signature).
     body = metrics.unsigned_reading_body(
-        node_id=NODE, ts_ms=1_749_480_000_123, metrics=m,
+        node_id=NODE, ts_ms=1_780_232_400_123, metrics=m,
         block_anchor="a1b2c3d4e5f60718",
     )
     reading = schema.sign_reading(body, SEED)
@@ -38,7 +38,7 @@ def test_sensors_to_verified_roundtrip():
     hour_readings = [reading] + [
         schema.sign_reading(
             metrics.unsigned_reading_body(
-                node_id=NODE, ts_ms=1_749_480_000_123 + (i * 60_000), metrics=m,
+                node_id=NODE, ts_ms=1_780_232_400_123 + (i * 60_000), metrics=m,
                 block_anchor="a1b2c3d4e5f60718",
             ), SEED)
         for i in range(1, schema.MIN_VERIFIED_READINGS_PER_HOUR)

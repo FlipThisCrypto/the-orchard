@@ -46,6 +46,7 @@ def seal_from_readings(
     *,
     device_pubkey: str | None,
     min_readings_per_hour: int = schema.MIN_VERIFIED_READINGS_PER_HOUR,
+    window_ms: tuple[int, int] | None = None,
 ) -> SealInputs | None:
     """Derive season_root + verified_hours from published hour batches.
 
@@ -85,14 +86,17 @@ def seal_from_readings(
     season_root = schema.season_root(hour_roots)
     if device_pubkey:
         verified = schema.verified_hours(by_hour, device_pubkey,
-                                        min_readings=min_readings_per_hour)
+                                        min_readings=min_readings_per_hour,
+                                        window_ms=window_ms)
         sigs_verified = True
     else:
         # No pubkey → cannot verify device sigs; count hours with ≥1 reading.
         # This is a PRESENCE count, not a signature-verified one — flagged so
         # callers don't present it as cryptographically verified.
-        verified = sum(1 for rs in by_hour.values()
-                       if len(rs) >= min_readings_per_hour)
+        verified = sum(
+            1 for rs in by_hour.values()
+            if sum(1 for r in rs if schema._in_window(r, window_ms))
+            >= min_readings_per_hour)
         sigs_verified = False
 
     return SealInputs(

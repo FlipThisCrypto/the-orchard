@@ -376,7 +376,10 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 or node.get("pubkey")
             )
             sealed = seal.seal_from_readings(
-                pub_readings, device_pubkey=device_pub
+                pub_readings, device_pubkey=device_pub,
+                window_ms=schema.window_ms_from_utc(
+                    uptime.get("season_start_utc", ""),
+                    uptime.get("season_end_utc", "")),
             )
             if sealed is not None:
                 season_root_hex = sealed.season_root

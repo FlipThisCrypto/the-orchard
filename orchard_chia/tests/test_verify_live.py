@@ -18,7 +18,7 @@ def _store() -> dict[str, str]:
     reading = schema.sign_reading(
         {
             "node_id": NODE,
-            "ts_ms": 1_749_480_000_123,
+            "ts_ms": 1_780_232_400_123,
             "block_anchor": "a1b2c3d4e5f60718",
             "metrics": {"temperature_mc": 21400, "gps_fix": True, "gps_sats": 7},
         },
@@ -130,7 +130,7 @@ def test_cmd_reading_verifies_with_inclusion(monkeypatch, capsys):
     _wire(monkeypatch, _store())
     rc = cli.main([
         "reading", "--node-id", NODE, "--season", "5", "--hour", "13",
-        "--ts-ms", "1749480000123",
+        "--ts-ms", "1780232400123",
     ])
     out = capsys.readouterr().out
     assert rc == 0, out
@@ -144,7 +144,7 @@ def test_cmd_reading_tampered_mirror_fails(monkeypatch, capsys):
     _wire(monkeypatch, _store(), bad_value_keys={schema.readings_key(NODE, 5, 13)})
     rc = cli.main([
         "reading", "--node-id", NODE, "--season", "5", "--hour", "13",
-        "--ts-ms", "1749480000123",
+        "--ts-ms", "1780232400123",
     ])
     out = capsys.readouterr().out
     assert rc == 1, out

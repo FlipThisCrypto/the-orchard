@@ -292,8 +292,45 @@ MIN_VERIFIED_READINGS_PER_HOUR = 30
 LEGACY_MIN_READINGS_PER_HOUR = 1
 
 
+# Clock-skew grace at season edges. A reading stamped 23:59:58 by a device a
+# few seconds fast must not be thrown out of its own season; a reading from a
+# DIFFERENT day must never be let in. Five minutes is far above real NTP skew
+# and far below the 24h that would matter.
+SEASON_WINDOW_GRACE_MS = 5 * 60 * 1000
+
+
+def window_ms_from_utc(start_utc: str, end_utc: str) -> tuple[int, int] | None:
+    """(start_ms, end_ms) from the ISO bounds an attest record declares.
+
+    Returns None when unparseable — callers treat that as "no window", which
+    keeps pre-window records verifiable exactly as they were written.
+    """
+    from datetime import datetime, timezone
+    try:
+        lo = datetime.fromisoformat(start_utc.replace("Z", "+00:00"))
+        hi = datetime.fromisoformat(end_utc.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    if lo.tzinfo is None:
+        lo = lo.replace(tzinfo=timezone.utc)
+    if hi.tzinfo is None:
+        hi = hi.replace(tzinfo=timezone.utc)
+    return (int(lo.timestamp() * 1000) - SEASON_WINDOW_GRACE_MS,
+            int(hi.timestamp() * 1000) + SEASON_WINDOW_GRACE_MS)
+
+
+def _in_window(reading: dict, window_ms: tuple[int, int] | None) -> bool:
+    if window_ms is None:
+        return True
+    ts = reading.get("ts_ms")
+    if not isinstance(ts, int) or isinstance(ts, bool):
+        return False    # a reading with no timestamp cannot prove WHEN it was
+    return window_ms[0] <= ts < window_ms[1]
+
+
 def verified_hours(readings_by_hour: dict[int, list[dict]], pubkey_hex: str,
-                   *, min_readings: int = MIN_VERIFIED_READINGS_PER_HOUR) -> int:
+                   *, min_readings: int = MIN_VERIFIED_READINGS_PER_HOUR,
+                   window_ms: tuple[int, int] | None = None) -> int:
     """Hours holding at least ``min_readings`` signature-valid readings.
 
     Recomputable by anyone from the public ``readings:`` rows — that is what
@@ -307,10 +344,19 @@ def verified_hours(readings_by_hour: dict[int, list[dict]], pubkey_hex: str,
         raise ValueError(
             f"min_readings must be at least 1, got {min_readings}. Zero would "
             f"credit an hour that contains no readings at all.")
+    # The window is the cross-season replay defense: a signed reading carries
+    # no season field, and the hour a record files it under is chosen by the
+    # WRITER — but ts_ms is inside the device signature. Readings replayed
+    # from a season the Tree was dark for carry their original timestamps,
+    # fall outside this season's declared bounds, and stop counting toward
+    # the quorum. hour_root stays a commitment to the published batch as-is;
+    # only what an hour is WORTH applies the window.
     return sum(
         1
         for readings in readings_by_hour.values()
-        if sum(1 for r in readings if verify_reading(r, pubkey_hex)) >= min_readings
+        if sum(1 for r in readings
+               if _in_window(r, window_ms) and verify_reading(r, pubkey_hex))
+        >= min_readings
     )
 
 
