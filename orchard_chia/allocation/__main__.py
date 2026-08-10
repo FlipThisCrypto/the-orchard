@@ -42,17 +42,11 @@ def _load_config() -> dict:
 
 def _spender(settings: Settings):
     """Build the wallet adapter. Only reached on a live run."""
-    from ..wallet.rpc import WalletRpc          # local import: dry runs need no wallet
-    from .executor import WalletSpender
+    from .executor import build_spender
     cfg = _load_config()
-    w = (cfg.get("wallet") or {})
-    rpc = WalletRpc(
-        host=w.get("host", "localhost"), port=int(w.get("port", 9256)),
-        cert_path=w["cert_path"], key_path=w["key_path"],
-        ca_cert_path=w.get("ca_cert_path"), ca_key_path=w.get("ca_key_path"),
-    )
-    return WalletSpender(rpc, wallet_id=settings.wallet_id,
-                         fee_mojos=settings.fee_mojos)
+    return build_spender(wallet_id=settings.wallet_id,
+                         fee_mojos=settings.fee_mojos,
+                         wallet_cfg=(cfg.get("wallet") or {}))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -368,15 +368,15 @@ def _cmd_pay(ledger_path: Path, args) -> int:
 
 
 def _spender():
-    from ..allocation.__main__ import _load_config, _spender as build
-    from .runner import os as _os
-    from types import SimpleNamespace
-    settings = SimpleNamespace(
-        wallet_id=int(_os.environ.get("ORCHARD_PAY_WALLET_ID", "0") or 0),
-        fee_mojos=int(_os.environ.get("ORCHARD_PAY_FEE_MOJOS", "0") or 0))
-    if not settings.wallet_id:
+    from ..allocation.__main__ import _load_config
+    from ..allocation.executor import build_spender
+    wallet_id = int(os.environ.get("ORCHARD_PAY_WALLET_ID", "0") or 0)
+    if not wallet_id:
         raise SystemExit("ORCHARD_PAY_WALLET_ID is required for a live payment")
-    return build(settings)
+    return build_spender(
+        wallet_id=wallet_id,
+        fee_mojos=int(os.environ.get("ORCHARD_PAY_FEE_MOJOS", "0") or 0),
+        wallet_cfg=(_load_config().get("wallet") or {}))
 
 
 def _spender_balance():

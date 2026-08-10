@@ -586,3 +586,46 @@ def test_a_cycle_holds_the_lock_for_its_whole_run(tmp_path, monkeypatch):
             run_cycle(s, source=src, now=NOW)
     finally:
         blocker.release()
+
+
+# --- the live spender is buildable ------------------------------------------
+
+def test_build_spender_matches_the_real_wallet_rpc_signature():
+    """The old wiring passed ca_cert_path/ca_key_path — keywords WalletRpc
+    does not accept — so every live run would have crashed with a TypeError on
+    the one path no dry run exercises. The builder is now called with a
+    factory-checked signature."""
+    import inspect
+    from orchard_chia.allocation.executor import build_spender
+    from orchard_chia.wallet.rpc import WalletRpc
+
+    seen = {}
+
+    def factory(**kw):
+        # Every keyword the builder passes must be a real WalletRpc parameter.
+        params = set(inspect.signature(WalletRpc.__init__).parameters) - {"self"}
+        assert set(kw) <= params, f"unknown kwargs: {set(kw) - params}"
+        seen.update(kw)
+        return object()
+
+    sp = build_spender(wallet_id=3, fee_mojos=10,
+                       wallet_cfg={"cert_path": "c.pem", "key_path": "k.pem",
+                                   "host": "localhost", "port": 9256},
+                       rpc_factory=factory)
+    assert sp.wallet_id == 3 and sp.fee_mojos == 10
+    assert seen["cert_path"] == "c.pem"
+
+
+def test_build_spender_refuses_missing_credentials():
+    from orchard_chia.allocation.executor import ExecutorError, build_spender
+    with pytest.raises(ExecutorError, match="mTLS credentials"):
+        build_spender(wallet_id=3, fee_mojos=0, wallet_cfg={},
+                      rpc_factory=lambda **kw: object())
+
+
+def test_build_spender_refuses_a_zero_wallet_id():
+    from orchard_chia.allocation.executor import ExecutorError, build_spender
+    with pytest.raises(ExecutorError, match="wallet_id"):
+        build_spender(wallet_id=0, fee_mojos=0,
+                      wallet_cfg={"cert_path": "c", "key_path": "k"},
+                      rpc_factory=lambda **kw: object())

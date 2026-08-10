@@ -60,6 +60,36 @@ class ExecutionReport:
         return not self.failed and self.halted_reason is None
 
 
+def build_spender(*, wallet_id: int, fee_mojos: int, wallet_cfg: dict,
+                  rpc_factory=None) -> "WalletSpender":
+    """The one place a live spender is constructed.
+
+    Two CLIs used to wire this independently; one passed ca_cert_path /
+    ca_key_path keywords WalletRpc does not accept, so every live run would
+    have crashed with a TypeError at the exact moment an operator first went
+    live — the path no dry run ever exercises. One builder, matching the real
+    signature, testable via rpc_factory.
+    """
+    if not wallet_id:
+        raise ExecutorError("a live spender needs a wallet_id")
+    missing = [k for k in ("cert_path", "key_path") if not wallet_cfg.get(k)]
+    if missing:
+        raise ExecutorError(
+            f"wallet config is missing {', '.join(missing)} — a live payment "
+            f"cannot reach the wallet daemon without its mTLS credentials")
+    if rpc_factory is None:
+        from ..wallet.rpc import WalletRpc
+        rpc_factory = WalletRpc
+    rpc = rpc_factory(
+        host=wallet_cfg.get("host", "localhost"),
+        port=int(wallet_cfg.get("port", 9256)),
+        cert_path=wallet_cfg["cert_path"],
+        key_path=wallet_cfg["key_path"],
+        fingerprint=int(wallet_cfg.get("fingerprint", 0)),
+    )
+    return WalletSpender(rpc, wallet_id=wallet_id, fee_mojos=fee_mojos)
+
+
 class WalletSpender:
     """Thin adapter over the project's existing Chia wallet RPC.
 
