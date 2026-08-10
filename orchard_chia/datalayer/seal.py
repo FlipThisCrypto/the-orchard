@@ -26,6 +26,9 @@ class SealInputs:
     """Material used to seal one node·season."""
     season_root: str
     verified_hours: int
+    # The per-hour signature quorum verified_hours was computed under.
+    # Travels with the seal so the writer records the rule it used.
+    min_readings_per_hour: int
     reading_count: int
     hour_count: int
     source: str  # "readings" | "placeholder"
@@ -42,6 +45,7 @@ def seal_from_readings(
     readings_records: list[dict],
     *,
     device_pubkey: str | None,
+    min_readings_per_hour: int = schema.MIN_VERIFIED_READINGS_PER_HOUR,
 ) -> SealInputs | None:
     """Derive season_root + verified_hours from published hour batches.
 
@@ -80,18 +84,21 @@ def seal_from_readings(
 
     season_root = schema.season_root(hour_roots)
     if device_pubkey:
-        verified = schema.verified_hours(by_hour, device_pubkey)
+        verified = schema.verified_hours(by_hour, device_pubkey,
+                                        min_readings=min_readings_per_hour)
         sigs_verified = True
     else:
         # No pubkey → cannot verify device sigs; count hours with ≥1 reading.
         # This is a PRESENCE count, not a signature-verified one — flagged so
         # callers don't present it as cryptographically verified.
-        verified = sum(1 for rs in by_hour.values() if rs)
+        verified = sum(1 for rs in by_hour.values()
+                       if len(rs) >= min_readings_per_hour)
         sigs_verified = False
 
     return SealInputs(
         season_root=season_root,
         verified_hours=verified,
+        min_readings_per_hour=min_readings_per_hour,
         reading_count=reading_count,
         hour_count=len(hour_roots),
         source="readings",

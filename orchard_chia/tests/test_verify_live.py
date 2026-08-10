@@ -36,6 +36,10 @@ def _store() -> dict[str, str]:
             hours_online=1, verified_hrs=1, reading_count=1,
             block_height_at_write=1, season_root_hex=sr,
             signed_at="2026-06-01T00:05:00Z",
+        # Fixture declares the rule it satisfies, exactly as a real
+        # record does. What this test pins is bundle plumbing, not how
+        # many readings an hour is worth.
+        min_readings_per_hour=1,
         ),
         SEED,
     )

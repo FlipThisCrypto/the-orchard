@@ -166,7 +166,12 @@ def test_single_hour_season_root_equals_hour_root():
 # --- verified uptime & score (the tenet) ----------------------------------- #
 def test_verified_hours_matches_vector():
     by_hour = {13: VEC["readings_signed"]}
-    assert schema.verified_hours(by_hour, DEVICE_PUB) == VEC["verified_hours"]
+    assert schema.verified_hours(
+        by_hour, DEVICE_PUB,
+        # The vector states the rule it was built under; reading it back is
+        # the same thing a third-party verifier does with a real record.
+        min_readings=VEC["verified_hours_min_readings_per_hour"],
+    ) == VEC["verified_hours"]
 
 
 def test_verified_hours_ignores_bad_signatures():
@@ -199,6 +204,10 @@ def test_attest_build_and_sign_reproduces_vector():
         hours_online=1, verified_hrs=1, reading_count=3,
         block_height_at_write=8794728, season_root_hex=VEC["season_root"],
         signed_at="2026-06-01T00:05:00Z",
+        # Inside the signed body, so it must come from the vector rather than
+        # from this module's current default — otherwise raising the production
+        # quorum changes the bytes the cross-language contract is pinned to.
+        min_readings_per_hour=VEC["verified_hours_min_readings_per_hour"],
     )
     signed = schema.sign_attest(payload, ORACLE_SEED)
     assert signed == VEC["records"]["attest"]

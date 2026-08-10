@@ -30,9 +30,24 @@ def test_sensors_to_verified_roundtrip():
     )
     reading = schema.sign_reading(body, SEED)
 
+    # A real hour is ~60 readings (firmware samples every 60 s), and an hour
+    # only counts once it holds MIN_VERIFIED_READINGS_PER_HOUR signature-valid
+    # ones. Publishing a single reading and calling it an hour is the exact
+    # overstatement that rule exists to stop, so this capstone builds an hour
+    # that could actually have happened.
+    hour_readings = [reading] + [
+        schema.sign_reading(
+            metrics.unsigned_reading_body(
+                node_id=NODE, ts_ms=1_749_480_000_123 + (i * 60_000), metrics=m,
+                block_anchor="a1b2c3d4e5f60718",
+            ), SEED)
+        for i in range(1, schema.MIN_VERIFIED_READINGS_PER_HOUR)
+    ]
+    assert len(hour_readings) == schema.MIN_VERIFIED_READINGS_PER_HOUR
+
     # 3. Plan the hot-path publish and decode the changelist.
     batch = publish.HourBatchInput(
-        node_id=NODE, season=5, hour=13, readings=[reading],
+        node_id=NODE, season=5, hour=13, readings=hour_readings,
         node_pubkey=PUB, first_seen_utc="2026-05-28T20:43:27Z",
     )
     plan = publish.plan_publish(
@@ -53,7 +68,7 @@ def test_sensors_to_verified_roundtrip():
             node_id=NODE, season=5,
             season_start_utc="2026-05-31T00:00:00Z",
             season_end_utc="2026-06-01T00:00:00Z",
-            hours_online=1, verified_hrs=1, reading_count=1,
+            hours_online=1, verified_hrs=1, reading_count=len(hour_readings),
             block_height_at_write=1, season_root_hex=sr,
             signed_at="2026-06-01T00:05:00Z",
         ),

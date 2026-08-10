@@ -84,17 +84,17 @@ def test_partial_read_would_understate_verified_hours_without_strict():
         _Rpc(fail_hour=2), "s", node_id=NODE, season=5, strict=False
     )
     assert len(lax) == 1, "one hour silently dropped"
-    sealed = seal.seal_from_readings(lax, device_pubkey=PUB)
+    sealed = seal.seal_from_readings(lax, device_pubkey=PUB, min_readings_per_hour=1)
     assert sealed.verified_hours == 1  # would be signed as the truth
 
     full = seal.load_season_readings(_Rpc(), "s", node_id=NODE, season=5, strict=True)
-    assert seal.seal_from_readings(full, device_pubkey=PUB).verified_hours == 2
+    assert seal.seal_from_readings(full, device_pubkey=PUB, min_readings_per_hour=1).verified_hours == 2
 
 
 def test_healthy_store_reads_completely_in_strict_mode():
     rows = seal.load_season_readings(_Rpc(), "s", node_id=NODE, season=5, strict=True)
     assert len(rows) == 2
-    assert seal.seal_from_readings(rows, device_pubkey=PUB).sigs_verified is True
+    assert seal.seal_from_readings(rows, device_pubkey=PUB, min_readings_per_hour=1).sigs_verified is True
 
 
 def test_reconcile_style_lax_read_still_soft_fails():

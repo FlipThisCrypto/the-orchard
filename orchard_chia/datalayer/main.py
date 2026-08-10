@@ -340,6 +340,7 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
             if sealed is not None:
                 season_root_hex = sealed.season_root
                 verified_hrs = sealed.verified_hours
+                min_rph = sealed.min_readings_per_hour
                 reading_count = sealed.reading_count
                 seal_src = sealed.source
                 # Carry the integrity signals into the SIGNED record instead of
@@ -361,6 +362,10 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 verified_hrs = 0
                 reading_count = 0
                 seal_src = schema.SEAL_SOURCE_PLACEHOLDER
+                # Recorded even here. A placeholder proves nothing, but the rule
+                # it would have been judged by is still part of what the record
+                # says about itself.
+                min_rph = schema.MIN_VERIFIED_READINGS_PER_HOUR
                 sigs_verified = False
                 root_mismatches = 0
 
@@ -385,6 +390,7 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 season_root_hex=season_root_hex,
                 signed_at=signed_at,
                 seal_source=seal_src,
+            min_readings_per_hour=min_rph,
                 sigs_verified=sigs_verified,
                 root_mismatches=root_mismatches,
             )

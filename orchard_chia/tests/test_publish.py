@@ -269,6 +269,9 @@ def test_verify_bundle_over_planned_batch():
         block_height_at_write=1,
         season_root_hex=sr,
         signed_at="2026-06-01T00:05:00Z",
+        # One-reading fixture; it declares the rule it satisfies rather
+        # than borrowing the production quorum it does not.
+        min_readings_per_hour=1,
     )
     attest = schema.sign_attest(attest_body, SEED)
     report = verify.verify_bundle(

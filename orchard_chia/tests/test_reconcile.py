@@ -2,6 +2,22 @@
 from orchard_chia.datalayer import reconcile, schema
 
 
+def _full_hour(reading: dict) -> list[dict]:
+    """An hour that meets the production signature quorum.
+
+    Re-signs the same body at one-minute steps, which is what the firmware
+    actually does (it samples every 60 s). Distinct ts_ms matters: identical
+    readings would be duplicate Merkle leaves, and an hour padded with copies
+    is not an hour of sensing either.
+    """
+    out = [reading]
+    for i in range(1, schema.MIN_VERIFIED_READINGS_PER_HOUR):
+        body = {k: v for k, v in reading.items() if k != "sig"}
+        body["ts_ms"] = int(reading["ts_ms"]) + (i * 60_000)
+        out.append(schema.sign_reading(body, SEED))
+    return out
+
+
 NODE = "AABBCCDDEEFF0011AABBCCDDEEFF0011"
 SEED = "01" + "00" * 31
 PUB = schema.pubkey_for_seed(SEED)
@@ -18,7 +34,7 @@ def test_reconcile_overclaim():
         SEED,
     )
     batch = schema.build_readings_batch(
-        node_id=NODE, season=2, hour=0, readings=[r]
+        node_id=NODE, season=2, hour=0, readings=_full_hour(r)
     )
 
     class FakeOracle:
@@ -97,7 +113,7 @@ def test_reconcile_match():
         SEED,
     )
     batch = schema.build_readings_batch(
-        node_id=NODE, season=2, hour=3, readings=[r]
+        node_id=NODE, season=2, hour=3, readings=_full_hour(r)
     )
 
     class FakeOracle:
