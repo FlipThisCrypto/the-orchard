@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS day_rewards (
     sensor_weight   TEXT    NOT NULL,
     heartbeats      INTEGER NOT NULL,
     reward_mojos    INTEGER NOT NULL,
+    basis           TEXT    NOT NULL DEFAULT 'oracle-hours',
     PRIMARY KEY (day_index, tree_id)
 );
 """
@@ -71,6 +72,13 @@ class PoolLedger:
         self._c = sqlite3.connect(self.path)
         self._c.row_factory = sqlite3.Row
         self._c.executescript(SCHEMA)
+        # Additive migration for ledgers created before the basis column: an
+        # audit row must say what its amount rested on.
+        cols = {r[1] for r in self._c.execute(
+            "PRAGMA table_info(day_rewards)").fetchall()}
+        if "basis" not in cols:
+            self._c.execute("ALTER TABLE day_rewards ADD COLUMN basis TEXT "
+                            "NOT NULL DEFAULT 'oracle-hours'")
         # This file IS the answer to "how much has ever been emitted". Losing a
         # committed row to a crash would understate distribution and let a
         # re-run pay a day twice, so it gets full durability.
@@ -165,8 +173,10 @@ class PoolLedger:
                  settlement.pool_closing_mojos))
             self._c.executemany(
                 "INSERT INTO day_rewards (day_index, tree_id, wallet_address, "
-                "sensor_weight, heartbeats, reward_mojos) VALUES (?,?,?,?,?,?)",
+                "sensor_weight, heartbeats, reward_mojos, basis) "
+                "VALUES (?,?,?,?,?,?,?)",
                 [(day, r.tree_id, r.wallet_address, str(r.sensor_weight),
-                  r.verified_heartbeats, r.reward_mojos)
+                  r.verified_heartbeats, r.reward_mojos,
+                  getattr(r, "heartbeat_basis", "oracle-hours"))
                  for r in settlement.rewards.rewards])
         return self.snapshot()

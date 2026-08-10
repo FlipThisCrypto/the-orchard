@@ -119,3 +119,42 @@ def test_a_corrupted_ledger_refuses_everything(ledger):
     ledger._c.commit()
     with pytest.raises(LedgerError, match="invariant is broken in the data"):
         ledger.snapshot()
+
+
+def test_the_basis_of_every_reward_is_recorded(ledger):
+    """An auditor a year from now must be able to tell a chain-verified
+    reward from an oracle-trusted one by reading the ledger alone."""
+    import dataclasses
+    trees = [TreeDay(tree_id="T1", wallet_address=W, qualifying_sensors=1,
+                     verified_heartbeats=24, heartbeat_basis="chain:verified_hours")]
+    s = settle_day(trees, day_index=0,
+                   pool_remaining_mojos=ledger.snapshot().remaining_mojos)
+    ledger.record(s)
+    row = ledger._c.execute(
+        "SELECT basis FROM day_rewards WHERE day_index=0").fetchone()
+    assert row["basis"] == "chain:verified_hours"
+
+
+def test_an_old_ledger_gains_the_basis_column(tmp_path):
+    """Ledgers created before the column open cleanly and read as
+    oracle-hours — what those rows in fact were."""
+    import sqlite3
+    path = tmp_path / "old.db"
+    c = sqlite3.connect(path)
+    c.executescript("""
+        CREATE TABLE settled_days (day_index INTEGER PRIMARY KEY,
+            settled_at TEXT NOT NULL, model_version TEXT NOT NULL,
+            ceiling_mojos INTEGER NOT NULL, distributed_mojos INTEGER NOT NULL,
+            unearned_mojos INTEGER NOT NULL, eligible_trees INTEGER NOT NULL,
+            pool_closing_mojos INTEGER NOT NULL);
+        CREATE TABLE day_rewards (day_index INTEGER NOT NULL,
+            tree_id TEXT NOT NULL, wallet_address TEXT NOT NULL,
+            sensor_weight TEXT NOT NULL, heartbeats INTEGER NOT NULL,
+            reward_mojos INTEGER NOT NULL, PRIMARY KEY (day_index, tree_id));
+        INSERT INTO day_rewards VALUES (0,'T1','xch1w','1',24,1000);
+    """)
+    c.commit(); c.close()
+    with PoolLedger(path) as led:
+        row = led._c.execute(
+            "SELECT basis FROM day_rewards WHERE day_index=0").fetchone()
+        assert row["basis"] == "oracle-hours"

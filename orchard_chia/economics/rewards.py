@@ -129,6 +129,7 @@ class TreeReward:
     potential_mojos: int          # what full uptime would have earned
     reward_mojos: int             # what it actually earned
     share: Fraction               # of total network weight
+    heartbeat_basis: str = "oracle-hours"   # what the heartbeat count rested on
 
     @property
     def forfeited_mojos(self) -> int:
@@ -214,6 +215,7 @@ def calculate_daily_rewards(trees: list[TreeDay], ceiling_mojos: int) -> DailyRe
             sensor_weight=weight,
             verified_heartbeats=tree.verified_heartbeats,
             uptime_factor=tree.uptime_factor,
+            heartbeat_basis=tree.heartbeat_basis,
             potential_mojos=potential.numerator // potential.denominator,
             reward_mojos=earned.numerator // earned.denominator,
             share=share,
