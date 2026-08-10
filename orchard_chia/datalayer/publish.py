@@ -98,6 +98,34 @@ def _stable_meta_created_at(prior: dict | None, writer_version: str,
     return existing if candidate == prior else fallback
 
 
+def _count_chain_hours(dl: "DataLayerRpc", store_id: str) -> dict[tuple[str, int], int]:
+    """(node_id, season) -> hours already ON CHAIN, from the store's own keys.
+
+    Strict read: an unreadable store raises rather than returning an empty
+    count, because zero here becomes the public running_hours_online.
+    """
+    counts: dict[tuple[str, int], int] = {}
+    for key_hex in dl.get_keys_strict(store_id):
+        try:
+            ascii_key = bytes.fromhex(
+                key_hex[2:] if key_hex.startswith("0x") else key_hex
+            ).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        parts = ascii_key.split(":")
+        if len(parts) != 4 or parts[0] != "readings":
+            continue
+        node, season_s, hour_s = parts[1], parts[2], parts[3]
+        if not (hour_s.isascii() and hour_s.isdigit() and len(hour_s) == 2):
+            continue
+        try:
+            season = int(season_s)
+        except ValueError:
+            continue
+        counts[(node.upper(), season)] = counts.get((node.upper(), season), 0) + 1
+    return counts
+
+
 def _upsert(changelist: list[dict], key_hex: str, value_hex: str, existing: str | None) -> bool:
     """Append delete+insert if value changed. Returns True if a write is needed."""
     if existing == value_hex:
@@ -516,13 +544,36 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
                 return None       # can't see the store — claim nothing
         return None
 
+    # The PUBLIC hour count comes from the CHAIN, not the local watermark.
+    # `latest:.running_hours_online` used to read the watermark DB — so
+    # pointing ORCHARD_PUBLISH_WATERMARK at a fresh path (a restore, a moved
+    # checkout, a new machine) made the next publish rewrite the public record
+    # DOWNWARD, permanently, over hours genuinely on chain. The watermark
+    # remains the skip-cache; the store is the record. When the store cannot
+    # be enumerated the run aborts rather than publishing a number derived
+    # from a file that may have just been reborn empty.
+    if dl is not None:
+        try:
+            chain_hours = _count_chain_hours(dl, cfg.data_layer.store_id)
+        except ChiaRpcError as e:
+            print(f"ERROR: cannot enumerate the store to derive the public "
+                  f"hour count ({e}). Refusing to publish latest: from the "
+                  f"local watermark alone — a fresh watermark file would "
+                  f"rewrite the public number downward.", file=sys.stderr)
+            run.finish("error", error="NoChainHours", error_msg=str(e)[:200])
+            wm.close()
+            return exit_codes.CONFIRM
+        hours_source = lambda n, se: chain_hours.get((n.upper(), int(se)), 0)
+    else:
+        hours_source = wm.published_hours_count   # dry-run preview only
+
     batches, harvest_notes = harvest_closed_hour_batches(
         oracle,
         nodes,
         closed,
         already_published=wm.is_published,
         current_season=current_season,
-        published_hours=wm.published_hours_count,
+        published_hours=hours_source,
         sealed_season=_sealed,
     )
     gap_notes = [n for n in harvest_notes if "watermarked" not in n]
