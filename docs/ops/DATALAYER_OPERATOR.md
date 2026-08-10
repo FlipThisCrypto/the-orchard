@@ -54,7 +54,39 @@ python -m orchard_chia.datalayer publish --lookback-hours 72
 python -m orchard_chia.datalayer attest
 ```
 
-Uses published hour roots when present; otherwise uptime placeholder. Journal: `ops/attest.jsonl`.
+Seals from published hour roots. **Seasons with no published readings are
+SKIPPED, not sealed** — a placeholder attestation proves nothing, is unpayable,
+and costs a fee to write permanently (185 of them are already on the store, and
+the skip exists so there is never a 186th). To write placeholders anyway set
+`ORCHARD_ATTEST_WRITE_PLACEHOLDERS=1`. Journal: `ops/attest.jsonl`.
+
+Attest also **refuses**, by design, when: the oracle returns no Trees (an
+unreadable oracle is not an empty network), a node_id is unrecognised or a
+known test fixture, the store root cannot be read before writing (no baseline,
+no write), or another publish/attest is running (shared writer lock,
+`orchard_chia/data/datalayer-writer.lock`). Each refusal says why on stderr.
+
+## Rewards (the ratified economics — daily)
+
+The emission model (docs/token/EMISSION.md; fixed 85M pool, network-wide daily
+ceiling, unearned rewards extend the runway) has its own three-step surface:
+
+```powershell
+python -m orchard_chia.economics report               # dry: next unsettled season
+python -m orchard_chia.economics settle --season N    # dry until --yes
+python -m orchard_chia.economics pay                  # dry until two acts (below)
+```
+
+- **settle** records a CLOSED season's per-Tree rewards in the pool ledger
+  (`orchard_chia/data/pool_ledger.db`). The balance is derived, append-only,
+  and a day settles exactly once.
+- **pay** plans the oldest settled unpaid day through the spend planner.
+  Going live requires **two deliberate acts** — `DRY_RUN=false` AND
+  `--i-understand-this-spends-real-tokens` — plus external ceilings
+  `ORCHARD_PAY_MAX_CYCLE_MOJOS` / `ORCHARD_PAY_MAX_WALLET_MOJOS`,
+  `ORCHARD_ASSET_ID`, and `ORCHARD_PAY_WALLET_ID`.
+- The legacy `python -m orchard_chia.payout` **refuses to spend** (superseded
+  model); its reports remain for reconciling history.
 
 ## Verify
 
@@ -108,19 +140,41 @@ Exit 1 if any oracle **overclaim** (hours_online > verified_hours).
 | `ORCHARD_DL_CONFIRM_MAX` | Post-write inserts sampled per confirm (default 32) |
 | `ORCHARD_OPS_LOG_DIR` | Override ops journal directory |
 | `ORCHARD_SEASON_GENESIS` | `YYYY-MM-DD` season genesis (match oracle) |
+| `ORCHARD_ATTEST_WRITE_PLACEHOLDERS` | Opt-in: seal no-reading seasons anyway |
+| `ORCHARD_POOL_LEDGER` | Override pool ledger DB path |
+| `ORCHARD_ASSET_ID` | $JUICE CAT asset id (required by `pay`, even dry) |
+| `ORCHARD_PAY_MAX_CYCLE_MOJOS` / `_WALLET_MOJOS` | Live-payment ceilings (required live) |
+| `ORCHARD_PAY_WALLET_ID` / `ORCHARD_PAY_FEE_MOJOS` | Wallet id / fee for live pay |
 | `ORCHARD_BEACON_CACHE_TTL_S` | Oracle `/beacon` cache TTL |
 | `ORCHARD_BEACON_BLOCK_ANCHOR` | Offline beacon for tests |
 
 Retries now cover HTTP 408/429 (timeout/rate-limit) in addition to 5xx and
-network errors; permanent 4xx are not retried. `get_keys` pages through large
-stores automatically (no silent truncation).
+network errors; permanent 4xx are not retried — **except `batch_update`, which
+is submitted exactly once**: an ambiguous timeout may already be in the
+mempool, and a retry would pay the fee again. The post-write confirm is the
+real retry. `get_keys` probes the page-index convention and pages through
+large stores; an empty first page against a multi-page store raises instead of
+reading as an empty dataset.
+
+The oracle enforces two defaults worth knowing at the ingest side:
+`require_seq` is **on** (replayed readings are rejected; firmware ≥0.5 sends a
+monotonic NVS-persisted seq) and an hour needs **30 accepted readings** to
+credit `hours_online` (half the 60s cadence — one ping an hour is no longer an
+hour).
 
 ## Suggested Windows schedule
 
 1. Preflight at boot (alert if NOT READY).
 2. Publish every hour at :05.
 3. Attest once daily after 00:10 UTC.
-4. Reconcile daily; page on exit 1.
+4. `economics settle --season <yesterday> --yes` after attest.
+5. `economics pay` (dry) daily; run live deliberately after reviewing.
+6. Reconcile daily; page on exit 1.
+
+Publish and attest cannot overlap (shared lock); a run that finds the lock
+held exits 64 with the holder's pid. `/network/stats` now exposes
+`last_attestation_at` / `last_reading_at`, and the external heartbeat warns
+when readings flow but nothing has reached the chain for 48h.
 
 ## Firmware
 
