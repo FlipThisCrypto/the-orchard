@@ -1,6 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reward calculation — pure functions, no I/O.
 
+.. deprecated:: 2026-08-10
+   SUPERSEDED by :mod:`orchard_chia.economics`. This module implements the v1
+   model — 1 $JUICE per Tree per day — which has no network emission ceiling at
+   all: total supply scales with fleet size, so 10,000 Trees would mint 10,000
+   $JUICE/day.
+
+   It stays because every attestation on the DataLayer store was scored under
+   it and a reader must be able to reconstruct what was computed at the time.
+   New payout logic must use ``orchard_chia.economics``.
+
 The math is intentionally trivial in v1: ``tokens = (hours_online / 24) * daily_rate``.
 Future versions will add multipliers (Pass tier, sensor diversity,
 geographic scarcity, validated submissions, reputation) — they'll

@@ -70,6 +70,13 @@ Public at https://github.com/FlipThisCrypto/the-orchard (originally created as `
 
 ## Reward economics (v1, all tunable via config)
 
+> **SUPERSEDED 2026-08-10** by the fixed-supply emission model in
+> [docs/token/EMISSION.md](../token/EMISSION.md). The rate below had no network
+> emission ceiling: total supply scaled with fleet size. Left unedited below as
+> the historical record — every attestation on the DataLayer store was scored
+> under it, and a reader must be able to reconstruct what was computed at the
+> time. Nothing was ever paid out under it.
+
 | Parameter      | Value                                       |
 |----------------|---------------------------------------------|
 | Daily rate     | 1 $JUICE per Tree per day                   |

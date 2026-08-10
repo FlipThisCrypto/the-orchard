@@ -108,7 +108,7 @@ Full token reference: [docs/token/JUICE.md](docs/token/JUICE.md). The Asset ID a
 
 | Parameter       | Value                                       |
 |-----------------|---------------------------------------------|
-| Daily rate      | 1 $JUICE per Tree per day                   |
+| Daily rate      | **Superseded** — see [docs/token/EMISSION.md](docs/token/EMISSION.md). The network has a fixed daily ceiling that Trees divide; more Trees never raise it. |
 | Accrual         | 1/24 $JUICE per verified hour of uptime     |
 | Season length   | 4608 Chia blocks (~24h)                     |
 | Credential      | 1 Orchard Pass per wallet                   |

@@ -1,6 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """Budget-bounded spend allocation, split by sensor uptime.
 
+.. deprecated:: 2026-08-10
+   SUPERSEDED by :mod:`orchard_chia.economics`, which is the ratified model.
+
+   This one weights WALLETS by the mean uptime of their Trees. That is strongly
+   sybil-resistant, but it also means a second Tree cannot increase an
+   operator's share and a below-average one actively reduces it — a
+   disincentive to deploy the very hardware the network exists to grow.
+
+   The ratified model keeps the bounded-emission property that made this design
+   worth building, and attaches weight to Trees instead of wallets. The service
+   layer here (collector, planner, executor, audit, scheduler, locking) is
+   sound and is intended to be reused; only the allocation arithmetic is
+   superseded.
+
 This is a DIFFERENT economic model from ``orchard_chia.payout``, and both exist
 on purpose:
 
