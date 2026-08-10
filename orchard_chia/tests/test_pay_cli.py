@@ -81,3 +81,25 @@ def test_status_on_a_fresh_ledger(tmp_path, monkeypatch, capsys):
     assert main(["status"]) == 0
     out = capsys.readouterr().out
     assert "85,000,000.000" in out and "never" in out and "nothing owed" in out
+
+
+def test_status_surfaces_a_stuck_payment(settled, tmp_path, monkeypatch, capsys):
+    """A mid-send instruction blocks every later pay; the operator's first
+    stop must say so rather than leave them to find out by being refused."""
+    from orchard_chia.allocation import audit as audit_mod
+    audit_path = tmp_path / "pool.db"
+    audit_path = audit_path.with_name("payment_audit.db")
+    with audit_mod.AuditStore(audit_path) as store:
+        store.open_cycle(
+            cycle_id="c" * 32, period_start=datetime(2026, 5, 27, tzinfo=timezone.utc),
+            period_end=datetime(2026, 5, 28, tzinfo=timezone.utc),
+            budget_mojos=1000, allocated_mojos=1000, total_weight="1",
+            asset_id=ASSET, uptime_basis="economics-ledger", dry_run=False)
+        store.put_instruction(cycle_id="c" * 32, wallet_address=W,
+                              amount_mojos=1000, wallet_avg_uptime="0",
+                              pair_count=1)
+        store.mark_sending("c" * 32, W)
+
+    assert main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "MID-SEND" in out and "blocked until resolved" in out

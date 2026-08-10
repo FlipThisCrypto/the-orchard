@@ -287,6 +287,23 @@ def _cmd_status(ledger_path: Path, current_season: int) -> int:
                   + (" …" if len(unpaid) > 8 else ""))
         else:
             print("  nothing owed.")
+        # A payment that died mid-send blocks every later pay — and the block
+        # is silent until someone runs pay again. status is the operator's
+        # first stop, so it says so here, with the wallet check that resolves
+        # it.
+        audit_path = ledger_path.with_name("payment_audit.db")
+        if audit_path.exists():
+            from ..allocation import audit as audit_mod
+            with audit_mod.AuditStore(audit_path) as store:
+                stuck = store.in_flight()
+            if stuck:
+                print(f"  !! {len(stuck)} instruction(s) MID-SEND — every "
+                      f"further pay is blocked until resolved:")
+                for x in stuck:
+                    print(f"     {x.wallet_address[:24]}…  {x.amount_mojos} "
+                          f"mojos  cycle {x.cycle_id[:12]}")
+                print("     Check the wallet for these transactions, then mark "
+                      "the rows sent or failed in the audit store.")
     return 0
 
 
