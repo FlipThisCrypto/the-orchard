@@ -5,6 +5,12 @@
 the only place economic constants live. Nothing else may hardcode a rate, cap
 or share.
 
+**Operator surface:** `python -m orchard_chia.economics status | report |
+settle --season N | pay` — see the
+[operator runbook](../ops/DATALAYER_OPERATOR.md). Settlement records owed
+amounts in an append-only pool ledger; `pay` turns settled days into spends
+through the dry-by-default planner/executor stack.
+
 This document and that package are the single source of truth. Where any other
 document disagrees, it is out of date.
 
@@ -208,20 +214,34 @@ does not contribute to `total_weight`.
 
 ---
 
+## Decisions since ratification
+
+- **Genesis day — RESOLVED.** The emission calendar reuses the season
+  calendar: `day_index = season − 1`, genesis `ORCHARD_SEASON_GENESIS`
+  (2026-05-27). One calendar, one boundary; no drift between the day rewards
+  think it is and the day uptime was counted against.
+- **Sensor classes — IMPLEMENTED.** `oracle/app/sensor_classes.py` holds the
+  approved class map (a governed dict), multi-measurement devices credit each
+  class once, redundant same-class devices credit once, qualification requires
+  ≥12 reporting hours and physically plausible values
+  (`PLAUSIBLE_RANGES`). Extending the list is a data change, not logic.
+- **Heartbeat integrity — IMPLEMENTED.** An hour credits only with ≥30
+  accepted readings spread across ≥4 ten-minute slots; replay protection is
+  on by default; a sealed on-chain season outranks the oracle's own count
+  (`ORCHARD_SETTLE_CHAIN=1`).
+
 ## Open decisions requiring owner input
 
-1. **Genesis day.** `day_index` is 0-based from network genesis; which calendar
-   date that is has not been set. It determines every year boundary.
-2. **Terminal dust.** Sustained sub-100% uptime strands a few mojos the pool
+1. **Terminal dust.** Sustained sub-100% uptime strands a few mojos the pool
    cannot pay out until uptime is perfect. They remain earnable — leave them,
    or sweep once to liquidity?
-3. **Sensor classes.** The count is configurable; the approved *class* list and
-   how one device reporting several measurements is counted are not yet defined.
-4. **Pass requirement.** Whether an Orchard Pass is mandatory for rewards, or
+2. **Pass requirement.** Whether an Orchard Pass is mandatory for rewards, or
    only for claiming a Tree.
-5. **The 188 existing attestations.** Scored under the superseded 1 JUICE/Tree/day
+3. **The 188 existing attestations.** Scored under the superseded 1 JUICE/Tree/day
    model and unpayable under it. Nothing has been paid, so nothing needs
    unwinding — but a public statement of that may be wanted.
+4. **Payout wallet address.** The public receive address for reward outflows
+   (docs/token/JUICE.md still carries the TODO).
 
 ---
 
