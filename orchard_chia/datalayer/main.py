@@ -537,8 +537,12 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
     # "a root is confirmed" (the pre-write root is confirmed too).
     try:
         root_before = (dl.get_root(cfg.data_layer.store_id) or {}).get("hash")
-    except Exception:
-        root_before = None
+    except Exception as e:
+        # Same rule as publish: no baseline, no write. See publish.py.
+        print(f"ERROR: cannot read the store root before writing ({e}). "
+              f"Refusing to submit an unverifiable write.", file=sys.stderr)
+        run.finish("error", error="NoBaselineRoot", error_msg=str(e)[:200])
+        return exit_codes.CONFIRM
     try:
         result = dl.batch_update(
             cfg.data_layer.store_id, changelist, fee=cfg.data_layer.fee or None

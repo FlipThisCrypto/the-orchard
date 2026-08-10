@@ -596,8 +596,20 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
     # instantly against the pre-write root and prove nothing.
     try:
         root_before = (dl.get_root(cfg.data_layer.store_id) or {}).get("hash")
-    except Exception:
-        root_before = None          # unknown: fall back to confirmed-only
+    except Exception as e:
+        # No baseline means no way to verify the outcome: with root_before
+        # unknown, confirm's "has the root moved?" check used to pass
+        # instantly against the OLD confirmed root, the watermark advanced on
+        # values a previous write put there, and those hours were "already
+        # published" forever without ever being checked. Refusing costs one
+        # scheduler tick; a false confirm costs the evidence.
+        print(f"ERROR: cannot read the store root before writing ({e}). "
+              f"Refusing to submit a write whose outcome could not be "
+              f"verified. Nothing was sent; re-run when DataLayer answers.",
+              file=sys.stderr)
+        run.finish("error", error="NoBaselineRoot", error_msg=str(e)[:200])
+        wm.close()
+        return exit_codes.CONFIRM
     try:
         result = dl.batch_update(
             cfg.data_layer.store_id,

@@ -93,7 +93,12 @@ def wait_for_root(
         if isinstance(root, dict):
             hash_now = root.get("hash")
             confirmed = bool(root.get("confirmed"))
-            moved = root_before is None or (hash_now and hash_now != root_before)
+            # A missing baseline must never count as movement: that made a
+            # pre-write RPC blip indistinguishable from a landed write, and
+            # the OLD root is confirmed too. Without a baseline the only
+            # honest answer is "cannot confirm" — the caller retries with a
+            # baseline or treats the write as pending.
+            moved = bool(root_before) and bool(hash_now) and hash_now != root_before
             if confirmed and moved:
                 return True, f"root advanced to {str(hash_now)[:18]}… and confirmed"
             last = (
