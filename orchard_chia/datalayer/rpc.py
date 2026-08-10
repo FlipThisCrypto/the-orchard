@@ -232,7 +232,7 @@ class DataLayerRpc:
         *partway through* pagination raises rather than returning a truncated set.
         """
         try:
-            first = self._post("get_keys", {"id": store_id, "page": 1})
+            first, first_page = self._first_key_page(store_id)
         except ChiaRpcError:
             # Node may reject the page param (or be unreachable) — try plain.
             try:
@@ -240,18 +240,7 @@ class DataLayerRpc:
             except ChiaRpcError:
                 return []
             return list(data.get("keys", []))
-
-        keys = list(first.get("keys", []))
-        try:
-            total = int(first.get("total_pages"))
-        except (TypeError, ValueError):
-            return keys  # no pagination info — one response held everything
-        for page in range(2, total + 1):
-            # Do NOT swallow errors here: a mid-pagination failure must not look
-            # like a complete (but truncated) key set.
-            data = self._post("get_keys", {"id": store_id, "page": page})
-            keys.extend(data.get("keys", []))
-        return keys
+        return self._drain_key_pages(store_id, first, first_page)
 
     def get_keys_strict(self, store_id: str) -> list[str]:
         """Like :meth:`get_keys` but PROPAGATES a first-page failure.
@@ -261,13 +250,80 @@ class DataLayerRpc:
         that would treat an empty list as evidence (e.g. sealing an attestation
         as "nothing was published") must use this instead.
         """
-        first = self._post("get_keys", {"id": store_id, "page": 1})
+        first, first_page = self._first_key_page(store_id)
+        return self._drain_key_pages(store_id, first, first_page)
+
+    # -- pagination internals ------------------------------------------------
+    #
+    # `page` is 0-INDEXED. Asking for page 1 on a single-page store returns an
+    # empty list rather than an error, which is the worst possible failure
+    # shape: measured against the live store, `get_keys` returned 0 keys while
+    # 200 were present. Every reader believed the dataset was empty — the
+    # payout reader found no attestations and reported a clean run having paid
+    # nobody, and the verifier found nothing to check.
+    #
+    # Rather than swapping one hardcoded guess for another, probe: ask for page
+    # 0, and only fall back to a 1-indexed read if page 0 is rejected or looks
+    # empty while the node says there is more. A node that changes convention
+    # then costs a wasted request, not a silent dataset.
+
+    def _first_key_page(self, store_id: str) -> tuple[dict, int]:
+        """Fetch the first page under whichever indexing the node uses.
+
+        A 1-indexed node can REJECT page 0 outright rather than answering it
+        empty, so a failure here is information, not a dead end — it must lead
+        to the other convention, never to an unpaginated read that quietly
+        truncates a large store.
+        """
+        zero: dict | None = None
+        try:
+            zero = self._post("get_keys", {"id": store_id, "page": 0})
+            if zero.get("keys"):
+                return zero, 0
+        except ChiaRpcError:
+            zero = None                     # node rejects page 0 → 1-indexed
+
+        # Page 0 was empty or refused. Either the store really is empty, or
+        # this node counts from 1. Those are indistinguishable from one
+        # response, so ask the other question rather than guessing.
+        try:
+            one = self._post("get_keys", {"id": store_id, "page": 1})
+        except ChiaRpcError:
+            if zero is None:
+                raise                       # neither convention answered
+            return zero, 0                  # 0-indexed, genuinely empty
+        if one.get("keys") or zero is None:
+            return one, 1
+        return zero, 0
+
+    def _drain_key_pages(self, store_id: str, first: dict, first_page: int) -> list[str]:
         keys = list(first.get("keys", []))
         try:
             total = int(first.get("total_pages"))
         except (TypeError, ValueError):
-            return keys
-        for page in range(2, total + 1):
+            return keys  # no pagination info — one response held everything
+
+        if not keys and total > 1:
+            # A store spanning several pages cannot have an empty first page,
+            # so this response contradicts itself and the read is wrong.
+            #
+            # The bound is `> 1`, not `> 0`: an empty store legitimately reports
+            # one page holding nothing, and from a single response that is
+            # genuinely indistinguishable from a misread page. Distinguishing
+            # them is the probe's job, not this guard's — this only catches the
+            # case no probe could explain away. Returning [] here is how
+            # "unreachable" and "empty" became the same answer.
+            raise ChiaRpcError(
+                f"get_keys returned no keys for store {store_id[:16]}… while "
+                f"reporting total_pages={total}. A multi-page store cannot have "
+                f"an empty first page, so this read is wrong — check the page "
+                f"index convention rather than treating the dataset as absent."
+            )
+
+        last = total - 1 if first_page == 0 else total
+        for page in range(first_page + 1, last + 1):
+            # Do NOT swallow errors here: a mid-pagination failure must not look
+            # like a complete (but truncated) key set.
             data = self._post("get_keys", {"id": store_id, "page": page})
             keys.extend(data.get("keys", []))
         return keys
