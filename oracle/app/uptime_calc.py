@@ -46,6 +46,16 @@ def _min_readings() -> int:
     return max(1, int(settings().min_readings_per_credited_hour))
 
 
+def _spread_ok(mask: int) -> bool:
+    """An hour must SPAN the hour, not just fill a burst. Hours recorded
+    before the mask existed have slots_mask=0 and are exempt — the rule cannot
+    be applied retroactively to data that never recorded spread."""
+    if mask == 0:
+        return True         # legacy row, spread unknown
+    need = max(1, int(settings().min_slots_per_credited_hour))
+    return bin(int(mask)).count("1") >= need
+
+
 def hours_online_for(db: Session, node_id: str, season: int) -> tuple[int, list[str]]:
     """(hours_online, sorted hit buckets) for a node·season from uptime_hours.
 
@@ -53,16 +63,12 @@ def hours_online_for(db: Session, node_id: str, season: int) -> tuple[int, list[
     ``reading_count`` meets the configured per-hour quorum.
     """
     season_buckets = set(seasons.hour_buckets_in_season(season))
-    rows = (
-        db.execute(
-            select(models.UptimeHour.hour_utc).where(
-                models.UptimeHour.node_id == node_id.upper(),
-                models.UptimeHour.hour_utc.in_(season_buckets),
-                models.UptimeHour.reading_count >= _min_readings(),
-            )
+    rows = db.execute(
+        select(models.UptimeHour.hour_utc, models.UptimeHour.slots_mask).where(
+            models.UptimeHour.node_id == node_id.upper(),
+            models.UptimeHour.hour_utc.in_(season_buckets),
+            models.UptimeHour.reading_count >= _min_readings(),
         )
-        .scalars()
-        .all()
-    )
-    hit = sorted(set(rows))
+    ).all()
+    hit = sorted({bucket for bucket, mask in rows if _spread_ok(mask or 0)})
     return len(hit), hit

@@ -55,12 +55,15 @@ def _bump_uptime_hour(db: Session, node_id: str, when: datetime) -> None:
     hottest path.
     """
     bucket = seasons.hour_bucket_for(when)
+    slot_bit = 1 << (when.minute // 10)
     stmt = (
         sqlite_insert(models.UptimeHour)
-        .values(node_id=node_id, hour_utc=bucket, reading_count=1)
+        .values(node_id=node_id, hour_utc=bucket, reading_count=1,
+                slots_mask=slot_bit)
         .on_conflict_do_update(
             index_elements=["node_id", "hour_utc"],
-            set_={"reading_count": models.UptimeHour.reading_count + 1},
+            set_={"reading_count": models.UptimeHour.reading_count + 1,
+                  "slots_mask": models.UptimeHour.slots_mask.op("|")(slot_bit)},
         )
     )
     db.execute(stmt)

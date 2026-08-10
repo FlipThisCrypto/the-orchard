@@ -25,6 +25,8 @@ def session(tmp_path, monkeypatch):
                        f"sqlite:///{(tmp_path/'q.db').as_posix()}")
     monkeypatch.delenv("ORCHARD_ORACLE_MIN_READINGS_PER_CREDITED_HOUR",
                        raising=False)
+    monkeypatch.delenv("ORCHARD_ORACLE_MIN_SLOTS_PER_CREDITED_HOUR",
+                       raising=False)
     from oracle.app.config import reset_settings_for_tests
     from oracle.app.db import reset_for_tests
     reset_settings_for_tests()
@@ -95,4 +97,37 @@ def test_the_override_floor_is_one(session, monkeypatch):
     from oracle.app.config import reset_settings_for_tests
     reset_settings_for_tests()
     _hour(session, _season_bucket(0), 0)
+    assert hours_online_for(session, NODE, 74)[0] == 0
+
+
+# --- burst defense (slots_mask) ---------------------------------------------
+
+def _hour_with_mask(session, bucket: str, count: int, mask: int):
+    session.add(models.UptimeHour(node_id=NODE, hour_utc=bucket,
+                                  reading_count=count, slots_mask=mask))
+    session.commit()
+
+
+def test_a_burst_hour_is_not_credited(session):
+    """30 readings in two minutes: quorum met, one slot bit set."""
+    _hour_with_mask(session, _season_bucket(0), 30, 0b000001)
+    assert hours_online_for(session, NODE, 74)[0] == 0
+
+
+def test_a_spread_hour_is_credited(session):
+    """Readings across four ten-minute slots — half an hour of real presence."""
+    _hour_with_mask(session, _season_bucket(0), 30, 0b011110)
+    assert hours_online_for(session, NODE, 74)[0] == 1
+
+
+def test_a_legacy_row_without_spread_data_is_exempt(session):
+    """slots_mask=0 predates the mask; the rule cannot judge what was never
+    recorded."""
+    _hour_with_mask(session, _season_bucket(0), 30, 0)
+    assert hours_online_for(session, NODE, 74)[0] == 1
+
+
+def test_spread_alone_is_not_enough_either(session):
+    """Six slots but only 6 readings: spanned, but not sensing."""
+    _hour_with_mask(session, _season_bucket(0), 6, 0b111111)
     assert hours_online_for(session, NODE, 74)[0] == 0

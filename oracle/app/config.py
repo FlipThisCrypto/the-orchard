@@ -136,6 +136,11 @@ class Settings(BaseSettings):
     # production keeps the default, and lowering it live would reintroduce the
     # 60x overstatement the quorum exists to stop.
     min_readings_per_credited_hour: int = 30
+    # Spread requirement: distinct ten-minute slots (of 6) an hour must span.
+    # 4 = at least ~30 min of presence. A 2-minute burst of 30 readings fills
+    # the quorum but sets one slot — "heartbeat bursts pretending to represent
+    # hourly uptime" is on the tokenomics anti-gaming list by name.
+    min_slots_per_credited_hour: int = 4
 
     # Replay protection ON by default. It was off, which meant seq was
     # TRACKED but a replayed reading was silently accepted — and since hours

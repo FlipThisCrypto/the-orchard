@@ -162,6 +162,11 @@ class UptimeHour(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     node_id: Mapped[str] = mapped_column(String(64), ForeignKey("nodes.node_id"), index=True)
+    # Bitmask of which ten-minute slots of the hour saw a reading (bit 0 =
+    # :00-:09 ... bit 5 = :50-:59). reading_count says HOW MUCH arrived;
+    # slots_mask says whether it SPANNED the hour — a 2-minute burst of 30
+    # readings sets one bit and is not an hour of sensing.
+    slots_mask: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     hour_utc: Mapped[str] = mapped_column(String(13), index=True)  # "YYYY-MM-DDTHH"
     reading_count: Mapped[int] = mapped_column(Integer, default=0)
 
