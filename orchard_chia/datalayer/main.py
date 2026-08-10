@@ -29,6 +29,25 @@ from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
 
+ATTEST_WRITE_PLACEHOLDERS_ENV = "ORCHARD_ATTEST_WRITE_PLACEHOLDERS"
+
+
+def _write_placeholders() -> bool:
+    """Whether to seal seasons that have no published readings behind them.
+
+    Off by default. A placeholder attestation declares that nothing was
+    published, is unpayable by construction, and still costs a fee to write
+    permanently and publicly. 185 sit on the live store proving nothing.
+
+    Not a CLI flag: attest deliberately refuses every option, because a
+    `--dry-run` that did not exist was once silently ignored and wrote 185
+    records to the chain. An environment variable is opt-in without
+    reintroducing a flag surface that can be mistyped into a no-op.
+    """
+    raw = os.environ.get(ATTEST_WRITE_PLACEHOLDERS_ENV, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def _first_plausible_season(node: dict, *, floor: int = 1) -> int:
     """Earliest Season this Tree could possibly have uptime in.
 
@@ -364,9 +383,18 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 # Nothing is published for this season, so NOTHING was verified.
                 # Writing `hours` here would sign the oracle's own claim into a
                 # field named "verified" — the one case where there is no
-                # evidence at all. hours_online below still records the claim;
-                # the payout falls back to it for a declared-placeholder record,
-                # so amounts are unchanged — but the record no longer lies.
+                # evidence at all.
+                #
+                # A placeholder is now unpayable (payout/calculator.py), so
+                # writing one costs a blockchain fee to record a permanent,
+                # public statement that proves nothing and pays nothing. 185 of
+                # them are already on the store. Default is to skip; the opt-in
+                # exists because a completeness-minded operator may still want a
+                # marker that a season existed, and that is their call to make
+                # explicitly rather than mine to make silently.
+                if not _write_placeholders():
+                    stats["placeholder_skipped"] += 1
+                    continue
                 verified_hrs = 0
                 reading_count = 0
                 seal_src = schema.SEAL_SOURCE_PLACEHOLDER
