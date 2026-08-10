@@ -117,6 +117,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # report / run / serve
     force_dry = args.cmd == "report"
+    # SUPERSEDED MODEL — spending is disarmed, same rule as the legacy payout
+    # CLI. This service allocates by each WALLET's mean Tree uptime; the
+    # ratified model (docs/token/EMISSION.md) is
+    # `python -m orchard_chia.economics pay`. Reports and dry runs remain; a
+    # live spend under a dead model must be unmistakably deliberate.
+    import os as _os
+    if (not force_dry and not settings.dry_run
+            and _os.environ.get("ORCHARD_ALLOCATION_SUPERSEDED_MODEL_ACK", "")
+            != "i-know"):
+        print(
+            "allocation REFUSED: this spends under the SUPERSEDED wallet-mean "
+            "model.\nThe current model is:  python -m orchard_chia.economics "
+            "pay\nTo proceed anyway set "
+            "ORCHARD_ALLOCATION_SUPERSEDED_MODEL_ACK=i-know.", file=sys.stderr)
+        return 2
     if not force_dry and not settings.dry_run and not args.live_ack:
         print(
             f"DRY_RUN is false but {LIVE_FLAG} was not given.\n"
