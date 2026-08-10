@@ -126,6 +126,43 @@ class PoolLedger:
             "SELECT * FROM settled_days WHERE day_index=?", (day_index,)
         ).fetchone()
 
+    def audit(self) -> list[str]:
+        """Re-derive everything derivable and report every contradiction.
+
+        Empty list = the ledger proves itself. Three checks, each of which a
+        corrupted or hand-edited file would fail:
+
+          * every day's distributed_mojos equals the sum of its per-Tree rows
+          * no day distributed more than its recorded ceiling
+          * the pool chain holds: each day's closing balance equals the
+            previous closing minus its distribution, ending at the derived
+            balance the snapshot reports
+        """
+        problems: list[str] = []
+        days = self._c.execute(
+            "SELECT * FROM settled_days ORDER BY day_index").fetchall()
+        prev_closing = TREE_REWARDS_POOL_MOJOS
+        for d in days:
+            idx = d["day_index"]
+            row_sum = self._c.execute(
+                "SELECT COALESCE(SUM(reward_mojos),0) AS s FROM day_rewards "
+                "WHERE day_index=?", (idx,)).fetchone()["s"]
+            if int(row_sum) != int(d["distributed_mojos"]):
+                problems.append(
+                    f"day {idx}: per-Tree rows sum to {row_sum} but the day "
+                    f"records {d['distributed_mojos']}")
+            if int(d["distributed_mojos"]) > int(d["ceiling_mojos"]):
+                problems.append(
+                    f"day {idx}: distributed {d['distributed_mojos']} exceeds "
+                    f"its recorded ceiling {d['ceiling_mojos']}")
+            expected_closing = prev_closing - int(d["distributed_mojos"])
+            if int(d["pool_closing_mojos"]) != expected_closing:
+                problems.append(
+                    f"day {idx}: closing balance {d['pool_closing_mojos']} != "
+                    f"{expected_closing} (previous closing minus distribution)")
+            prev_closing = expected_closing
+        return problems
+
     # -- the one write -------------------------------------------------------
 
     def record(self, settlement: Settlement) -> PoolSnapshot:

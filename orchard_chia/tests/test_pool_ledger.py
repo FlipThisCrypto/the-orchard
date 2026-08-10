@@ -158,3 +158,38 @@ def test_an_old_ledger_gains_the_basis_column(tmp_path):
         row = led._c.execute(
             "SELECT basis FROM day_rewards WHERE day_index=0").fetchone()
         assert row["basis"] == "oracle-hours"
+
+
+def test_a_clean_ledger_audits_clean(ledger):
+    ledger.record(day(ledger, 0))
+    ledger.record(day(ledger, 1, beats=12))
+    assert ledger.audit() == []
+
+
+def test_audit_catches_a_tampered_day_total(ledger):
+    ledger.record(day(ledger, 0))
+    ledger._c.execute(
+        "UPDATE settled_days SET distributed_mojos = distributed_mojos + 5 "
+        "WHERE day_index=0")
+    ledger._c.commit()
+    problems = ledger.audit()
+    assert any("per-Tree rows sum" in p for p in problems)
+
+
+def test_audit_catches_a_broken_pool_chain(ledger):
+    ledger.record(day(ledger, 0))
+    ledger.record(day(ledger, 1))
+    ledger._c.execute(
+        "UPDATE settled_days SET pool_closing_mojos = pool_closing_mojos - 1 "
+        "WHERE day_index=1")
+    ledger._c.commit()
+    problems = ledger.audit()
+    assert any("closing balance" in p for p in problems)
+
+
+def test_audit_catches_distribution_over_ceiling(ledger):
+    ledger.record(day(ledger, 0))
+    ledger._c.execute(
+        "UPDATE settled_days SET ceiling_mojos = 1 WHERE day_index=0")
+    ledger._c.commit()
+    assert any("exceeds its recorded ceiling" in p for p in ledger.audit())

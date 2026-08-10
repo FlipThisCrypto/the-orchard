@@ -192,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--yes", action="store_true",
                     help="actually write (default is dry-run)")
     sub.add_parser("status", help="pool balance, runway, unpaid backlog")
+    sub.add_parser("audit", help="the ledger proves itself, or says exactly how it fails")
     pp = sub.add_parser("pay", help="plan (and with two explicit acts, send) "
                                     "the spend for settled unpaid days")
     pp.add_argument("--day", type=int, default=None,
@@ -212,6 +213,18 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_pay(ledger_path, args)
     if args.cmd == "status":
         return _cmd_status(ledger_path, current)
+    if args.cmd == "audit":
+        with ledger_mod.PoolLedger(ledger_path) as led:
+            problems = led.audit()
+        if problems:
+            for pr in problems:
+                print(f"  ! {pr}", file=sys.stderr)
+            print(f"{len(problems)} contradiction(s). Do not settle or pay "
+                  f"against this ledger until resolved.", file=sys.stderr)
+            return 1
+        print("ledger is internally consistent: per-day sums, ceilings, and "
+              "the pool chain all re-derive.")
+        return 0
     if args.cmd == "settle" and args.settle_all:
         return _cmd_settle_all(ledger_path, oracle, current, yes=args.yes)
     if args.cmd == "settle" and args.season is None:
