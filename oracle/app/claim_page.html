@@ -77,6 +77,17 @@
     .preview.ok{color:var(--leaf)} .preview.warn{color:var(--citrus)}
     .preview.bad{color:var(--err)} .preview.dim{color:var(--muted)}
     #trees-card{display:none}
+    .loc{margin-top:6px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+    .loc code{color:#2bd4d4;background:rgba(0,0,0,.34);border:1px solid rgba(120,230,200,.16);
+      border-radius:6px;padding:1px 6px}
+    .loc .linkbtn{padding:2px 8px;font-size:.78rem;font-weight:600}
+    .loc-form{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px}
+    .loc-form[hidden]{display:none}
+    .loc-input{flex:1 1 230px;min-width:0;font:inherit;font-size:.85rem;padding:6px 10px;
+      border-radius:8px;border:1px solid var(--border);background:rgba(0,0,0,.28);color:inherit}
+    .loc-note{flex-basis:100%}
+    .loc-note.err{color:#ff9a9a}
+    .loc-note.ok{color:#46e08a}
     .tree{padding:10px 0;border-bottom:1px solid var(--border)}
     .tree:last-child{border-bottom:0;padding-bottom:0}
     .tree:first-child{padding-top:0}
@@ -223,6 +234,148 @@
     }, 400);
   }
 
+  // --- location -----------------------------------------------------------
+  // A Tree with no GPS module has no position at all, so it cannot appear on
+  // the map — not as an unknown dot, as nothing. Declaring is how an operator
+  // answers for their own Tree.
+  //
+  // The precise position never leaves this device. When you use the browser's
+  // location, we coarsen it to a ~5 km cell HERE and send only that cell. The
+  // oracle would coarsen it anyway, but then your exact coordinates would have
+  // travelled and been held in memory somewhere they never needed to be.
+  const GH32 = "0123456789bcdefghjkmnpqrstuvwxyz";
+  const DECLARED_PRECISION = 5;   // ~4.9 km — matches the oracle's cap
+
+  function ghEncode(lat, lon, precision) {
+    let latLo = -90, latHi = 90, lonLo = -180, lonHi = 180;
+    let out = "", bit = 0, ch = 0, even = true;
+    while (out.length < precision) {
+      if (even) {
+        const mid = (lonLo + lonHi) / 2;
+        if (lon > mid) { ch |= (1 << (4 - bit)); lonLo = mid; } else { lonHi = mid; }
+      } else {
+        const mid = (latLo + latHi) / 2;
+        if (lat > mid) { ch |= (1 << (4 - bit)); latLo = mid; } else { latHi = mid; }
+      }
+      even = !even;
+      if (bit < 4) { bit++; } else { out += GH32[ch]; bit = 0; ch = 0; }
+    }
+    return out;
+  }
+
+  function locationRow(t) {
+    const cell = t.geohash;
+    if (t.location_source === "device") {
+      return `<div class="loc muted small">📍 <code>${esc(cell)}</code>
+        — reported by this Tree's own GPS (~5 km cell)</div>`;
+    }
+    const shown = cell
+      ? `<span class="small">📍 <code>${esc(cell)}</code></span>
+         <span class="muted small">— declared by you (~5 km cell)</span>`
+      : `<span class="muted small">📍 No location set — this Tree can't appear on the map.</span>`;
+    return `<div class="loc">
+      ${shown}
+      <button class="linkbtn loc-edit">${cell ? "Change" : "Set location"}</button>
+      ${cell ? `<button class="linkbtn loc-clear">Remove</button>` : ""}
+      <div class="loc-form" hidden>
+        <input class="loc-input" spellcheck="false"
+               placeholder="25.7743, -80.1936   or   dhwfx" />
+        <button class="linkbtn loc-here">Use my location</button>
+        <button class="linkbtn loc-save">Save</button>
+        <span class="loc-note muted small">Published as a ~5 km cell. Your exact
+          position is never sent.</span>
+      </div>
+    </div>`;
+  }
+
+  function locNote(form, kind, msg) {
+    const n = form.querySelector(".loc-note");
+    n.className = "loc-note small " + (kind === "err" ? "err" : kind === "ok" ? "ok" : "muted");
+    n.textContent = msg;
+  }
+
+  /** Accept "lat, lon" or a geohash; always return a cell, never coordinates. */
+  function parseToCell(raw) {
+    const s = String(raw || "").trim();
+    if (!s) throw new Error("Enter coordinates or a geohash.");
+    if (s.includes(",")) {
+      const [a, b] = s.split(",", 2).map(x => Number(x.trim()));
+      if (!Number.isFinite(a) || !Number.isFinite(b))
+        throw new Error("That doesn't parse as \"latitude, longitude\".");
+      if (a < -90 || a > 90 || b < -180 || b > 180)
+        throw new Error("Out of range — latitude -90..90, longitude -180..180.");
+      return ghEncode(a, b, DECLARED_PRECISION);
+    }
+    const g = s.toLowerCase();
+    if ([...g].some(c => !GH32.includes(c)))
+      throw new Error("Not a geohash — use \"latitude, longitude\" instead.");
+    if (g.length > DECLARED_PRECISION)
+      throw new Error(`Too precise. This network publishes ~5 km cells — try "${g.slice(0, DECLARED_PRECISION)}".`);
+    return g;
+  }
+
+  async function saveLocation(nodeId, cell, form) {
+    const r = await OC.authFetch(`/nodes/${encodeURIComponent(nodeId)}/location`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ geohash: cell }),
+    });
+    if (r.ok) return true;
+    const body = await r.json().catch(() => ({}));
+    const map = { 401: "Session expired — reconnect your wallet.",
+                  404: "That Tree isn't bound to this wallet." };
+    locNote(form, "err", body.detail || map[r.status] || `Couldn't save (${r.status}).`);
+    return false;
+  }
+
+  // Delegated so it survives every re-render of the Trees list.
+  document.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest(".loc-edit, .loc-clear, .loc-here, .loc-save");
+    if (!btn) return;
+    const card = btn.closest(".tree");
+    const nodeId = card && card.dataset.node;
+    const form = card && card.querySelector(".loc-form");
+    if (!nodeId || !form) return;
+    ev.preventDefault();
+
+    if (btn.classList.contains("loc-edit")) { form.hidden = !form.hidden; return; }
+
+    if (btn.classList.contains("loc-clear")) {
+      btn.disabled = true;
+      if (await saveLocation(nodeId, null, form)) await loadTrees();
+      else btn.disabled = false;
+      return;
+    }
+
+    if (btn.classList.contains("loc-here")) {
+      if (!navigator.geolocation) {
+        locNote(form, "err", "This browser can't report a location — type coordinates instead.");
+        return;
+      }
+      locNote(form, "", "Asking your browser…");
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          // Coarsened here. The precise fix is not stored, sent, or logged.
+          const cell = ghEncode(pos.coords.latitude, pos.coords.longitude, DECLARED_PRECISION);
+          form.querySelector(".loc-input").value = cell;
+          locNote(form, "ok", `That's cell ${cell} (~5 km). Press Save to publish it.`);
+        },
+        (err) => locNote(form, "err",
+          err.code === 1 ? "Location permission denied — type coordinates instead."
+                         : "Couldn't get a location — type coordinates instead."),
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 }
+      );
+      return;
+    }
+
+    // Save
+    let cell;
+    try { cell = parseToCell(form.querySelector(".loc-input").value); }
+    catch (e) { locNote(form, "err", e.message); return; }
+    btn.disabled = true; locNote(form, "", "Saving…");
+    if (await saveLocation(nodeId, cell, form)) await loadTrees();
+    else btn.disabled = false;
+  });
+
   async function loadTrees() {
     const card = $("#trees-card"), body = $("#trees-body");
     if (!sess() || !OC) { card.style.display = "none"; return; }
@@ -241,9 +394,10 @@
         const seen = last ? new Date(last).toLocaleString() : "not seen yet";
         const viewLink = dashboardUrl
           ? ` · <a href="${esc(dashboardUrl)}/?tree=${encodeURIComponent(t.node_id)}">View live →</a>` : "";
-        return `<div class="tree">
+        return `<div class="tree" data-node="${esc(t.node_id)}">
           <div><b>${esc(name)}</b> <span class="muted small">${esc(String(t.node_id).slice(0, 10))}…</span></div>
           <div class="muted small">fw ${esc(t.fw_version || "?")} · ${esc(seen)}${t.pass_nft_id ? " · Pass ✓" : ""}${viewLink}</div>
+          ${locationRow(t)}
         </div>`;
       }).join("");
     } catch (e) { body.innerHTML = `<span class="muted small">Couldn't load your Trees.</span>`; }

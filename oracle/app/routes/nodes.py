@@ -24,7 +24,7 @@ Phase 6.6 adds session-aware scoping:
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
@@ -99,6 +99,13 @@ class NodePublic(BaseModel):
     # Public, coarse: a ~5 km geohash cell + the node's sensor/data classes.
     # Shown to everyone — this is what the worldview globe renders.
     geohash: str | None = None
+    # Where that cell came from, so a reader never has to guess whether a
+    # position was measured or asserted:
+    #   "device"   — derived from the Tree's own GPS reading
+    #   "declared" — the operator said so, wallet-signed
+    #   None       — the Tree is unplaced
+    # Measured always wins over declared when both exist.
+    location_source: str | None = None
     sensors: list[str] = []
     # wallet_address is operator-private: returned ONLY to the owning wallet
     # session (or for legacy unowned nodes), scrubbed to null for the public /
@@ -140,6 +147,7 @@ def _to_public(
         sess is not None and sess.address == n.wallet_address
     )
     geohash: str | None = None
+    location_source: str | None = None
     sensors: list[str] = []
     latest = _latest_reading(db, n.node_id)
     if latest is not None:
@@ -147,12 +155,21 @@ def _to_public(
         # itself never leaves routes/readings.py (owner-only there).
         if latest.gps_lat is not None and latest.gps_lon is not None:
             geohash = _geohash_encode(latest.gps_lat, latest.gps_lon, 5)
+            if geohash is not None:
+                location_source = "device"
         try:
             s = json.loads(latest.payload_json).get("sensors")
             if isinstance(s, dict):
                 sensors = sorted(s.keys())
         except (ValueError, TypeError):
             sensors = []
+    # Fall back to what the operator declared. A Tree with no GPS module is
+    # otherwise unplaceable — which is exactly how the globe went empty: the
+    # only live Tree had no GPS and no entry in worldview's hardcoded table.
+    # Measured beats asserted, so this never overrides a device fix.
+    if geohash is None and n.declared_geohash:
+        geohash = n.declared_geohash
+        location_source = "declared"
     return NodePublic(
         node_id=n.node_id,
         label=n.label,
@@ -162,6 +179,7 @@ def _to_public(
         last_reading_at=n.last_reading_at,
         device_pubkey=n.device_pubkey,
         geohash=geohash,
+        location_source=location_source,
         sensors=sensors,
         wallet_address=n.wallet_address if owner else None,
         pass_nft_id=n.pass_nft_id,
@@ -267,6 +285,121 @@ def delete_node(
     db.delete(node)
     db.commit()
     return None
+
+
+class LocationAssert(BaseModel):
+    """What an operator may say about where their own Tree is.
+
+    Two ways to say it, because a person reading a map thinks in coordinates
+    and a person reading the API thinks in cells:
+
+      {"geohash": "dng01"}          — the cell directly
+      {"lat": 25.77, "lon": -80.19} — coordinates, coarsened on arrival
+      {"geohash": null}             — clear the declaration
+
+    The coordinate form is a convenience, not a second precision tier. It is
+    coarsened to a ~5 km cell before anything is written and the precise value
+    is discarded in the same breath — it is never stored, logged, or returned.
+    """
+    geohash: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+
+
+# The privacy contract, in one number. Precision 5 is a ~4.9 km cell; that is
+# the promise made on the worldview page and in ADR-0003, and it is enforced
+# here rather than trusted, because a caller sending 9 characters is asking for
+# metre-level publication whether they realise it or not.
+_MAX_DECLARED_PRECISION = 5
+
+
+def _clean_geohash(raw: str) -> str:
+    g = raw.strip().lower()
+    if not g:
+        raise HTTPException(status_code=422, detail="geohash is empty")
+    bad = sorted(set(g) - set(_GEOHASH_B32))
+    if bad:
+        raise HTTPException(
+            status_code=422,
+            detail=f"not a geohash — {''.join(bad)!r} is not in the base32 alphabet",
+        )
+    if len(g) > _MAX_DECLARED_PRECISION:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{len(g)} characters is finer than this network publishes. "
+                f"Locations are public at ~5 km ({_MAX_DECLARED_PRECISION} "
+                f"characters); send '{g[:_MAX_DECLARED_PRECISION]}' or coarser."
+            ),
+        )
+    return g
+
+
+@router.post("/nodes/{node_id}/location", response_model=NodePublic)
+def assert_node_location(
+    node_id: str,
+    body: LocationAssert,
+    request: Request,
+    db: Session = Depends(get_db),
+    sess: sessions.Session = Depends(_require_session),
+) -> NodePublic:
+    """Declare where your own Tree is. Owner-only, wallet-authenticated.
+
+    Most Trees have no GPS module, so without this they cannot appear on the
+    map at all — not as an unknown position, but as nothing. This lets the
+    operator answer on their own authority. It does not pretend to be a
+    measurement: the response says ``location_source: "declared"``, and the
+    moment the Tree reports a real GPS fix that measurement takes over.
+
+    Reversible by design — send ``{"geohash": null}`` to withdraw it.
+    """
+    node_id = node_id.upper()
+    node = db.get(models.Node, node_id)
+    # 404 on both "doesn't exist" and "exists but not yours", matching DELETE:
+    # a stranger must not be able to probe which node_ids are real.
+    if node is None or node.wallet_address != sess.address:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="unknown node_id")
+
+    has_coords = body.lat is not None or body.lon is not None
+    if body.geohash and has_coords:
+        raise HTTPException(
+            status_code=422,
+            detail="send either geohash or lat/lon, not both")
+
+    if has_coords:
+        if body.lat is None or body.lon is None:
+            raise HTTPException(
+                status_code=422, detail="lat and lon must be given together")
+        cell = _geohash_encode(body.lat, body.lon, _MAX_DECLARED_PRECISION)
+        if cell is None:
+            raise HTTPException(
+                status_code=422,
+                detail="coordinates out of range (lat -90..90, lon -180..180)")
+    elif body.geohash:
+        cell = _clean_geohash(body.geohash)
+    else:
+        cell = None  # explicit withdrawal
+
+    was = node.declared_geohash
+    node.declared_geohash = cell
+    node.declared_at = datetime.now(timezone.utc) if cell else None
+    audit.record(
+        db,
+        action="node.location.declare" if cell else "node.location.clear",
+        node_id=node_id,
+        actor=audit.actor_for(sess),
+        request_id=audit.request_id_of(request),
+        # The cell is public by construction, so recording it leaks nothing.
+        # Whatever precise coordinates the caller may have sent are already
+        # gone and deliberately absent here.
+        cell=cell,
+        previous=was,
+        via="coordinates" if has_coords else "geohash",
+    )
+    db.commit()
+    db.refresh(node)
+    return _to_public(node, db, sess)
 
 
 class AuditEventOut(BaseModel):
