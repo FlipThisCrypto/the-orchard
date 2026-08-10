@@ -23,7 +23,8 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import attest, config, confirm, exit_codes, ops_log, schedule, schema, seal
+from . import (attest, config, confirm, exit_codes, ops_log, provenance, schedule,
+               schema, seal)
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
 
@@ -238,9 +239,16 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
         run.finish("error", error="OracleError", error_msg=str(e)[:200])
         return exit_codes.ORACLE
     print(f"[orchard.attest] registered Trees: {len(nodes)}")
-    if not nodes:
-        run.finish("noop", reason="no_trees", season=current_season)
-        return 0
+    # An empty node set used to end the run as a clean no-op. An oracle that
+    # cannot be read looks exactly like a network with no Trees, and "nothing
+    # to do" is a comfortable conclusion for a scheduled job to reach wrongly.
+    try:
+        known = provenance.require_live_network(nodes, source=cfg.oracle.url)
+        provenance.filter_writable(nodes, known)
+    except provenance.ProvenanceError as e:
+        print(f"ERROR: refusing to attest: {e}", file=sys.stderr)
+        run.finish("error", error="ProvenanceError", error_msg=str(e)[:200])
+        return exit_codes.ORACLE
 
     # The anti-backdate anchor. A full node is the ideal source, but requiring
     # one to seal a season means an operator running only wallet + data_layer

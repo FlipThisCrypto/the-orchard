@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import clock, confirm, metrics as metrics_mod
+from . import clock, confirm, metrics as metrics_mod, provenance
 from . import ops_log, schedule, schema
 from .config import CONFIG_PATH, load
 from .oracle import OracleClient, OracleError
@@ -387,6 +387,18 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
         print(f"ERROR: oracle unreachable: {e}", file=sys.stderr)
         wm.close()
         run.finish("error", error="OracleError", error_msg=str(e)[:200])
+        return exit_codes.ORACLE
+
+    # Every subject of a permanent write has to be a Tree the oracle currently
+    # recognises. Three test-fixture records are already on mainnet forever
+    # because nothing checked; see provenance.py.
+    try:
+        known = provenance.require_live_network(nodes, source=cfg.oracle.url)
+        provenance.filter_writable(nodes, known)
+    except provenance.ProvenanceError as e:
+        print(f"ERROR: refusing to publish: {e}", file=sys.stderr)
+        wm.close()
+        run.finish("error", error="ProvenanceError", error_msg=str(e)[:200])
         return exit_codes.ORACLE
 
     closed = schedule.iter_closed_hours(lookback_hours=lookback)
