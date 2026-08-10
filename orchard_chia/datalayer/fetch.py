@@ -99,6 +99,15 @@ def _discover_hours(
         if not ascii_key.startswith(prefix):
             continue
         tail = ascii_key[len(prefix):]
-        if len(tail) == 2 and tail.isdigit():
-            found.append(int(tail))
+        # ASCII digits ONLY. str.isdigit() accepts Unicode digits — "٠٧"
+        # (Arabic-Indic) passes and int() parses it as 7 — so a hostile key
+        # could shadow a real hour: two distinct on-chain keys, one discovered
+        # hour, reading_count inflated by whichever loads last, and the
+        # committed hour_root no longer the root of the readings a verifier
+        # fetches for that hour. The completeness gate would report a perfect
+        # match while checking the wrong bytes.
+        if len(tail) == 2 and tail.isascii() and tail.isdigit():
+            hour = int(tail)
+            if 0 <= hour <= 23 and hour not in found:
+                found.append(hour)
     return sorted(found)
