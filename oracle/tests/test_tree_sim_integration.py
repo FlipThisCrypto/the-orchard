@@ -10,6 +10,7 @@ exactly as a real Tree would.
 from __future__ import annotations
 
 import os
+os.environ.setdefault("ORCHARD_ORACLE_MIN_READINGS_PER_CREDITED_HOUR", "1")  # mechanism tests; quorum pinned in test_uptime_quorum.py
 
 os.environ["ORCHARD_ORACLE_DB_URL"] = "sqlite:///:memory:"
 

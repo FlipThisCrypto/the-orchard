@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     # reflash/OTA the fleet with seq-capable firmware, THEN flip this.
     # (last_seq is tracked passively even while False, so the flip is
     # seamless for Trees already sending seq.)
+    # How many accepted readings an hour must hold before it counts toward
+    # hours_online. 30 = half the 60s firmware cadence, numerically identical
+    # to the DataLayer signature quorum so payer and verifier agree what an
+    # hour IS. Overridable for tests exercising the crediting MECHANISM;
+    # production keeps the default, and lowering it live would reintroduce the
+    # 60x overstatement the quorum exists to stop.
+    min_readings_per_credited_hour: int = 30
+
     require_seq: bool = False
 
     # Reading freshness (HANDOVER D6/T6). When > 0, POST /readings rejects a
