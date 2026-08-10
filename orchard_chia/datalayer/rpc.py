@@ -195,7 +195,16 @@ class DataLayerRpc:
             body["fee"] = int(fee)
         if not submit_on_chain:
             body["submit_on_chain"] = False
-        return self._post("batch_update", body)
+        # ONE attempt, never retried. Every other route goes through the
+        # retry wrapper, and for reads that is right — but a batch_update
+        # that times out may already be IN the mempool, and the wrapper
+        # cannot tell "never sent" from "sent, answer lost". Retrying the
+        # ambiguous case submits the same fee-bearing spend again: up to
+        # four root updates for one approved plan, each paying the fee,
+        # with the final state decided by mempool ordering. The caller's
+        # confirm step is the retry — it watches the root; if the write
+        # never landed, the next scheduled run resubmits with knowledge.
+        return self._post_once("batch_update", body)
 
     def get_value(self, store_id: str, key_hex: str) -> str | None:
         body = {"id": store_id, "key": key_hex}
