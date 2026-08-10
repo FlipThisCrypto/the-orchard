@@ -398,22 +398,42 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 season_root_hex=season_root_hex,
                 signed_at=signed_at,
                 seal_source=seal_src,
-            min_readings_per_hour=min_rph,
+                min_readings_per_hour=min_rph,
                 sigs_verified=sigs_verified,
                 root_mismatches=root_mismatches,
             )
-            # signing_key_hex is 64 hex chars — valid secp256r1 scalar seed
-            # (generated once per operator; same file as legacy HMAC key).
-            signed = schema.sign_attest(payload, cfg.signing_key_hex.lower())
 
             key_hex = schema.attest_key(node_id, season)
-            value_hex = schema.value_hex(signed)
-
             try:
                 existing_hex = dl.get_value(cfg.data_layer.store_id, key_hex)
             except ChiaRpcError as e:
                 print(f"  WARN: datalayer get_value failed: {e}", file=sys.stderr)
                 existing_hex = None
+
+            # block_height_at_write is inside the SIGNED body and was taken from
+            # the live peak on every run, so the bytes differed every time even
+            # when nothing about the season had changed. That is the same defect
+            # `signed_at` had — the short-circuit below became unreachable and a
+            # daily run delete+inserted EVERY attestation for EVERY past season,
+            # unbounded and fee-bearing.
+            #
+            # A sealed season is a fixed fact. Re-sealing it must reproduce the
+            # bytes, so the height already on chain is reused when it does: that
+            # is what "nothing changed" means. A record whose CONTENT differs
+            # still gets the current height, because that write really is new.
+            prior = schema.parse_value(existing_hex)
+            if isinstance(prior, dict) and "block_height_at_write" in prior:
+                as_before = schema.sign_attest(
+                    dict(payload, block_height_at_write=prior["block_height_at_write"]),
+                    cfg.signing_key_hex.lower())
+                if schema.value_hex(as_before) == existing_hex:
+                    stats["unchanged"] += 1
+                    continue
+
+            # signing_key_hex is 64 hex chars — valid secp256r1 scalar seed
+            # (generated once per operator; same file as legacy HMAC key).
+            signed = schema.sign_attest(payload, cfg.signing_key_hex.lower())
+            value_hex = schema.value_hex(signed)
 
             if existing_hex == value_hex:
                 stats["unchanged"] += 1
