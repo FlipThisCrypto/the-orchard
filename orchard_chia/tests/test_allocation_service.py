@@ -535,6 +535,10 @@ def test_a_stale_lock_is_not_broken_unless_asked(tmp_path):
     dead = RunLock(p).acquire()
     os.close(dead._fd)                      # holder died without releasing
     dead._fd = None
+    # The file must also RECORD a dead pid: on POSIX the breaker checks holder
+    # liveness explicitly, and the test process's own pid is very much alive.
+    p.write_text("pid=999999999 started=2020-09-13T00:00:00+00:00\n",
+                 encoding="utf-8")
     os.utime(p, (1_600_000_000, 1_600_000_000))
 
     with pytest.raises(LockBusy):
@@ -552,7 +556,7 @@ def test_a_live_holder_is_never_broken_even_past_the_threshold(tmp_path):
     alive = RunLock(p).acquire()            # still open
     os.utime(p, (1_600_000_000, 1_600_000_000))
     try:
-        with pytest.raises(LockBusy, match="still has it open|another allocation run"):
+        with pytest.raises(LockBusy, match="still has it open|still alive|another allocation run"):
             RunLock(p, break_after_seconds=60).acquire()
     finally:
         alive.release()

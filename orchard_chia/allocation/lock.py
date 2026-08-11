@@ -51,6 +51,32 @@ class RunLock:
         except OSError:
             return "(unreadable)"
 
+    def _holder_pid(self) -> int | None:
+        """The pid recorded in the lock file, if parseable."""
+        for token in self._holder().split():
+            if token.startswith("pid="):
+                try:
+                    return int(token[4:])
+                except ValueError:
+                    return None
+        return None
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        """Best-effort liveness. POSIX: signal 0. Windows: never called with a
+        signal here — os.kill(pid, 0) on Windows can TERMINATE the process, so
+        the open-handle unlink refusal below is the liveness check there."""
+        import sys
+        if sys.platform == "win32":
+            return False        # defer to the unlink refusal
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True         # exists, owned by someone else
+        return True
+
     def _age_seconds(self) -> float:
         try:
             return max(0.0, (datetime.now(timezone.utc).timestamp()
@@ -66,6 +92,21 @@ class RunLock:
             age = self._age_seconds()
             if self.break_after_seconds is not None and age > self.break_after_seconds:
                 # Deliberate, bounded, and loud: the caller asked for this.
+                #
+                # But never break a LIVE holder, however old the lock. On
+                # Windows the open handle makes unlink fail below, which was
+                # the only protection — and on POSIX unlink succeeds on an
+                # open file, so a long-running holder's lock would have been
+                # broken and a second writer admitted. CI's Linux runners
+                # caught exactly that. The pid check makes the protection
+                # explicit on POSIX; Windows keeps the handle semantics.
+                pid = self._holder_pid()
+                if pid is not None and self._pid_alive(pid):
+                    raise LockBusy(
+                        f"{self.path} is {age / 60:.1f} min old and past the "
+                        f"break threshold, but its holder (pid {pid}) is still "
+                        f"alive — long-running is not stale. Refusing to break "
+                        f"a live lock.")
                 try:
                     self.path.unlink()
                 except OSError as e:
