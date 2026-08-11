@@ -419,6 +419,49 @@ def _cmd_settle_all(ledger_path: Path, oracle, current: int, *, yes: bool) -> in
     return 0
 
 
+def _tree_liveness(oracle) -> list[str]:
+    """One line per live Tree: how long since it last reported.
+
+    The operator discovered a 15-hour outage by reading a settlement report
+    days later. Nothing told them. The pool balance is not the thing that
+    needs watching daily — the Trees are, because every hour dark is an hour
+    unearnable and unrecoverable: a season settles once and cannot be
+    backfilled.
+    """
+    from datetime import datetime, timezone as _tz
+    out: list[str] = []
+    try:
+        nodes = oracle.list_nodes()
+    except Exception as e:                       # noqa: BLE001
+        return [f"  (could not read Trees: {str(e)[:60]})"]
+    now = datetime.now(_tz.utc)
+    for n in sorted(nodes, key=lambda x: str(x.get("node_id") or "")):
+        nid = str(n.get("node_id") or "?")[:12]
+        raw = n.get("last_reading_at") or n.get("last_seen_at")
+        if not raw:
+            out.append(f"  {nid}  never reported")
+            continue
+        try:
+            seen = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            out.append(f"  {nid}  last seen {raw}")
+            continue
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=_tz.utc)
+        # Clamp at zero: the oracle's clock runs a few seconds ahead of this
+        # machine's, which rendered a healthy Tree as "-0 min ago" — a display
+        # that reads like a bug and trains the operator to distrust the line.
+        mins = max(0.0, (now - seen).total_seconds() / 60)
+        if mins < 15:
+            out.append(f"  {nid}  reporting ({mins:.0f} min ago)")
+        elif mins < 120:
+            out.append(f"  {nid}  !! QUIET for {mins:.0f} min — earning nothing")
+        else:
+            out.append(f"  {nid}  !! DARK for {mins / 60:.1f} h — "
+                       f"{mins / 60:.0f} unearnable hour(s) so far")
+    return out
+
+
 def _cmd_status(ledger_path: Path, current_season: int) -> int:
     """Where the programme stands. Reads only; always safe to run."""
     from . import payment
@@ -448,6 +491,16 @@ def _cmd_status(ledger_path: Path, current_season: int) -> int:
               f"at the current ceiling — longer at real uptime")
         behind = (current_season - 2) - (snap.last_day_index
                                          if snap.last_day_index is not None else -1)
+        print("TREES")
+        try:
+            oracle = OracleClient(
+                os.environ.get("ORCHARD_ORACLE_URL",
+                               "https://oracle.theorchard.network"),
+                os.environ.get("ORCHARD_ORACLE_WRITER_TOKEN") or None)
+            for line in _tree_liveness(oracle):
+                print(line)
+        except Exception as e:                   # noqa: BLE001
+            print(f"  (unavailable: {str(e)[:60]})")
         print("SETTLEMENT")
         print("  last settled  "
               + (f"day {snap.last_day_index} (season {snap.last_day_index + 1})"
