@@ -311,3 +311,38 @@ def test_the_real_refusal_explains_why_falling_back_would_overpay(monkeypatch):
     assert "Refusing to fall back" in msg
     assert "can only overpay" in msg
     assert "ORCHARD_SETTLE_CHAIN=0" in msg
+
+
+def test_the_chain_is_read_once_per_process_not_once_per_season(monkeypatch):
+    """settle --all over 76 seasons used to trigger 76 full store scans and
+    simply stopped responding. The store is append-only and a settle run is
+    short, so one snapshot is correct as well as fast."""
+    import orchard_chia.economics.runner as R
+    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+    R.reset_chain_index()
+    reads = {"n": 0}
+
+    def _fake_load():
+        reads["n"] += 1
+        return {74: {"T1": (9, "chain:verified_hours")},
+                75: {"T1": (24, "chain:verified_hours")}}
+
+    monkeypatch.setattr(R, "_load_chain_index", _fake_load)
+    assert R._chain_hours_for_season(74) == {"T1": (9, "chain:verified_hours")}
+    assert R._chain_hours_for_season(75) == {"T1": (24, "chain:verified_hours")}
+    assert R._chain_hours_for_season(76) == {}          # sealed nothing
+    assert reads["n"] == 1, f"{reads['n']} store scans for three seasons"
+    R.reset_chain_index()
+
+
+def test_the_cached_index_cannot_be_mutated_by_a_caller(monkeypatch):
+    """A caller editing the returned dict must not corrupt later seasons."""
+    import orchard_chia.economics.runner as R
+    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+    R.reset_chain_index()
+    monkeypatch.setattr(R, "_load_chain_index",
+                        lambda: {74: {"T1": (9, "chain:verified_hours")}})
+    got = R._chain_hours_for_season(74)
+    got["T1"] = (999, "tampered")
+    assert R._chain_hours_for_season(74)["T1"] == (9, "chain:verified_hours")
+    R.reset_chain_index()

@@ -71,6 +71,40 @@ class ChainConsultError(RuntimeError):
     """The chain could not be consulted, so its verdict is unknown."""
 
 
+# One store read per PROCESS, indexed by season. Reading per-season meant
+# re-scanning every attestation in the store for each season — fine while the
+# consult was opt-in and used for one day, fatal the moment it became the
+# default and `settle --all` asked for 76 of them: 76 full store scans, and
+# the command simply stopped responding. The store is append-only and a
+# settle run is short, so one snapshot is both correct and honest here.
+_CHAIN_INDEX: dict[int, dict[str, tuple[int, str]]] | None = None
+
+
+def reset_chain_index() -> None:
+    """Drop the cached snapshot (tests, and long-lived processes)."""
+    global _CHAIN_INDEX
+    _CHAIN_INDEX = None
+
+
+def _load_chain_index() -> dict[int, dict[str, tuple[int, str]]]:
+    """season -> {node_id: (hours, basis)} for every seal in the store."""
+    from ..datalayer import config as dl_config
+    from ..datalayer.rpc import DataLayerRpc
+    from ..payout import reader
+    from ..payout.calculator import paid_hours
+
+    cfg = dl_config.load()
+    dl = cfg.data_layer
+    rpc = DataLayerRpc(host=dl.host, port=dl.port,
+                       cert_path=dl.cert_path, key_path=dl.key_path)
+    index: dict[int, dict[str, tuple[int, str]]] = {}
+    for att in reader.read_all_attestations(rpc, dl.store_id):
+        hours, basis = paid_hours(att.signed)
+        index.setdefault(int(att.season), {})[att.node_id.upper()] = (
+            int(hours), f"chain:{basis}")
+    return index
+
+
 def _chain_hours_for_season(season: int) -> dict[str, tuple[int, str]]:
     """node_id -> (hours, basis) from sealed on-chain attestations.
 
@@ -90,25 +124,14 @@ def _chain_hours_for_season(season: int) -> dict[str, tuple[int, str]]:
     Set ORCHARD_SETTLE_CHAIN=0 to settle on oracle hours deliberately, e.g. on
     a host with no DataLayer daemon.
     """
+    global _CHAIN_INDEX
     if os.environ.get("ORCHARD_SETTLE_CHAIN", "1").strip().lower() in (
             "0", "false", "no", "off"):
         return {}
     try:
-        from ..datalayer import config as dl_config
-        from ..datalayer.rpc import DataLayerRpc
-        from ..payout import reader
-        from ..payout.calculator import paid_hours
-        cfg = dl_config.load()
-        dl = cfg.data_layer
-        rpc = DataLayerRpc(host=dl.host, port=dl.port,
-                           cert_path=dl.cert_path, key_path=dl.key_path)
-        out: dict[str, tuple[int, str]] = {}
-        for att in reader.read_all_attestations(rpc, dl.store_id):
-            if int(att.season) != int(season):
-                continue
-            hours, basis = paid_hours(att.signed)
-            out[att.node_id.upper()] = (int(hours), f"chain:{basis}")
-        return out
+        if _CHAIN_INDEX is None:
+            _CHAIN_INDEX = _load_chain_index()
+        return dict(_CHAIN_INDEX.get(int(season), {}))
     except Exception as e:               # noqa: BLE001
         raise ChainConsultError(
             f"could not consult the chain for season {season}: {e}. Refusing "
