@@ -178,14 +178,22 @@ monotonic NVS-persisted seq) and an hour needs **30 accepted readings** to
 credit `hours_online` (half the 60s cadence — one ping an hour is no longer an
 hour).
 
-## Suggested Windows schedule
+## Windows schedule (one command)
 
-1. Preflight at boot (alert if NOT READY).
-2. Publish every hour at :05.
-3. Attest once daily after 00:10 UTC.
-4. `economics settle --season <yesterday> --yes` after attest.
-5. `economics pay` (dry) daily; run live deliberately after reviewing.
-6. Reconcile daily; page on exit 1.
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\schedule_windows.ps1
+```
+
+Registers four tasks: **Publish** hourly at :10, **Attest** daily 00:25,
+**Settle** (`economics settle --all --yes`) daily 00:40, **Status** daily
+08:00. Output appends to `orchard_chia\data\ops\scheduler-*.log`.
+`-Unregister` removes them.
+
+**Paying is deliberately NOT scheduled.** `economics pay` stays a human act —
+it needs DRY_RUN=false, the explicit flag, external ceilings and a wallet id,
+and no timer should launder that decision. The daily Status task shows the
+unpaid backlog so you know when to act. A timer tick overlapping a manual run
+is safe: the shared writer lock refuses the second entrant.
 
 Publish and attest cannot overlap (shared lock); a run that finds the lock
 held exits 64 with the holder's pid. `/network/stats` now exposes
