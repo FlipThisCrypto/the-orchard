@@ -67,38 +67,79 @@ def _duplicate_pubkeys(nodes: list[dict]) -> set[str]:
     return {pk for pk, count in seen.items() if count > 1}
 
 
+class ChainConsultError(RuntimeError):
+    """The chain could not be consulted, so its verdict is unknown."""
+
+
+# One store read per PROCESS, indexed by season. Reading per-season meant
+# re-scanning every attestation in the store for each season — fine while the
+# consult was opt-in and used for one day, fatal the moment it became the
+# default and `settle --all` asked for 76 of them: 76 full store scans, and
+# the command simply stopped responding. The store is append-only and a
+# settle run is short, so one snapshot is both correct and honest here.
+_CHAIN_INDEX: dict[int, dict[str, tuple[int, str]]] | None = None
+
+
+def reset_chain_index() -> None:
+    """Drop the cached snapshot (tests, and long-lived processes)."""
+    global _CHAIN_INDEX
+    _CHAIN_INDEX = None
+
+
+def _load_chain_index() -> dict[int, dict[str, tuple[int, str]]]:
+    """season -> {node_id: (hours, basis)} for every seal in the store."""
+    from ..datalayer import config as dl_config
+    from ..datalayer.rpc import DataLayerRpc
+    from ..payout import reader
+    from ..payout.calculator import paid_hours
+
+    cfg = dl_config.load()
+    dl = cfg.data_layer
+    rpc = DataLayerRpc(host=dl.host, port=dl.port,
+                       cert_path=dl.cert_path, key_path=dl.key_path)
+    index: dict[int, dict[str, tuple[int, str]]] = {}
+    for att in reader.read_all_attestations(rpc, dl.store_id):
+        hours, basis = paid_hours(att.signed)
+        index.setdefault(int(att.season), {})[att.node_id.upper()] = (
+            int(hours), f"chain:{basis}")
+    return index
+
+
 def _chain_hours_for_season(season: int) -> dict[str, tuple[int, str]]:
     """node_id -> (hours, basis) from sealed on-chain attestations.
 
-    Opt-in via ORCHARD_SETTLE_CHAIN=1 (the runner does not always sit where a
-    DataLayer daemon does). When a seal exists it DOMINATES the oracle's
-    accounting: paid_hours() prices it exactly as the payout rules do — a
-    proof-backed seal yields its verified_hours, a placeholder yields 0, and
-    that zero is the honest answer for a sealed season with no evidence.
-    Failures return {} and the run falls back to oracle hours, labelled so.
+    ON BY DEFAULT. "Don't trust the oracle, verify it" is the product thesis;
+    paying on the oracle's self-report while a signed, independently
+    verifiable seal for that exact season sits on chain contradicts it. Where
+    a seal exists it DOMINATES: paid_hours() prices it exactly as the payout
+    rules do — a proof-backed seal yields its verified_hours, a placeholder
+    yields 0, and that zero is the honest answer for a sealed season with no
+    evidence. Where no seal exists, the oracle's hours stand, labelled so.
+
+    A FAILED consult RAISES rather than falling back. The fallback is not
+    neutral: the chain's number is never higher than the oracle's (a
+    placeholder is 0, a real seal counts only signature-verified hours), so
+    quietly reverting to the oracle on a transient DataLayer hiccup would
+    overpay — and a day settles ONCE, so the overpayment would be permanent.
+    Set ORCHARD_SETTLE_CHAIN=0 to settle on oracle hours deliberately, e.g. on
+    a host with no DataLayer daemon.
     """
-    if os.environ.get("ORCHARD_SETTLE_CHAIN", "").strip() not in ("1", "true", "on"):
+    global _CHAIN_INDEX
+    if os.environ.get("ORCHARD_SETTLE_CHAIN", "1").strip().lower() in (
+            "0", "false", "no", "off"):
         return {}
     try:
-        from ..datalayer import config as dl_config
-        from ..datalayer.rpc import DataLayerRpc
-        from ..payout import reader
-        from ..payout.calculator import paid_hours
-        cfg = dl_config.load()
-        dl = cfg.data_layer
-        rpc = DataLayerRpc(host=dl.host, port=dl.port,
-                           cert_path=dl.cert_path, key_path=dl.key_path)
-        out: dict[str, tuple[int, str]] = {}
-        for att in reader.read_all_attestations(rpc, dl.store_id):
-            if int(att.season) != int(season):
-                continue
-            hours, basis = paid_hours(att.signed)
-            out[att.node_id.upper()] = (int(hours), f"chain:{basis}")
-        return out
-    except Exception as e:               # noqa: BLE001 — fall back, visibly
-        print(f"[economics] chain consult failed ({e}); using oracle hours",
-              file=sys.stderr)
-        return {}
+        if _CHAIN_INDEX is None:
+            _CHAIN_INDEX = _load_chain_index()
+        return dict(_CHAIN_INDEX.get(int(season), {}))
+    except Exception as e:               # noqa: BLE001
+        raise ChainConsultError(
+            f"could not consult the chain for season {season}: {e}. Refusing "
+            f"to fall back to the oracle's own hours — the chain's figure is "
+            f"never higher, so falling back can only overpay, and a day "
+            f"settles once. Fix the DataLayer connection, or set "
+            f"ORCHARD_SETTLE_CHAIN=0 to settle on oracle hours deliberately."
+        ) from e
 
 
 def observe_season(oracle: OracleClient, season: int) -> list:
@@ -286,6 +327,9 @@ def main(argv: list[str] | None = None) -> int:
         except OracleError as e:
             print(f"oracle unreachable: {e}", file=sys.stderr)
             return 3
+        except ChainConsultError as e:
+            print(f"{e}", file=sys.stderr)
+            return 3
 
         settlement = settle_day(trees, day_index=day,
                                 pool_remaining_mojos=snap.remaining_mojos)
@@ -344,6 +388,9 @@ def _cmd_settle_all(ledger_path: Path, oracle, current: int, *, yes: bool) -> in
                 print(f"season {season}: oracle unreachable ({e}); stopping "
                       f"here so no gap is skipped.", file=sys.stderr)
                 return 3
+            except ChainConsultError as e:
+                print(f"season {season}: {e}", file=sys.stderr)
+                return 3
             snap = led.snapshot()
             settlement = settle_day(trees, day_index=day_index_for_season(season),
                                     pool_remaining_mojos=snap.remaining_mojos)
@@ -370,6 +417,49 @@ def _cmd_settle_all(ledger_path: Path, oracle, current: int, *, yes: bool) -> in
               f"pool {'now' if yes else 'would be'} "
               f"{format_juice(led.snapshot().remaining_mojos - (0 if yes else total))} JUICE.")
     return 0
+
+
+def _tree_liveness(oracle) -> list[str]:
+    """One line per live Tree: how long since it last reported.
+
+    The operator discovered a 15-hour outage by reading a settlement report
+    days later. Nothing told them. The pool balance is not the thing that
+    needs watching daily — the Trees are, because every hour dark is an hour
+    unearnable and unrecoverable: a season settles once and cannot be
+    backfilled.
+    """
+    from datetime import datetime, timezone as _tz
+    out: list[str] = []
+    try:
+        nodes = oracle.list_nodes()
+    except Exception as e:                       # noqa: BLE001
+        return [f"  (could not read Trees: {str(e)[:60]})"]
+    now = datetime.now(_tz.utc)
+    for n in sorted(nodes, key=lambda x: str(x.get("node_id") or "")):
+        nid = str(n.get("node_id") or "?")[:12]
+        raw = n.get("last_reading_at") or n.get("last_seen_at")
+        if not raw:
+            out.append(f"  {nid}  never reported")
+            continue
+        try:
+            seen = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            out.append(f"  {nid}  last seen {raw}")
+            continue
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=_tz.utc)
+        # Clamp at zero: the oracle's clock runs a few seconds ahead of this
+        # machine's, which rendered a healthy Tree as "-0 min ago" — a display
+        # that reads like a bug and trains the operator to distrust the line.
+        mins = max(0.0, (now - seen).total_seconds() / 60)
+        if mins < 15:
+            out.append(f"  {nid}  reporting ({mins:.0f} min ago)")
+        elif mins < 120:
+            out.append(f"  {nid}  !! QUIET for {mins:.0f} min — earning nothing")
+        else:
+            out.append(f"  {nid}  !! DARK for {mins / 60:.1f} h — "
+                       f"{mins / 60:.0f} unearnable hour(s) so far")
+    return out
 
 
 def _cmd_status(ledger_path: Path, current_season: int) -> int:
@@ -401,6 +491,16 @@ def _cmd_status(ledger_path: Path, current_season: int) -> int:
               f"at the current ceiling — longer at real uptime")
         behind = (current_season - 2) - (snap.last_day_index
                                          if snap.last_day_index is not None else -1)
+        print("TREES")
+        try:
+            oracle = OracleClient(
+                os.environ.get("ORCHARD_ORACLE_URL",
+                               "https://oracle.theorchard.network"),
+                os.environ.get("ORCHARD_ORACLE_WRITER_TOKEN") or None)
+            for line in _tree_liveness(oracle):
+                print(line)
+        except Exception as e:                   # noqa: BLE001
+            print(f"  (unavailable: {str(e)[:60]})")
         print("SETTLEMENT")
         print("  last settled  "
               + (f"day {snap.last_day_index} (season {snap.last_day_index + 1})"
@@ -455,10 +555,23 @@ def _cmd_pay(ledger_path: Path, args) -> int:
 
     genesis = datetime.combine(schedule.season_genesis_from_env(),
                                datetime.min.time(), tzinfo=timezone.utc)
+    # The operator's own config.yaml already names the token; env overrides it.
+    # Demanding the env var while the canonical id sat in config was pure
+    # duplication — the safety property is "never GUESS which CAT", and
+    # reading the value the operator configured is not a guess. Refusing when
+    # neither source has it still stands.
     asset_id = os.environ.get("ORCHARD_ASSET_ID", "").strip()
     if not asset_id:
-        print("ORCHARD_ASSET_ID is not set — refusing to guess which CAT to "
-              "send.", file=sys.stderr)
+        try:
+            from ..allocation.__main__ import _load_config
+            asset_id = str(((_load_config().get("token") or {})
+                            .get("asset_id") or "")).strip()
+        except Exception:                       # noqa: BLE001
+            asset_id = ""
+    if not asset_id:
+        print("no token asset_id: set ORCHARD_ASSET_ID, or token.asset_id in "
+              "orchard_chia/config.yaml. Refusing to guess which CAT to send.",
+              file=sys.stderr)
         return 2
 
     max_cycle = int(os.environ.get("ORCHARD_PAY_MAX_CYCLE_MOJOS", "0") or 0)

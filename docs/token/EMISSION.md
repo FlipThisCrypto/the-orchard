@@ -225,6 +225,15 @@ does not contribute to `total_weight`.
   class once, redundant same-class devices credit once, qualification requires
   ≥12 reporting hours and physically plausible values
   (`PLAUSIBLE_RANGES`). Extending the list is a data change, not logic.
+- **Chain-first settlement — DEFAULT.** Where a signed on-chain seal exists
+  for a season it outranks the oracle's own count; a failed consult REFUSES
+  rather than falling back (the chain's figure is never higher, so falling
+  back can only overpay, and a day settles once). `ORCHARD_SETTLE_CHAIN=0`
+  opts out deliberately, e.g. on a host with no DataLayer daemon.
+- **Sensor persistence is relative.** A sensor qualifies by reporting through
+  half the hours the Tree was CREDITED online, capped at 12 (half a full day —
+  what the old flat 12 always meant). A flat bar made partial uptime
+  unearnable rather than proportionally paid.
 - **Heartbeat integrity — IMPLEMENTED.** An hour credits only with ≥30
   accepted readings spread across ≥4 ten-minute slots; replay protection is
   on by default; a sealed on-chain season outranks the oracle's own count

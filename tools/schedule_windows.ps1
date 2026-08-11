@@ -8,6 +8,9 @@
 #
 #   Orchard Publish    hourly :10   publish device-signed readings to DataLayer
 #   Orchard Attest     daily 00:25  seal closed seasons (skips no-evidence ones)
+#   Orchard Sync       daily 00:30  post chain-sealed attestations the oracle
+#                                   is missing (reads chain, writes only the
+#                                   oracle's own DB — no fee, no chain write)
 #   Orchard Settle     daily 00:40  economics settle --all --yes (ledger write,
 #                                   NOT a spend)
 #   Orchard Status     daily 08:00  status + audit into the ops log
@@ -46,6 +49,9 @@ $Tasks = @(
     @{ Name = "Orchard Attest"
        Args = "-m orchard_chia.datalayer attest"
        Trigger = { New-ScheduledTaskTrigger -Daily -At "00:25" } }
+    @{ Name = "Orchard Sync"
+       Args = "-m orchard_chia.datalayer sync-oracle"
+       Trigger = { New-ScheduledTaskTrigger -Daily -At "00:30" } }
     @{ Name = "Orchard Settle"
        Args = "-m orchard_chia.economics settle --all --yes"
        Trigger = { New-ScheduledTaskTrigger -Daily -At "00:40" } }
@@ -86,6 +92,6 @@ foreach ($t in $Tasks) {
 }
 
 Write-Host ""
-Write-Host "Scheduled. Publish :10 hourly; attest 00:25; settle 00:40; verify 01:00; status 08:00."
+Write-Host "Scheduled. Publish :10 hourly; attest 00:25; sync 00:30; settle 00:40; verify 01:00; status 08:00."
 Write-Host "Paying stays manual by design:  python -m orchard_chia.economics pay"
 Write-Host "Remove everything with:  tools\schedule_windows.ps1 -Unregister"

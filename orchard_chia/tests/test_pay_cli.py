@@ -55,9 +55,13 @@ def test_live_needs_external_ceilings(settled, monkeypatch, capsys):
 
 
 def test_no_asset_id_refuses_even_dry(settled, monkeypatch, capsys):
+    """Neither env nor config: still a refusal. (The config fallback added
+    later means this test must silence BOTH sources, not just the env one.)"""
     monkeypatch.delenv("ORCHARD_ASSET_ID", raising=False)
+    monkeypatch.setattr("orchard_chia.allocation.__main__._load_config",
+                        lambda: {})
     assert main(["pay"]) == 2
-    assert "refusing to guess which CAT" in capsys.readouterr().err
+    assert "Refusing to guess which CAT" in capsys.readouterr().err
 
 
 def test_nothing_unpaid_is_a_clean_zero(tmp_path, monkeypatch, capsys):
@@ -324,3 +328,80 @@ def test_a_genuinely_hour_less_tree_with_no_wallet_still_settles(
     assert main(["settle", "--season", "76", "--yes"]) == 0
     with PoolLedger(tmp_path / "i.db") as led:
         assert led.snapshot().days_settled == 1
+
+
+def test_the_asset_id_falls_back_to_config(tmp_path, monkeypatch, capsys):
+    """The operator's config already names the token; demanding the env var
+    too was duplication. "Never GUESS which CAT" is the property — reading the
+    configured value is not a guess."""
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "a.db"))
+    monkeypatch.delenv("ORCHARD_ASSET_ID", raising=False)
+    monkeypatch.setattr("orchard_chia.allocation.__main__._load_config",
+                        lambda: {"token": {"asset_id": ASSET}})
+    assert main(["pay"]) == 0
+    assert "no settled unpaid days" in capsys.readouterr().out
+
+
+def test_neither_source_still_refuses(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "b.db"))
+    monkeypatch.delenv("ORCHARD_ASSET_ID", raising=False)
+    monkeypatch.setattr("orchard_chia.allocation.__main__._load_config",
+                        lambda: {})
+    assert main(["pay"]) == 2
+    assert "Refusing to guess which CAT" in capsys.readouterr().err
+
+
+# --- per-Tree liveness ------------------------------------------------------
+
+class _Seen:
+    def __init__(self, minutes_ago):
+        from datetime import datetime, timedelta, timezone as tz
+        self._when = (None if minutes_ago is None else
+                      (datetime.now(tz.utc) - timedelta(minutes=minutes_ago)))
+
+    def list_nodes(self, include_retired=False):
+        return [{"node_id": "D8641AD6CAE36977818499469F7E8C49",
+                 "last_reading_at": self._when.isoformat() if self._when else None}]
+
+
+def test_a_reporting_tree_reads_as_reporting():
+    from orchard_chia.economics.runner import _tree_liveness
+    assert "reporting" in _tree_liveness(_Seen(3))[0]
+
+
+def test_a_quiet_tree_is_flagged():
+    from orchard_chia.economics.runner import _tree_liveness
+    line = _tree_liveness(_Seen(45))[0]
+    assert "QUIET" in line and "earning nothing" in line
+
+
+def test_a_dark_tree_names_the_unearnable_hours():
+    """Every hour dark is unearnable and unrecoverable — a season settles once
+    and cannot be backfilled."""
+    from orchard_chia.economics.runner import _tree_liveness
+    line = _tree_liveness(_Seen(15 * 60))[0]
+    assert "DARK" in line and "unearnable" in line
+
+
+def test_a_tree_that_never_reported_says_so():
+    from orchard_chia.economics.runner import _tree_liveness
+    assert "never reported" in _tree_liveness(_Seen(None))[0]
+
+
+def test_an_unreadable_oracle_does_not_break_status():
+    from orchard_chia.economics.runner import _tree_liveness
+
+    class Dead:
+        def list_nodes(self, include_retired=False):
+            raise RuntimeError("oracle down")
+
+    assert "could not read Trees" in _tree_liveness(Dead())[0]
+
+
+def test_clock_skew_does_not_render_negative_minutes():
+    """The oracle's clock runs slightly ahead; "-0 min ago" reads like a bug
+    and trains the operator to distrust the whole line."""
+    from orchard_chia.economics.runner import _tree_liveness
+    line = _tree_liveness(_Seen(-1))[0]        # timestamp in the future
+    assert "-" not in line.split("(")[-1]
+    assert "reporting" in line
