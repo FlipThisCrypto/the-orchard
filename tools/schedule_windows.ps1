@@ -40,7 +40,7 @@ New-Item -ItemType Directory -Force $LogDir | Out-Null
 $Tasks = @(
     @{ Name = "Orchard Publish"
        Args = "-m orchard_chia.datalayer publish"
-       Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date).Date `
+       Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddMinutes(10) `
                      -RepetitionInterval (New-TimeSpan -Hours 1) `
                      -RepetitionDuration (New-TimeSpan -Days 3650) } }
     @{ Name = "Orchard Attest"
