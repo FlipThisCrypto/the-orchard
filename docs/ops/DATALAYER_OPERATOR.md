@@ -189,6 +189,13 @@ Registers four tasks: **Publish** hourly at :10, **Attest** daily 00:25,
 08:00. Output appends to `orchard_chia\data\ops\scheduler-*.log`.
 `-Unregister` removes them.
 
+**The Settle task needs wallet visibility.** Scheduled tasks do not inherit
+your shell's environment: run `setx ORCHARD_ORACLE_WRITER_TOKEN <token>` once
+(user-level) so the timer can see wallet bindings. Until then the guard makes
+the failure safe — a settle that cannot see wallets while Trees earned hours
+REFUSES (exit 4) rather than permanently recording zero for rewards genuinely
+earned, and the refusal lands in `scheduler-orchard-settle.log`.
+
 **Paying is deliberately NOT scheduled.** `economics pay` stays a human act —
 it needs DRY_RUN=false, the explicit flag, external ceilings and a wallet id,
 and no timer should launder that decision. The daily Status task shows the

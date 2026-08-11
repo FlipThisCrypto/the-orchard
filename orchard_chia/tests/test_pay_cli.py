@@ -261,3 +261,66 @@ def test_a_negative_fee_is_refused(monkeypatch):
     monkeypatch.setenv("ORCHARD_PAY_FEE_MOJOS", "-1")
     with pytest.raises(SystemExit, match="negative"):
         _fee_mojos()
+
+
+class _BlindOracle:
+    """Real hours, no visible wallet — the scheduler-without-token shape."""
+    def list_nodes(self, include_retired=False):
+        return [{"node_id": "T1", "wallet_address": None, "sensors": ["s"]}]
+
+    def get_uptime(self, node_id, season):
+        return {"hours_online": 9}
+
+
+def test_a_wallet_blind_settle_refuses_rather_than_burning_the_day(
+        tmp_path, monkeypatch, capsys):
+    """The day settles once. Recording 0 for hours genuinely earned, because
+    the CALLER could not see wallets, would burn those rewards forever."""
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "g.db"))
+    monkeypatch.setenv("ORCHARD_ASSET_ID", ASSET)
+    monkeypatch.setattr("orchard_chia.economics.runner.OracleClient",
+                        lambda url, tok: _BlindOracle())
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner.schedule.season_number_for",
+        lambda now: 77)
+    rc = main(["settle", "--season", "76", "--yes"])
+    assert rc == 4
+    assert "ORCHARD_ORACLE_WRITER_TOKEN" in capsys.readouterr().err
+    with PoolLedger(tmp_path / "g.db") as led:
+        assert led.snapshot().days_settled == 0, "nothing may be recorded"
+
+
+def test_settle_all_stops_at_a_wallet_blind_season(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "h.db"))
+    monkeypatch.setenv("ORCHARD_ASSET_ID", ASSET)
+    monkeypatch.setattr("orchard_chia.economics.runner.OracleClient",
+                        lambda url, tok: _BlindOracle())
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner.schedule.season_number_for",
+        lambda now: 77)
+    rc = main(["settle", "--all", "--yes"])
+    assert rc == 4
+    with PoolLedger(tmp_path / "h.db") as led:
+        assert led.snapshot().days_settled == 0
+
+
+def test_a_genuinely_hour_less_tree_with_no_wallet_still_settles(
+        tmp_path, monkeypatch, capsys):
+    """Zero hours and no wallet is just an idle unclaimed Tree — the day
+    settles normally; nothing was earned to burn."""
+    class Idle:
+        def list_nodes(self, include_retired=False):
+            return [{"node_id": "T1", "wallet_address": None, "sensors": ["s"]}]
+        def get_uptime(self, node_id, season):
+            return {"hours_online": 0}
+
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "i.db"))
+    monkeypatch.setenv("ORCHARD_ASSET_ID", ASSET)
+    monkeypatch.setattr("orchard_chia.economics.runner.OracleClient",
+                        lambda url, tok: Idle())
+    monkeypatch.setattr(
+        "orchard_chia.economics.runner.schedule.season_number_for",
+        lambda now: 77)
+    assert main(["settle", "--season", "76", "--yes"]) == 0
+    with PoolLedger(tmp_path / "i.db") as led:
+        assert led.snapshot().days_settled == 1
