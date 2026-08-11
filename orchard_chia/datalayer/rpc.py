@@ -248,7 +248,7 @@ class DataLayerRpc:
                 data = self._post("get_keys", {"id": store_id})
             except ChiaRpcError:
                 return []
-            return list(data.get("keys", []))
+            return self._normalize_keys(data.get("keys", []))
         return self._drain_key_pages(store_id, first, first_page)
 
     def get_keys_strict(self, store_id: str) -> list[str]:
@@ -305,8 +305,21 @@ class DataLayerRpc:
             return one, 1
         return zero, 0
 
+    @staticmethod
+    def _normalize_keys(keys: list) -> list[str]:
+        """Bare hex, always. The live daemon returns 0x-prefixed keys, and
+        every downstream consumer that decodes them (hour discovery, the
+        payout reader, chain-hour counting) breaks or silently skips on the
+        prefix — the third appearance of this bug class in this repo. The
+        boundary normalizes once so no consumer can meet the prefix again."""
+        out = []
+        for k in keys:
+            if isinstance(k, str):
+                out.append(k[2:] if k.startswith("0x") else k)
+        return out
+
     def _drain_key_pages(self, store_id: str, first: dict, first_page: int) -> list[str]:
-        keys = list(first.get("keys", []))
+        keys = self._normalize_keys(first.get("keys", []))
         try:
             total = int(first.get("total_pages"))
         except (TypeError, ValueError):

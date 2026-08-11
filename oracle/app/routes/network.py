@@ -75,6 +75,14 @@ class NetworkStats(BaseModel):
     # "last_attestation_at is old while readings_last_24h is not".
     last_attestation_at:    str | None = Field(
         None, description="When the writer last recorded an on-chain attestation")
+    # Rejections, so "device quiet" and "oracle refusing" are distinguishable
+    # from outside. A healthy network rejects ~nothing; readings_last_24h
+    # falling while this rises means the oracle is refusing posts (and the
+    # reasons say why); both falling means devices went quiet.
+    readings_rejected_24h:  int = Field(
+        0, description="Refused ingest attempts, today + yesterday UTC")
+    reject_reasons_24h:     dict[str, int] = Field(
+        default_factory=dict, description="Refusals by reason, same window")
     last_reading_at:        str | None = Field(
         None, description="When any Tree last posted an accepted reading")
     current_season:         int = Field(..., description="Current Season number per oracle's clock")
@@ -146,6 +154,16 @@ def _compute_stats(db: Session) -> NetworkStats:
         select(func.max(models.Reading.received_at))
     ).scalar_one()
 
+    from datetime import timedelta as _td
+    days = [(now.strftime("%Y-%m-%d")), ((now - _td(days=1)).strftime("%Y-%m-%d"))]
+    reject_rows = db.execute(
+        select(models.RejectCounter.reason,
+               func.sum(models.RejectCounter.count))
+        .where(models.RejectCounter.day_utc.in_(days))
+        .group_by(models.RejectCounter.reason)
+    ).all()
+    reject_reasons = {r: int(c) for r, c in reject_rows}
+
     return NetworkStats(
         trees_registered=trees_registered,
         trees_active_24h=trees_active_24h,
@@ -153,6 +171,8 @@ def _compute_stats(db: Session) -> NetworkStats:
         readings_last_24h=readings_last_24h,
         attestations_total=attestations_total,
         last_attestation_at=last_att.isoformat() if last_att else None,
+        readings_rejected_24h=sum(reject_reasons.values()),
+        reject_reasons_24h=reject_reasons,
         last_reading_at=last_reading.isoformat() if last_reading else None,
         current_season=seasons.current_season(),
         as_of_utc=now.isoformat(),

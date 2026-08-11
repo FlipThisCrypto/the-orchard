@@ -163,6 +163,21 @@ def observe_season(oracle: OracleClient, season: int) -> list:
     return trees
 
 
+def _wallet_blind(settlement: Settlement) -> list[str]:
+    """Trees that EARNED hours but were excluded only because no wallet was
+    visible to this caller. Recording such a day writes distributed=0 into an
+    append-only ledger for rewards genuinely earned — and a day settles once,
+    so a scheduler running without ORCHARD_ORACLE_WRITER_TOKEN would silently
+    burn every day's earnings forever. That is a caller-configuration failure,
+    never an empty day, and it must stop the write."""
+    out = []
+    for t in settlement.rewards.ineligible:
+        if (t.verified_heartbeats > 0
+                and "wallet" in (t.ineligible_reason or "").lower()):
+            out.append(t.tree_id)
+    return out
+
+
 def render(settlement: Settlement, *, season: int, dry: bool) -> str:
     r = settlement.rewards
     L = ["=" * 70,
@@ -280,6 +295,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.cmd == "settle":
                 print("\nDry run — re-run with --yes to record.")
             return 0
+        blind = _wallet_blind(settlement)
+        if blind:
+            print(f"REFUSED: {', '.join(t[:12] for t in blind)} earned hours "
+                  f"this season but no wallet binding is visible to this "
+                  f"caller. Recording now would permanently write 0 for "
+                  f"rewards genuinely earned — set ORCHARD_ORACLE_WRITER_TOKEN "
+                  f"(or run where wallets are visible) and re-run.",
+                  file=sys.stderr)
+            return 4
         with ops_log.ops_run("settle", season=season,
                              distributed_mojos=settlement.distributed_mojos,
                              unearned_mojos=settlement.unearned_mojos,
@@ -327,6 +351,14 @@ def _cmd_settle_all(ledger_path: Path, oracle, current: int, *, yes: bool) -> in
             print(f"  season {season:4d}: distributed "
                   f"{format_juice(settlement.distributed_mojos):>14}, "
                   f"unearned {format_juice(settlement.unearned_mojos):>14}")
+            blind = _wallet_blind(settlement)
+            if blind:
+                print(f"season {season}: REFUSED — {', '.join(t[:12] for t in blind)} "
+                      f"earned hours but no wallet is visible to this caller. "
+                      f"Stopping so no earned day is recorded as zero; set "
+                      f"ORCHARD_ORACLE_WRITER_TOKEN and re-run.",
+                      file=sys.stderr)
+                return 4
             if yes:
                 with ops_log.ops_run("settle", season=season,
                                      distributed_mojos=settlement.distributed_mojos,

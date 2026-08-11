@@ -201,6 +201,24 @@ class Season(Base):
     block_height_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class RejectCounter(Base):
+    """Per-day, per-reason count of REFUSED ingest attempts.
+
+    Rejections used to vanish into access logs nobody reads, which made
+    "device gone quiet" and "oracle refusing everything" indistinguishable
+    from outside — exactly the ambiguity that made a live ingest-rate drop
+    look like a shipped regression until the arrival gaps were inspected by
+    hand. One row per (UTC day, reason); an upsert per rejection. Bounded:
+    days x a handful of reasons, so an attacker hammering the endpoint grows
+    a counter, not a table.
+    """
+    __tablename__ = "reject_counters"
+
+    day_utc: Mapped[str] = mapped_column(String(10), primary_key=True)
+    reason: Mapped[str] = mapped_column(String(40), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class Attestation(Base):
     """Per-(node, season) attestation written to DataLayer (Phase 5).
 
