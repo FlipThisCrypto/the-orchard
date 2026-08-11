@@ -42,3 +42,24 @@ the following are **built and tested but not yet in effect live**:
 - store readable: 200/200 keys (was 0)
 - unproven records pay 0.000 JUICE (was 170.033)
 - schedule totals the 85M pool over 8 years; 75%-uptime runway 14.6 years
+
+
+---
+
+## Addendum — 2026-08-11, Set 2: the pipeline went live
+
+- PR #55 merged; the box deployed and confirmed (real `last_reading_at`).
+- **First proof-backed seasons on mainnet**: publish tx `0x45de6fa2…` (30
+  hours, 32/32 inserts confirmed), attest tx `0x2a3c9156…` (seasons 74–76
+  sealed from readings). Independent verifier: 490 device signatures valid,
+  all Merkle roots recompute, **verified_hours = 9 for season 76** under the
+  30-reading quorum. Sole failing check: the block anchor (firmware
+  placeholder; /beacon still Cloudflare-blocked).
+- **Timers registered and verified on the operator machine**: Publish hourly
+  :10, Attest 00:25, Settle 00:40, Status 08:00 — Status fired once,
+  end-to-end, output in `ops/scheduler-orchard-status.log`. Paying remains
+  manual by design. Settle refuses safely until
+  `setx ORCHARD_ORACLE_WRITER_TOKEN` is done (wallet-blind guard).
+- Live finding for the operator: the Tree's own connectivity is degrading
+  (2,143 → 1,304 → 310 readings/day); the oracle verified healthy at 60s
+  cadence when the device is up.
