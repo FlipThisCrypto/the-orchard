@@ -45,6 +45,28 @@ class ReadingResponse(BaseModel):
     payload: dict
 
 
+def _count_reject(db: Session, reason: str) -> None:
+    """Upsert today's counter for a refusal reason, then COMMIT — the request
+    is about to abort with an HTTPException, which rolls back the session, so
+    the count must not ride in the doomed transaction."""
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    stmt = (
+        sqlite_insert(models.RejectCounter)
+        .values(day_utc=day, reason=reason, count=1)
+        .on_conflict_do_update(
+            index_elements=["day_utc", "reason"],
+            set_={"count": models.RejectCounter.count + 1},
+        )
+    )
+    db.execute(stmt)
+    db.commit()
+
+
+def _reject(db: Session, code: int, reason: str, detail: str):
+    _count_reject(db, reason)
+    return HTTPException(status_code=code, detail=detail)
+
+
 def _bump_uptime_hour(db: Session, node_id: str, when: datetime) -> None:
     """Atomically create-or-increment the (node, hour) uptime counter.
 
@@ -85,7 +107,9 @@ async def post_reading(
         # operator clarity; both leak some info but the data path is local.
         msg = str(e)
         code = status.HTTP_404_NOT_FOUND if "unregistered" in msg else status.HTTP_401_UNAUTHORIZED
-        raise HTTPException(status_code=code, detail=msg)
+        raise _reject(db, code,
+                      "unregistered-node" if code == status.HTTP_404_NOT_FOUND
+                      else "bad-hmac", msg)
 
     # Anti-replay: an exact replay re-sends the identical body, so the
     # HMAC signature is identical. Drop duplicates WITHOUT inserting or
@@ -113,7 +137,8 @@ async def post_reading(
     try:
         payload = json.loads(body_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"invalid JSON: {e}")
+        raise _reject(db, status.HTTP_400_BAD_REQUEST, "invalid-json",
+                      f"invalid JSON: {e}")
 
     # ---- Replay protection (docs/replay-protection.md, T3) ----------
     # `seq` lives inside the HMAC-covered body, so it can't be forged
@@ -131,10 +156,8 @@ async def post_reading(
     seq = payload.get("seq") if isinstance(payload, dict) else None
     seq_valid = isinstance(seq, int) and not isinstance(seq, bool) and seq > 0
     if settings().require_seq and not seq_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="missing or invalid 'seq' (firmware too old? reflash)",
-        )
+        raise _reject(db, status.HTTP_400_BAD_REQUEST, "missing-seq",
+                      "missing or invalid 'seq' (firmware too old? reflash)")
     if seq_valid:
         last_accepted = node.last_seq
         advanced = db.execute(
@@ -146,10 +169,9 @@ async def post_reading(
             # Signature was VALID; the content is just stale -> 409,
             # no uptime credit, no stored row (the failed UPDATE and
             # everything after roll back when we raise).
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"replayed or out-of-order seq {seq} (last accepted {last_accepted})",
-            )
+            raise _reject(db, status.HTTP_409_CONFLICT, "replayed-seq",
+                          f"replayed or out-of-order seq {seq} "
+                          f"(last accepted {last_accepted})")
     # ------------------------------------------------------------------
 
     now = datetime.now(timezone.utc)
@@ -165,10 +187,9 @@ async def post_reading(
         if isinstance(ts, int) and not isinstance(ts, bool) and ts > 0:
             age = int(now.timestamp()) - ts
             if age > max_age:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"stale reading: ts {ts} is {age}s old (max {max_age}s)",
-                )
+                raise _reject(
+                    db, status.HTTP_422_UNPROCESSABLE_ENTITY, "stale-reading",
+                    f"stale reading: ts {ts} is {age}s old (max {max_age}s)")
     # ------------------------------------------------------------------
 
     sensors_obj = payload.get("sensors", {}) if isinstance(payload, dict) else {}
