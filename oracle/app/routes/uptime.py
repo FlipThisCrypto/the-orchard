@@ -45,7 +45,8 @@ def uptime_for_season(node_id: str, season: int, db: Session = Depends(get_db)) 
 
     start, end = seasons.season_bounds(season)
     _, hit_buckets = hours_online_for(db, node_id, season)
-    q_count, q_classes = qualifying_sensor_classes(db, node_id, season)
+    q_count, q_classes = qualifying_sensor_classes(
+        db, node_id, season, credited_hours=len(hit_buckets))
     return UptimeResponse(
         node_id=node_id,
         season=season,

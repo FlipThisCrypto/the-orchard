@@ -101,11 +101,18 @@ def test_the_class_map_is_extensible_data():
 
 
 def test_the_uptime_endpoint_carries_the_qualified_classes(session):
-    """What the settlement runner reads."""
+    """What the settlement runner reads. The endpoint now judges the sensor
+    against the hours the TREE was credited online, so the fixture must also
+    credit those hours (a reading row alone does not create an uptime_hour)."""
     from fastapi.testclient import TestClient
+    from oracle.app import seasons
     from oracle.app.main import app
     for h in range(14):
         _reading(session, h, {"ds18b20": {"t": 20}})
+        session.add(models.UptimeHour(
+            node_id=NODE, hour_utc=seasons.hour_buckets_in_season(SEASON)[h],
+            reading_count=60, slots_mask=0b111111))
+    session.commit()
     with TestClient(app) as c:
         j = c.get(f"/uptime/{NODE}/{SEASON}").json()
     assert j["qualifying_sensor_count"] == 1
@@ -149,3 +156,39 @@ def test_a_bad_spell_only_costs_those_hours(session):
     for h in range(12, 20):
         _reading(session, h, {"ds18b20": {"temperature_c": 5000.0}})
     assert qualifying_sensor_classes(session, NODE, SEASON)[0] == 1
+
+
+# --- the bar is relative to how long the Tree was actually up ---------------
+
+def test_the_bar_is_half_the_hours_the_tree_was_online():
+    from oracle.app.sensor_classes import required_sensor_hours
+    assert required_sensor_hours(24) == 12      # unchanged at full uptime
+    assert required_sensor_hours(9) == 5
+    assert required_sensor_hours(2) == 1
+    assert required_sensor_hours(1) == 1
+    assert required_sensor_hours(0) == 0        # never online, nothing qualifies
+
+
+def test_a_partly_online_tree_can_still_qualify_a_sensor(session):
+    """The live case: 9 chain-verified hours could never reach a flat 12, so
+    the Tree qualified nothing, earned nothing, and vanished from the report."""
+    for h in range(9):
+        _reading(session, h, {"ds18b20": {"temperature_c": 20.0}})
+    n, classes = qualifying_sensor_classes(session, NODE, SEASON,
+                                           credited_hours=9)
+    assert (n, classes) == (1, ["temperature"])
+
+
+def test_a_one_off_declaration_still_fails_the_relative_bar(session):
+    """Relative must not become toothless: one reading in a 9-hour season
+    needs 5 hours of presence and does not get there."""
+    _reading(session, 3, {"ds18b20": {"temperature_c": 20.0}})
+    assert qualifying_sensor_classes(session, NODE, SEASON,
+                                     credited_hours=9) == (0, [])
+
+
+def test_a_tree_that_was_never_online_qualifies_nothing(session):
+    for h in range(20):
+        _reading(session, h, {"ds18b20": {"temperature_c": 20.0}})
+    assert qualifying_sensor_classes(session, NODE, SEASON,
+                                     credited_hours=0) == (0, [])
