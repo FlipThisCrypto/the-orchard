@@ -376,9 +376,22 @@ def harvest_closed_hour_batches(
                 if ch.start_ms <= int(r.get("ts_ms") or 0) < ch.end_ms
             ]
             if not in_window:
+                # Say WHICH of three very different things happened. One
+                # message for all of them made a live catch-up run read as
+                # "the firmware has stopped signing" when the Tree had simply
+                # been offline — the operator's next move is a hardware check,
+                # a reflash, or a clock investigation, and they are not the
+                # same move.
+                if not rows:
+                    why = "no readings (Tree offline this hour)"
+                elif not signed:
+                    why = (f"{len(rows)} reading(s), NONE device-signed "
+                           f"(firmware too old, or signing broken)")
+                else:
+                    why = (f"{len(signed)} signed reading(s) but none stamped "
+                           f"inside the hour (device clock skew?)")
                 notes.append(
-                    f"{node_id[:8]}…:{ch.season}:{ch.hour:02d}: no device-signed rows"
-                )
+                    f"{node_id[:8]}…:{ch.season}:{ch.hour:02d}: {why}")
                 continue
             batches.append(
                 HourBatchInput(
