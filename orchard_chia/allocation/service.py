@@ -18,8 +18,8 @@ from pathlib import Path
 from . import audit as audit_mod
 from .collector import CollectionResult, OracleUptimeSource, collect
 from .engine import BASIS_POINTS_FULL, allocate
-from .executor import ExecutionReport, WalletSpender, execute
-from .lock import LockBusy, RunLock
+from .executor import ExecutionReport, execute
+from .lock import RunLock
 from .planner import PlannerLimits, SpendPlan, persist, plan
 
 # 3-decimal CAT, matching orchard_chia/payout/calculator.py.

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import pytest
 
-from orchard_chia.datalayer import provenance
 from orchard_chia.datalayer.provenance import (FIXTURE_NODE_IDS,
                                                ProvenanceError, check_writable,
                                                filter_writable,

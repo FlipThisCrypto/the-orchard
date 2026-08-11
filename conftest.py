@@ -156,5 +156,15 @@ def _sandbox_chia_config(tmp_path_factory, monkeypatch):
     # environment override, so setting the variable above is NOT sufficient —
     # the first version of this fixture set only the env var and isolated
     # nothing at all. Patch the constant the loader actually reads.
-    from orchard_chia.datalayer import config as _dl_config
+    #
+    # Tolerate the import failing: this conftest applies to EVERY test in the
+    # repo, including CI jobs (puzzles) whose environment deliberately does not
+    # install orchard_chia's dependencies. Where the package cannot even
+    # import, there is no config loader to sandbox — and breaking an unrelated
+    # job to protect it from a module it cannot load is the guard failing
+    # honest work again.
+    try:
+        from orchard_chia.datalayer import config as _dl_config
+    except ImportError:
+        return
     monkeypatch.setattr(_dl_config, "CONFIG_PATH", sandbox, raising=False)

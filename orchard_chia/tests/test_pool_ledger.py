@@ -124,7 +124,6 @@ def test_a_corrupted_ledger_refuses_everything(ledger):
 def test_the_basis_of_every_reward_is_recorded(ledger):
     """An auditor a year from now must be able to tell a chain-verified
     reward from an oracle-trusted one by reading the ledger alone."""
-    import dataclasses
     trees = [TreeDay(tree_id="T1", wallet_address=W, qualifying_sensors=1,
                      verified_heartbeats=24, heartbeat_basis="chain:verified_hours")]
     s = settle_day(trees, day_index=0,

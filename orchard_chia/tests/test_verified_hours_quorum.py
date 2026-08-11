@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from orchard_chia.datalayer import schema, seal, verify
+from orchard_chia.datalayer import schema, seal
 
 NODE = "AABBCCDDEEFF0011AABBCCDDEEFF0011"
 SEED = "01" + "00" * 31

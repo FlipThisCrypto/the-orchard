@@ -370,7 +370,7 @@ def _cmd_status(ledger_path: Path, current_season: int) -> int:
         behind = (current_season - 2) - (snap.last_day_index
                                          if snap.last_day_index is not None else -1)
         print("SETTLEMENT")
-        print(f"  last settled  "
+        print("  last settled  "
               + (f"day {snap.last_day_index} (season {snap.last_day_index + 1})"
                  if snap.last_day_index is not None else "never"))
         if behind > 0:
