@@ -39,27 +39,58 @@ def _reading_bodies() -> list[dict]:
     """
     return [
         {
-            "node_id": NODE, "ts_ms": 1749480000123, "block_anchor": "a1b2c3d4e5f60718",
+            "node_id": NODE, "ts_ms": 1780232400123, "block_anchor": "a1b2c3d4e5f60718",
             "metrics": {
                 "temperature_mc": 21400, "humidity_milli_pct": 48200, "pressure_pa": 101260,
                 "gas_adc_raw": 1234, "gas_mv": 994, "gps_fix": True, "gps_sats": 7,
             },
         },
         {
-            "node_id": NODE, "ts_ms": 1749480060456, "block_anchor": "a1b2c3d4e5f60718",
+            "node_id": NODE, "ts_ms": 1780232460456, "block_anchor": "a1b2c3d4e5f60718",
             "metrics": {
                 "temperature_mc": 21500, "humidity_milli_pct": 48000, "pressure_pa": 101270,
                 "gas_adc_raw": 1240, "gas_mv": 999, "gps_fix": True, "gps_sats": 8,
             },
         },
         {
-            "node_id": NODE, "ts_ms": 1749480120789, "block_anchor": "b2c3d4e5f6071829",
+            "node_id": NODE, "ts_ms": 1780232520789, "block_anchor": "b2c3d4e5f6071829",
             "metrics": {
                 "temperature_mc": 21600, "humidity_milli_pct": 47800, "pressure_pa": 101250,
                 "gas_adc_raw": 1229, "gas_mv": 990, "gps_fix": True, "gps_sats": 8,
             },
         },
     ]
+
+
+def _verified_hours_cases(signed: list[dict], pub: str) -> list[dict]:
+    """Known answers for the per-hour signature quorum.
+
+    An hour counts only when it holds at least `min_readings` signature-valid
+    readings. Before this rule existed, one valid signature credited a whole
+    hour — so a Tree reporting once an hour earned what a Tree reporting every
+    60 seconds earned. The signatures were real; the hour was not.
+
+    Any implementation that reproduces `hour_root` but not this table will
+    reproduce the wrong payout.
+    """
+    good, bad = signed[0], dict(signed[0], sig="00" * 64)
+    cases = []
+    for label, hours, min_readings in (
+        ("one signed reading does not buy an hour", {0: [good]}, 3),
+        ("meeting the quorum exactly does", {0: [good, good, good]}, 3),
+        ("exceeding it does", {0: [good] * 5}, 3),
+        ("invalid signatures do not count toward it", {0: [good, bad, bad]}, 3),
+        ("an empty hour is worth nothing", {0: []}, 1),
+        ("hours are counted independently", {0: [good] * 3, 1: [good]}, 3),
+    ):
+        cases.append({
+            "label": label,
+            "readings_per_hour": {str(h): len(rs) for h, rs in hours.items()},
+            "min_readings_per_hour": min_readings,
+            "verified_hours": schema.verified_hours(hours, pub,
+                                                    min_readings=min_readings),
+        })
+    return cases
 
 
 def _merkle_cases() -> list[dict]:
@@ -84,7 +115,15 @@ def build() -> dict:
     sr = schema.season_root({HOUR: hr})
 
     readings_by_hour = {HOUR: signed}
-    vhrs = schema.verified_hours(readings_by_hour, device_pub)
+    # This fixture is 3 readings, sized to pin canonicalization and roots
+    # rather than to look like a real hour. Its threshold is therefore
+    # stated explicitly instead of inherited from the production constant —
+    # otherwise raising that constant would silently zero the vector.
+    # The quorum RULE is pinned separately by verified_hours_cases below,
+    # so a cross-language implementer cannot read 1 here and hardcode it.
+    VECTOR_MIN_RPH = 1
+    vhrs = schema.verified_hours(readings_by_hour, device_pub,
+                                min_readings=VECTOR_MIN_RPH)
 
     attest = schema.build_attest(
         node_id=NODE, season=SEASON,
@@ -93,6 +132,7 @@ def build() -> dict:
         hours_online=1, verified_hrs=vhrs, reading_count=len(signed),
         block_height_at_write=8794728, season_root_hex=sr,
         signed_at="2026-06-01T00:05:00Z",
+        min_readings_per_hour=VECTOR_MIN_RPH,
     )
     attest_signed = schema.sign_attest(attest, ORACLE_SEED)
 
@@ -135,6 +175,8 @@ def build() -> dict:
         "hour_root": hr,
         "season_root": sr,
         "verified_hours": vhrs,
+        "verified_hours_min_readings_per_hour": VECTOR_MIN_RPH,
+        "verified_hours_cases": _verified_hours_cases(signed, device_pub),
         "season_score": schema.season_score(vhrs),
         "records": {"meta": meta_rec, "node": node_rec, "readings": batch,
                     "attest": attest_signed, "latest": latest_rec},

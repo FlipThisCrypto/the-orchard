@@ -1,6 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reward calculation — pure functions, no I/O.
 
+.. deprecated:: 2026-08-10
+   SUPERSEDED by :mod:`orchard_chia.economics`. This module implements the v1
+   model — 1 $JUICE per Tree per day — which has no network emission ceiling at
+   all: total supply scales with fleet size, so 10,000 Trees would mint 10,000
+   $JUICE/day.
+
+   It stays because every attestation on the DataLayer store was scored under
+   it and a reader must be able to reconstruct what was computed at the time.
+   New payout logic must use ``orchard_chia.economics``.
+
 The math is intentionally trivial in v1: ``tokens = (hours_online / 24) * daily_rate``.
 Future versions will add multipliers (Pass tier, sensor diversity,
 geographic scarcity, validated submissions, reputation) — they'll
@@ -21,33 +31,59 @@ from __future__ import annotations
 CAT_MOJOS_PER_TOKEN = 1000
 
 
-def paid_hours(attestation: dict, *, prefer_verified: bool = True) -> tuple[int, str]:
+def _unproven(attestation: dict, why: str, *, pay_unproven: bool) -> tuple[int, str]:
+    """What an unprovable record is worth.
+
+    Zero, unless the caller explicitly opts out.
+
+    This used to fall back to the operator's own ``hours_online`` claim, on the
+    reasoning that paying 0 would be a unilateral reward-policy change. That was
+    a fair call when it was written. It is no longer the policy: "if the answer
+    to a placeholder is 0, then 0 is given — 0 hours uptime is 0 hours uptime
+    meaning 0% payout of $JUICE".
+
+    The scale of what the old rule permitted, measured against the live store on
+    2026-08-10: all 188 attestations paid, 170.033 $JUICE, every one of them on
+    ``hours_online (unverified)``. 184 of those records belong to Trees that
+    have since been retired as duplicates, and 3 to a node_id that exists only
+    in this repo's test fixtures. Not one had a single published reading behind
+    it. The fallback did not pay a little too much; it paid the entire ledger
+    for evidence that did not exist.
+
+    ``pay_unproven=True`` restores the old amounts for anyone reconciling
+    historical figures. It is off by default and must be asked for by name.
+    """
+    if not pay_unproven:
+        return 0, f"unproven ({why})"
+    try:
+        claim = int(attestation.get("hours_online") or 0)
+    except (TypeError, ValueError):
+        claim = 0
+    return claim, f"hours_online (unverified, {why})"
+
+
+def paid_hours(attestation: dict, *, prefer_verified: bool = True,
+               pay_unproven: bool = False) -> tuple[int, str]:
     """The hours a reward is computed on, plus which field they came from.
 
-    Prefers the verifiable ``verified_hours`` (SPEC §3/§11) when present, else
-    the oracle's ``hours_online`` claim. Returned so the payout report can show
-    the basis actually paid on rather than a claim that wasn't.
+    Pays on the verifiable ``verified_hours`` (SPEC §3/§11) — the number anyone
+    can recompute from the public ``readings:`` rows. Returned with its basis so
+    the payout report shows what the money actually rests on.
 
-    **Schema 1.1.0 basis awareness.** A record that explicitly declares
-    ``seal_source == "placeholder"`` was written with nothing published on
-    chain, so its ``verified_hours`` is 0 by construction — *nothing was
-    verified*. Paying 0 there would be a unilateral reward-policy change, so we
-    fall back to the operator's ``hours_online`` claim, which is exactly the
-    amount this path has always paid. The difference is that the basis is now
-    ``hours_online (unverified)`` and the report says so, instead of a
-    self-report masquerading as the verified metric.
+    **Nothing unprovable is paid.** A record that declares
+    ``seal_source == "placeholder"``, or carries no ``verified_hours`` at all,
+    or declares no verification basis, has nothing behind it that a third party
+    could check. Those pay zero. The oracle's ``hours_online`` is its own
+    account of itself; it is reported, never paid on.
 
-    A record with no ``seal_source`` (pre-1.1.0) keeps the previous behavior.
+    This reverses an earlier decision to fall back to ``hours_online`` for
+    placeholders — see :func:`_unproven` for what that fallback cost when
+    measured against the real store.
 
-    **The fallback is deliberately narrow.** It fires ONLY for a record that is
-    *consistently* a placeholder — it declares ``seal_source == "placeholder"``
-    **and** carries ``verified_hours == 0``, which is exactly what this repo's
-    writer produces. Anything else (an unrecognized basis, a future 1.2 value, a
-    placeholder claiming non-zero verified hours) keeps paying ``verified_hours``.
-    A broader rule would let a non-``"readings"`` string route payment to the
-    larger unverified claim and **inflate** the reward — the precise inversion of
-    "an over-count is not rewarded". Fail closed toward the smaller, provable
-    number; never toward the operator's claim.
+    **Fail closed, always toward the smaller number.** An unrecognized basis or
+    a future schema value keeps paying ``verified_hours`` rather than routing to
+    the larger claim; a placeholder that contradicts itself pays nothing at all.
+    No path here can make a record worth MORE by being less verifiable.
 
     The payer and the verifier must not disagree about the same signed bytes, so
     this consults :func:`schema.attest_basis` rather than re-deriving honesty
@@ -62,11 +98,17 @@ def paid_hours(attestation: dict, *, prefer_verified: bool = True) -> tuple[int,
             return default
 
     vh = attestation.get("verified_hours")
-    if not prefer_verified or vh is None:
+    if not prefer_verified:
         return _int(attestation.get("hours_online")), "hours_online"
 
+    if vh is None:
+        # No verified_hours field at all. Nothing here can be recomputed from
+        # public readings, so there is nothing to pay ON — only the oracle's
+        # word for it. See _unproven() for why that is now worth zero.
+        return _unproven(attestation, "no verified_hours field",
+                         pay_unproven=pay_unproven)
+
     vh = _int(vh)
-    hours_claim = _int(attestation.get("hours_online"))
 
     if dl_schema.attest_declares_placeholder(attestation):
         if dl_schema.placeholder_inconsistency(attestation):
@@ -74,18 +116,19 @@ def paid_hours(attestation: dict, *, prefer_verified: bool = True) -> tuple[int,
             # verified number. The verifier calls this a definitive defect, so
             # the payer must not quietly pay it. No honest writer emits it.
             return 0, "unpayable (inconsistent attestation)"
-        # Consistent placeholder: verified_hours=0 means "unproven", not "zero
-        # uptime". Pay the claim — identical to the pre-1.1.0 amount — but say so.
-        return hours_claim, "hours_online (unverified)"
+        return _unproven(attestation, "placeholder", pay_unproven=pay_unproven)
 
     basis, _why = dl_schema.attest_basis(attestation)
     if basis is True:
         return vh, "verified_hours"
     if basis is None:
-        # No basis declared. Amount is the legacy one (unchanged), but the payer
-        # must not print a bare "verified_hours" for a record a third-party
-        # verifier can only call unproven — that divergence is how a stripped
-        # basis reads as verified to the one party that pays.
+        # No basis declared, but a verified number IS present. That is a
+        # pre-1.1.0 record, not a placeholder — someone computed this from
+        # readings even if the record cannot say so. Paying it is fail-closed
+        # already: verified_hours is the smaller, provable number, never the
+        # operator's claim. The label carries the caveat so the report does not
+        # print a bare "verified_hours" for something a third-party verifier can
+        # only call unproven.
         return vh, "verified_hours (basis undeclared)"
 
     # Declared "readings" but not actually signature-verified, or an
@@ -101,6 +144,7 @@ def juice_mojos_for_attestation(
     *,
     daily_rate: float,
     prefer_verified: bool = True,
+    pay_unproven: bool = False,
 ) -> int:
     """Reward (in $JUICE mojos) for a single signed attestation.
 
@@ -114,7 +158,8 @@ def juice_mojos_for_attestation(
     Caller is responsible for verifying the attestation's signature before
     passing it in — this function trusts the contents.
     """
-    hours, basis = paid_hours(attestation, prefer_verified=prefer_verified)
+    hours, basis = paid_hours(attestation, prefer_verified=prefer_verified,
+                              pay_unproven=pay_unproven)
     if hours < 0 or hours > 24:
         raise ValueError(f"{basis} out of range: {hours}")
     if daily_rate < 0:

@@ -325,17 +325,38 @@ def test_presence_counted_payment_is_labelled_not_changed():
 
 
 # --- payout: honest basis, IDENTICAL amounts ------------------------------ #
-def test_placeholder_payout_amount_is_unchanged_but_labelled():
-    """The whole point: no unilateral change to what an operator is paid."""
+def test_a_placeholder_pays_nothing():
+    """Reversal of an earlier decision, made deliberately and on evidence.
+
+    This test previously asserted the opposite, under the reasoning that paying
+    0 for a placeholder would be a unilateral change to what an operator is
+    paid. That was a fair position — until it was measured. Against the live
+    store on 2026-08-10 the fallback would have paid all 188 attestations,
+    170.033 $JUICE, with not one published reading behind any of them; 184
+    belonged to Trees since retired as duplicates and 3 to a node_id that
+    exists only in this repo's test fixtures.
+
+    The policy is now the owner's: 0 hours verified is 0% payout. A placeholder
+    declares that nothing was published, so there is nothing to pay on.
+    """
     placeholder = {
         "hours_online": 24, "verified_hours": 0,
         "seal_source": schema.SEAL_SOURCE_PLACEHOLDER,
     }
     hours, basis = calculator.paid_hours(placeholder)
-    assert hours == 24                      # same as the old laundered value
-    assert basis == "hours_online (unverified)"
-    # Amount identical to what the pre-1.1.0 laundering produced (24/24 * rate).
-    assert calculator.juice_mojos_for_attestation(placeholder, daily_rate=1.0) == 1000
+    assert hours == 0
+    assert basis == "unproven (placeholder)"
+    assert calculator.juice_mojos_for_attestation(placeholder, daily_rate=1.0) == 0
+
+
+def test_the_superseded_amounts_remain_reachable_by_name():
+    """Reconciling historical figures is a real need; it just is not the default."""
+    placeholder = {
+        "hours_online": 24, "verified_hours": 0,
+        "seal_source": schema.SEAL_SOURCE_PLACEHOLDER,
+    }
+    assert calculator.juice_mojos_for_attestation(
+        placeholder, daily_rate=1.0, pay_unproven=True) == 1000
 
 
 def test_proof_backed_still_pays_on_verified_hours():

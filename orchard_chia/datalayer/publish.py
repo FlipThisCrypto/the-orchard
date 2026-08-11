@@ -18,11 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import clock, confirm, metrics as metrics_mod
+from . import clock, confirm, metrics as metrics_mod, provenance
 from . import ops_log, schedule, schema
 from .config import CONFIG_PATH, load
 from .oracle import OracleClient, OracleError
 from .publish_watermark import PublishWatermark
+from ..allocation.lock import LockBusy, RunLock
 from . import exit_codes
 from .rpc import ChiaRpcError, DataLayerRpc
 
@@ -65,6 +66,66 @@ class PublishPlan:
     nodes_written: list[str] = field(default_factory=list)
 
 
+def _stable_meta_created_at(prior: dict | None, writer_version: str,
+                            season_pubkey: str, fallback: str) -> str:
+    """Keep the store's existing meta timestamp unless the declaration changed.
+
+    Returns the on-chain ``created_at`` when the parts of ``meta:schema`` that
+    carry meaning — the schema version, the writer version, the season pubkey —
+    all still match. Otherwise this really is a new declaration and gets a new
+    timestamp.
+
+    Without this the record differs on every run purely because time passed,
+    which is not a change worth paying a blockchain fee to record.
+    """
+    if not isinstance(prior, dict):
+        return fallback
+    existing = prior.get("created_at")
+    if not isinstance(existing, str) or not existing:
+        return fallback
+    # Rebuild the whole record with the stored timestamp and compare. Checking
+    # named fields instead was wrong twice over: the first version compared
+    # `schema_version` and `season_pubkey`, which this record calls
+    # `orchard_schema` and `signer`, so nothing ever matched and the fix did
+    # nothing. Comparing the rebuilt record has no field names to get wrong and
+    # catches changes anywhere in it — including the units table, which is the
+    # part a reader most needs to be told about.
+    candidate = schema.build_meta(
+        writer_version=writer_version,
+        created_at=existing,
+        season_pubkey=season_pubkey,
+    )
+    return existing if candidate == prior else fallback
+
+
+def _count_chain_hours(dl: "DataLayerRpc", store_id: str) -> dict[tuple[str, int], int]:
+    """(node_id, season) -> hours already ON CHAIN, from the store's own keys.
+
+    Strict read: an unreadable store raises rather than returning an empty
+    count, because zero here becomes the public running_hours_online.
+    """
+    counts: dict[tuple[str, int], int] = {}
+    for key_hex in dl.get_keys_strict(store_id):
+        try:
+            ascii_key = bytes.fromhex(
+                key_hex[2:] if key_hex.startswith("0x") else key_hex
+            ).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        parts = ascii_key.split(":")
+        if len(parts) != 4 or parts[0] != "readings":
+            continue
+        node, season_s, hour_s = parts[1], parts[2], parts[3]
+        if not (hour_s.isascii() and hour_s.isdigit() and len(hour_s) == 2):
+            continue
+        try:
+            season = int(season_s)
+        except ValueError:
+            continue
+        counts[(node.upper(), season)] = counts.get((node.upper(), season), 0) + 1
+    return counts
+
+
 def _upsert(changelist: list[dict], key_hex: str, value_hex: str, existing: str | None) -> bool:
     """Append delete+insert if value changed. Returns True if a write is needed."""
     if existing == value_hex:
@@ -97,13 +158,25 @@ def plan_publish(
     now = created_at or clock.utc_now_iso()
     plan = PublishPlan(changelist=[])
 
-    # Always ensure meta:schema is present / current.
+    # Ensure meta:schema is present and current.
+    #
+    # `created_at` is when this schema declaration was established, NOT when
+    # the job happened to run. Stamping it with the wall clock made the record
+    # different on every single run, so `_upsert` always saw a change and every
+    # publish submitted a fee-bearing spend — including runs with zero new
+    # readings, which is most of them under a scheduler. Observed on 2026-08-09:
+    # a real run reporting `batches: 0` still performed a batch_update.
+    #
+    # So: keep whatever the store already says, unless something that actually
+    # matters (the writer version, the season pubkey) has changed. Then the
+    # bytes are identical, the upsert is a no-op, and a quiet hour is free.
+    mk = schema.meta_key()
+    prior = schema.parse_value(existing.get(mk))
     meta = schema.build_meta(
         writer_version=writer_version,
-        created_at=now,
+        created_at=_stable_meta_created_at(prior, writer_version, season_pubkey, now),
         season_pubkey=season_pubkey,
     )
-    mk = schema.meta_key()
     mv = schema.value_hex(meta)
     if _upsert(plan.changelist, mk, mv, existing.get(mk)):
         plan.meta_written = True
@@ -363,6 +436,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         return exit_codes.USAGE
 
+    # One lock for every DataLayer writer, held for the whole run. The
+    # scheduler and an operator's manual run WILL coincide eventually, and two
+    # concurrent batch_updates mean two fees and a final state decided by
+    # mempool ordering. Publish and attest share the lock because they mutate
+    # the same store. Dry runs skip it: they read, and blocking a report
+    # because a write is in flight teaches people to delete lock files.
+    if not dry_run:
+        try:
+            _writer_lock = RunLock(DEFAULT_WATERMARK_PATH.parent / "datalayer-writer.lock",
+                                   break_after_seconds=6 * 3600).acquire()
+        except LockBusy as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return exit_codes.USAGE
+    else:
+        _writer_lock = None
+    try:
+        return _publish_run(cfg, dry_run, lookback)
+    finally:
+        if _writer_lock is not None:
+            _writer_lock.release()
+
+
+def _publish_run(cfg, dry_run, lookback):
     with ops_log.ops_run(
         "publish",
         dry_run=dry_run,
@@ -387,6 +483,18 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
         print(f"ERROR: oracle unreachable: {e}", file=sys.stderr)
         wm.close()
         run.finish("error", error="OracleError", error_msg=str(e)[:200])
+        return exit_codes.ORACLE
+
+    # Every subject of a permanent write has to be a Tree the oracle currently
+    # recognises. Three test-fixture records are already on mainnet forever
+    # because nothing checked; see provenance.py.
+    try:
+        known = provenance.require_live_network(nodes, source=cfg.oracle.url)
+        provenance.filter_writable(nodes, known)
+    except provenance.ProvenanceError as e:
+        print(f"ERROR: refusing to publish: {e}", file=sys.stderr)
+        wm.close()
+        run.finish("error", error="ProvenanceError", error_msg=str(e)[:200])
         return exit_codes.ORACLE
 
     closed = schedule.iter_closed_hours(lookback_hours=lookback)
@@ -436,13 +544,36 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
                 return None       # can't see the store — claim nothing
         return None
 
+    # The PUBLIC hour count comes from the CHAIN, not the local watermark.
+    # `latest:.running_hours_online` used to read the watermark DB — so
+    # pointing ORCHARD_PUBLISH_WATERMARK at a fresh path (a restore, a moved
+    # checkout, a new machine) made the next publish rewrite the public record
+    # DOWNWARD, permanently, over hours genuinely on chain. The watermark
+    # remains the skip-cache; the store is the record. When the store cannot
+    # be enumerated the run aborts rather than publishing a number derived
+    # from a file that may have just been reborn empty.
+    if dl is not None:
+        try:
+            chain_hours = _count_chain_hours(dl, cfg.data_layer.store_id)
+        except ChiaRpcError as e:
+            print(f"ERROR: cannot enumerate the store to derive the public "
+                  f"hour count ({e}). Refusing to publish latest: from the "
+                  f"local watermark alone — a fresh watermark file would "
+                  f"rewrite the public number downward.", file=sys.stderr)
+            run.finish("error", error="NoChainHours", error_msg=str(e)[:200])
+            wm.close()
+            return exit_codes.CONFIRM
+        hours_source = lambda n, se: chain_hours.get((n.upper(), int(se)), 0)
+    else:
+        hours_source = wm.published_hours_count   # dry-run preview only
+
     batches, harvest_notes = harvest_closed_hour_batches(
         oracle,
         nodes,
         closed,
         already_published=wm.is_published,
         current_season=current_season,
-        published_hours=wm.published_hours_count,
+        published_hours=hours_source,
         sealed_season=_sealed,
     )
     gap_notes = [n for n in harvest_notes if "watermarked" not in n]
@@ -516,8 +647,20 @@ def _publish_body(cfg, *, dry_run: bool, lookback: int, run: ops_log.OpsRun) -> 
     # instantly against the pre-write root and prove nothing.
     try:
         root_before = (dl.get_root(cfg.data_layer.store_id) or {}).get("hash")
-    except Exception:
-        root_before = None          # unknown: fall back to confirmed-only
+    except Exception as e:
+        # No baseline means no way to verify the outcome: with root_before
+        # unknown, confirm's "has the root moved?" check used to pass
+        # instantly against the OLD confirmed root, the watermark advanced on
+        # values a previous write put there, and those hours were "already
+        # published" forever without ever being checked. Refusing costs one
+        # scheduler tick; a false confirm costs the evidence.
+        print(f"ERROR: cannot read the store root before writing ({e}). "
+              f"Refusing to submit a write whose outcome could not be "
+              f"verified. Nothing was sent; re-run when DataLayer answers.",
+              file=sys.stderr)
+        run.finish("error", error="NoBaselineRoot", error_msg=str(e)[:200])
+        wm.close()
+        return exit_codes.CONFIRM
     try:
         result = dl.batch_update(
             cfg.data_layer.store_id,

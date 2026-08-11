@@ -28,6 +28,10 @@ def _capturing_rpc(captured: dict) -> DataLayerRpc:
         return {"success": True}
 
     dl._post = fake_post  # type: ignore[assignment]
+    # batch_update deliberately bypasses the retry wrapper (one attempt ever —
+    # an ambiguous timeout may already be in the mempool, and a retry pays the
+    # fee again), so it calls _post_once directly. Capture that path too.
+    dl._post_once = fake_post  # type: ignore[assignment]
     return dl
 
 

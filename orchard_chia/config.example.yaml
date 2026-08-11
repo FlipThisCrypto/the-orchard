@@ -49,7 +49,7 @@ oracle:
 # readings (payload.device_reading with ed25519 sig). Without those the
 # publisher is a clean no-op. Watermark: orchard_chia/data/publish_watermark.db
 attestation:
-  max_lookback_seasons: null      # null = no cap
+  max_lookback_seasons: 45   # null = unlimited (every run re-reads all history)      # null = no cap
   skip_empty_seasons: true        # don't attest seasons with 0 hours
 
 # Hot-path publisher (optional env overrides also work):

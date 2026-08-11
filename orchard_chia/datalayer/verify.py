@@ -432,11 +432,25 @@ def verify_bundle(
             if sr_ok else "season root mismatch (tampered, or a partial bundle)",
         ))
 
-        # 5. Verified hours — recompute from public signed readings.
-        vh = schema.verified_hours(by_hour, node_pub)
+        # 5. Verified hours — recompute from public signed readings, under the
+        # rule the RECORD declares rather than the one this module currently
+        # holds. A record signed when "≥1 reading" was the rule is not dishonest
+        # because the rule later tightened; judging it by today's constant would
+        # brand every older record an overstatement the moment we raise the bar.
+        # Records that declare nothing are pre-quorum by definition.
+        declared_min = attest.get("min_readings_per_hour")
+        min_rph = (int(declared_min) if isinstance(declared_min, int) and declared_min >= 1
+                   else schema.LEGACY_MIN_READINGS_PER_HOUR)
+        vh = schema.verified_hours(
+            by_hour, node_pub, min_readings=min_rph,
+            window_ms=schema.window_ms_from_utc(
+                attest.get("season_start_utc", ""),
+                attest.get("season_end_utc", "")))
         checks.append(Check(
             "Verified hours recomputed", vh == attest.get("verified_hours"),
-            f"recomputed={vh} claimed={attest.get('verified_hours')}",
+            f"recomputed={vh} claimed={attest.get('verified_hours')} "
+            f"(>={min_rph} signed reading(s)/hour"
+            f"{'' if declared_min else ', legacy: record declares no threshold'})",
         ))
 
         # 6. Season score — the verifiable reward metric.

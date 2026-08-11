@@ -18,6 +18,14 @@ from hashlib import sha256
 # Force a fresh in-memory DB BEFORE importing the app so settings()
 # doesn't latch in a file-backed URL from the env.
 os.environ["ORCHARD_ORACLE_DB_URL"] = "sqlite:///:memory:"
+# These tests post single readings to exercise the crediting MECHANISM;
+# the per-hour quorum itself is pinned by test_uptime_quorum.py.
+os.environ["ORCHARD_ORACLE_MIN_READINGS_PER_CREDITED_HOUR"] = "1"
+os.environ["ORCHARD_ORACLE_MIN_SLOTS_PER_CREDITED_HOUR"] = "1"
+# These fixtures predate seq and exercise other mechanisms (HMAC, GPS
+# scrubbing, freshness, schema_version). Enforcement itself is pinned by
+# test_replay_default.py; the flag-off behaviour by test_seq_not_enforced_*.
+os.environ["ORCHARD_ORACLE_REQUIRE_SEQ"] = "false"
 # Disable the /network/stats cache so per-request count assertions see live
 # data (the cache itself is covered in test_network_cache.py).
 os.environ.setdefault("ORCHARD_NETWORK_STATS_TTL_S", "0")

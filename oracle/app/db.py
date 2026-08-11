@@ -201,6 +201,22 @@ def _migrate_node_last_seq_column(eng) -> None:
         conn.execute(text("ALTER TABLE nodes ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0"))
 
 
+def _migrate_uptime_slots_column(eng) -> None:
+    """Add uptime_hours.slots_mask (burst defense). NOT NULL DEFAULT 0 is
+    safe: pre-existing hours read as unknown-spread and the quorum config
+    treats 0 as legacy (spread unenforced) rather than failing them."""
+    from sqlalchemy import inspect, text
+    insp = inspect(eng)
+    if "uptime_hours" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("uptime_hours")}
+    if "slots_mask" in cols:
+        return
+    with eng.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE uptime_hours ADD COLUMN slots_mask INTEGER NOT NULL DEFAULT 0"))
+
+
 def _migrate_reading_schema_version_column(eng) -> None:
     """T14: add `schema_version` to an existing `readings` table.
 
@@ -230,6 +246,7 @@ def create_all() -> None:
     _migrate_node_pass_columns(eng)
     _migrate_attestation_chain_columns(eng)
     _migrate_node_last_seq_column(eng)
+    _migrate_uptime_slots_column(eng)
     _migrate_reading_schema_version_column(eng)
     Base.metadata.create_all(eng)
     # Tighten file perms AFTER the DB file exists. SQLAlchemy creates

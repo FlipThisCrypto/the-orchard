@@ -98,7 +98,9 @@ class OracleClient:
                 f"oracle has no usable current_season: {e}"
             ) from e
 
-    def list_nodes(self) -> list[dict]:
+    def list_nodes(self, *, include_retired: bool = False) -> list[dict]:
+        if include_retired:
+            return self._get("/nodes?include_retired=1") or []
         return self._get("/nodes") or []
 
     def get_uptime(self, node_id: str, season: int) -> dict | None:

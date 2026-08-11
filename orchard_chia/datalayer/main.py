@@ -23,9 +23,30 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import attest, config, confirm, exit_codes, ops_log, schedule, schema, seal
+from . import (attest, config, confirm, exit_codes, ops_log, provenance, schedule,
+               schema, seal)
 from .oracle import OracleClient, OracleError
 from .rpc import ChiaRpcError, DataLayerRpc, FullNodeRpc
+from ..allocation.lock import LockBusy, RunLock
+
+
+ATTEST_WRITE_PLACEHOLDERS_ENV = "ORCHARD_ATTEST_WRITE_PLACEHOLDERS"
+
+
+def _write_placeholders() -> bool:
+    """Whether to seal seasons that have no published readings behind them.
+
+    Off by default. A placeholder attestation declares that nothing was
+    published, is unpayable by construction, and still costs a fee to write
+    permanently and publicly. 185 sit on the live store proving nothing.
+
+    Not a CLI flag: attest deliberately refuses every option, because a
+    `--dry-run` that did not exist was once silently ignored and wrote 185
+    records to the chain. An environment variable is opt-in without
+    reintroducing a flag surface that can be mistyped into a no-op.
+    """
+    raw = os.environ.get(ATTEST_WRITE_PLACEHOLDERS_ENV, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def _first_plausible_season(node: dict, *, floor: int = 1) -> int:
@@ -199,8 +220,21 @@ def main() -> int:
         )
         return exit_codes.USAGE
 
-    with ops_log.ops_run("attest", store_id_set=True) as run:
-        return _attest_body(cfg, run)
+    # Same lock as publish: both writers mutate the same store, and attest has
+    # no watermark at all — two overlapping attest runs each read get_value,
+    # each see the old bytes, and each pay to write.
+    from pathlib import Path as _P
+    lock_path = _P(__file__).resolve().parents[1] / "data" / "datalayer-writer.lock"
+    try:
+        _writer_lock = RunLock(lock_path, break_after_seconds=6 * 3600).acquire()
+    except LockBusy as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return exit_codes.USAGE
+    try:
+        with ops_log.ops_run("attest", store_id_set=True) as run:
+            return _attest_body(cfg, run)
+    finally:
+        _writer_lock.release()
 
 
 def _attest_body(cfg, run: ops_log.OpsRun) -> int:
@@ -238,9 +272,16 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
         run.finish("error", error="OracleError", error_msg=str(e)[:200])
         return exit_codes.ORACLE
     print(f"[orchard.attest] registered Trees: {len(nodes)}")
-    if not nodes:
-        run.finish("noop", reason="no_trees", season=current_season)
-        return 0
+    # An empty node set used to end the run as a clean no-op. An oracle that
+    # cannot be read looks exactly like a network with no Trees, and "nothing
+    # to do" is a comfortable conclusion for a scheduled job to reach wrongly.
+    try:
+        known = provenance.require_live_network(nodes, source=cfg.oracle.url)
+        provenance.filter_writable(nodes, known)
+    except provenance.ProvenanceError as e:
+        print(f"ERROR: refusing to attest: {e}", file=sys.stderr)
+        run.finish("error", error="ProvenanceError", error_msg=str(e)[:200])
+        return exit_codes.ORACLE
 
     # The anti-backdate anchor. A full node is the ideal source, but requiring
     # one to seal a season means an operator running only wallet + data_layer
@@ -335,11 +376,15 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 or node.get("pubkey")
             )
             sealed = seal.seal_from_readings(
-                pub_readings, device_pubkey=device_pub
+                pub_readings, device_pubkey=device_pub,
+                window_ms=schema.window_ms_from_utc(
+                    uptime.get("season_start_utc", ""),
+                    uptime.get("season_end_utc", "")),
             )
             if sealed is not None:
                 season_root_hex = sealed.season_root
                 verified_hrs = sealed.verified_hours
+                min_rph = sealed.min_readings_per_hour
                 reading_count = sealed.reading_count
                 seal_src = sealed.source
                 # Carry the integrity signals into the SIGNED record instead of
@@ -355,12 +400,25 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 # Nothing is published for this season, so NOTHING was verified.
                 # Writing `hours` here would sign the oracle's own claim into a
                 # field named "verified" — the one case where there is no
-                # evidence at all. hours_online below still records the claim;
-                # the payout falls back to it for a declared-placeholder record,
-                # so amounts are unchanged — but the record no longer lies.
+                # evidence at all.
+                #
+                # A placeholder is now unpayable (payout/calculator.py), so
+                # writing one costs a blockchain fee to record a permanent,
+                # public statement that proves nothing and pays nothing. 185 of
+                # them are already on the store. Default is to skip; the opt-in
+                # exists because a completeness-minded operator may still want a
+                # marker that a season existed, and that is their call to make
+                # explicitly rather than mine to make silently.
+                if not _write_placeholders():
+                    stats["placeholder_skipped"] += 1
+                    continue
                 verified_hrs = 0
                 reading_count = 0
                 seal_src = schema.SEAL_SOURCE_PLACEHOLDER
+                # Recorded even here. A placeholder proves nothing, but the rule
+                # it would have been judged by is still part of what the record
+                # says about itself.
+                min_rph = schema.MIN_VERIFIED_READINGS_PER_HOUR
                 sigs_verified = False
                 root_mismatches = 0
 
@@ -385,21 +443,42 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
                 season_root_hex=season_root_hex,
                 signed_at=signed_at,
                 seal_source=seal_src,
+                min_readings_per_hour=min_rph,
                 sigs_verified=sigs_verified,
                 root_mismatches=root_mismatches,
             )
-            # signing_key_hex is 64 hex chars — valid secp256r1 scalar seed
-            # (generated once per operator; same file as legacy HMAC key).
-            signed = schema.sign_attest(payload, cfg.signing_key_hex.lower())
 
             key_hex = schema.attest_key(node_id, season)
-            value_hex = schema.value_hex(signed)
-
             try:
                 existing_hex = dl.get_value(cfg.data_layer.store_id, key_hex)
             except ChiaRpcError as e:
                 print(f"  WARN: datalayer get_value failed: {e}", file=sys.stderr)
                 existing_hex = None
+
+            # block_height_at_write is inside the SIGNED body and was taken from
+            # the live peak on every run, so the bytes differed every time even
+            # when nothing about the season had changed. That is the same defect
+            # `signed_at` had — the short-circuit below became unreachable and a
+            # daily run delete+inserted EVERY attestation for EVERY past season,
+            # unbounded and fee-bearing.
+            #
+            # A sealed season is a fixed fact. Re-sealing it must reproduce the
+            # bytes, so the height already on chain is reused when it does: that
+            # is what "nothing changed" means. A record whose CONTENT differs
+            # still gets the current height, because that write really is new.
+            prior = schema.parse_value(existing_hex)
+            if isinstance(prior, dict) and "block_height_at_write" in prior:
+                as_before = schema.sign_attest(
+                    dict(payload, block_height_at_write=prior["block_height_at_write"]),
+                    cfg.signing_key_hex.lower())
+                if schema.value_hex(as_before) == existing_hex:
+                    stats["unchanged"] += 1
+                    continue
+
+            # signing_key_hex is 64 hex chars — valid secp256r1 scalar seed
+            # (generated once per operator; same file as legacy HMAC key).
+            signed = schema.sign_attest(payload, cfg.signing_key_hex.lower())
+            value_hex = schema.value_hex(signed)
 
             if existing_hex == value_hex:
                 stats["unchanged"] += 1
@@ -461,8 +540,12 @@ def _attest_body(cfg, run: ops_log.OpsRun) -> int:
     # "a root is confirmed" (the pre-write root is confirmed too).
     try:
         root_before = (dl.get_root(cfg.data_layer.store_id) or {}).get("hash")
-    except Exception:
-        root_before = None
+    except Exception as e:
+        # Same rule as publish: no baseline, no write. See publish.py.
+        print(f"ERROR: cannot read the store root before writing ({e}). "
+              f"Refusing to submit an unverifiable write.", file=sys.stderr)
+        run.finish("error", error="NoBaselineRoot", error_msg=str(e)[:200])
+        return exit_codes.CONFIRM
     try:
         result = dl.batch_update(
             cfg.data_layer.store_id, changelist, fee=cfg.data_layer.fee or None

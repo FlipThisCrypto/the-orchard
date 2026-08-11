@@ -129,7 +129,28 @@ class Settings(BaseSettings):
     # reflash/OTA the fleet with seq-capable firmware, THEN flip this.
     # (last_seq is tracked passively even while False, so the flip is
     # seamless for Trees already sending seq.)
-    require_seq: bool = False
+    # How many accepted readings an hour must hold before it counts toward
+    # hours_online. 30 = half the 60s firmware cadence, numerically identical
+    # to the DataLayer signature quorum so payer and verifier agree what an
+    # hour IS. Overridable for tests exercising the crediting MECHANISM;
+    # production keeps the default, and lowering it live would reintroduce the
+    # 60x overstatement the quorum exists to stop.
+    min_readings_per_credited_hour: int = 30
+    # Spread requirement: distinct ten-minute slots (of 6) an hour must span.
+    # 4 = at least ~30 min of presence. A 2-minute burst of 30 readings fills
+    # the quorum but sets one slot — "heartbeat bursts pretending to represent
+    # hourly uptime" is on the tokenomics anti-gaming list by name.
+    min_slots_per_credited_hour: int = 4
+
+    # Replay protection ON by default. It was off, which meant seq was
+    # TRACKED but a replayed reading was silently accepted — and since hours
+    # became heartbeats became $JUICE, a captured reading replayed 30 times
+    # minted a credited hour. Safe to enforce: firmware has sent seq since the
+    # NVS watermark landed (identity.cpp reserves a block ahead, so seq never
+    # regresses across a reboot), and every seq-less legacy node is retired.
+    # A Tree that genuinely cannot send seq surfaces as a 400 with "reflash",
+    # not as silent uptime loss.
+    require_seq: bool = True
 
     # Reading freshness (HANDOVER D6/T6). When > 0, POST /readings rejects a
     # reading whose signed `ts` (real UTC epoch seconds, set once the Tree's

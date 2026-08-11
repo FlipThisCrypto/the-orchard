@@ -271,14 +271,92 @@ def season_root(hour_roots_by_hour: dict[int, str]) -> str:
 # --------------------------------------------------------------------------- #
 # Uptime vs. Season score (the verifiable reward metric — SPEC §3)            #
 # --------------------------------------------------------------------------- #
-def verified_hours(readings_by_hour: dict[int, list[dict]], pubkey_hex: str) -> int:
-    """Hours containing ≥1 signature-valid reading. Recomputable by anyone
-    from the public ``readings:`` rows — this is what "verify the oracle" means.
+# How many signature-valid readings an hour must hold before it counts as an
+# hour of sensing.
+#
+# Firmware samples every 60 s (firmware/include/config.h:13), so a healthy hour
+# holds about 60 readings. The original rule was "≥1", which meant a Tree that
+# reported once an hour earned exactly what a Tree reporting continuously
+# earned — a 60x overstatement of the quantity the number names, and one that
+# `payout/calculator.py` converts straight into tokens. Every signature was
+# genuine; the claim built on them was not.
+#
+# 30 is half the expected cadence: high enough that an hour of near-silence
+# cannot be sold as an hour of sensing, low enough that a reboot, a Wi-Fi drop
+# or a few minutes of clock skew does not cost an operator the whole hour.
+MIN_VERIFIED_READINGS_PER_HOUR = 30
+
+# What "≥1" meant. Kept as a named constant so records written under the old
+# rule can be re-verified exactly as they were written, rather than being
+# retroactively judged by a rule that did not exist when they were signed.
+LEGACY_MIN_READINGS_PER_HOUR = 1
+
+
+# Clock-skew grace at season edges. A reading stamped 23:59:58 by a device a
+# few seconds fast must not be thrown out of its own season; a reading from a
+# DIFFERENT day must never be let in. Five minutes is far above real NTP skew
+# and far below the 24h that would matter.
+SEASON_WINDOW_GRACE_MS = 5 * 60 * 1000
+
+
+def window_ms_from_utc(start_utc: str, end_utc: str) -> tuple[int, int] | None:
+    """(start_ms, end_ms) from the ISO bounds an attest record declares.
+
+    Returns None when unparseable — callers treat that as "no window", which
+    keeps pre-window records verifiable exactly as they were written.
     """
+    from datetime import datetime, timezone
+    try:
+        lo = datetime.fromisoformat(start_utc.replace("Z", "+00:00"))
+        hi = datetime.fromisoformat(end_utc.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    if lo.tzinfo is None:
+        lo = lo.replace(tzinfo=timezone.utc)
+    if hi.tzinfo is None:
+        hi = hi.replace(tzinfo=timezone.utc)
+    return (int(lo.timestamp() * 1000) - SEASON_WINDOW_GRACE_MS,
+            int(hi.timestamp() * 1000) + SEASON_WINDOW_GRACE_MS)
+
+
+def _in_window(reading: dict, window_ms: tuple[int, int] | None) -> bool:
+    if window_ms is None:
+        return True
+    ts = reading.get("ts_ms")
+    if not isinstance(ts, int) or isinstance(ts, bool):
+        return False    # a reading with no timestamp cannot prove WHEN it was
+    return window_ms[0] <= ts < window_ms[1]
+
+
+def verified_hours(readings_by_hour: dict[int, list[dict]], pubkey_hex: str,
+                   *, min_readings: int = MIN_VERIFIED_READINGS_PER_HOUR,
+                   window_ms: tuple[int, int] | None = None) -> int:
+    """Hours holding at least ``min_readings`` signature-valid readings.
+
+    Recomputable by anyone from the public ``readings:`` rows — that is what
+    "verify the oracle" means, and it is why ``min_readings`` is written INTO
+    the attest record rather than left as a constant in this file. A threshold a
+    verifier has to guess is a threshold that silently changes when this
+    module does, retroactively invalidating records that were honest when
+    signed.
+    """
+    if min_readings < 1:
+        raise ValueError(
+            f"min_readings must be at least 1, got {min_readings}. Zero would "
+            f"credit an hour that contains no readings at all.")
+    # The window is the cross-season replay defense: a signed reading carries
+    # no season field, and the hour a record files it under is chosen by the
+    # WRITER — but ts_ms is inside the device signature. Readings replayed
+    # from a season the Tree was dark for carry their original timestamps,
+    # fall outside this season's declared bounds, and stop counting toward
+    # the quorum. hour_root stays a commitment to the published batch as-is;
+    # only what an hour is WORTH applies the window.
     return sum(
         1
         for readings in readings_by_hour.values()
-        if any(verify_reading(r, pubkey_hex) for r in readings)
+        if sum(1 for r in readings
+               if _in_window(r, window_ms) and verify_reading(r, pubkey_hex))
+        >= min_readings
     )
 
 
@@ -489,6 +567,7 @@ def build_attest(
     seal_source: str = SEAL_SOURCE_READINGS,
     sigs_verified: bool = True,
     root_mismatches: int = 0,
+    min_readings_per_hour: int = MIN_VERIFIED_READINGS_PER_HOUR,
 ) -> dict:
     """Unsigned attest payload. ``data_hash`` is kept (== ``season_root``) so the
     existing payout ``reader.py`` keeps working. Call :func:`sign_attest` next.
@@ -521,6 +600,11 @@ def build_attest(
         "sigs_verified": bool(sigs_verified),
         "root_mismatches": int(root_mismatches),
         "season_score": season_score(verified_hrs),
+        # The rule verified_hours was computed under, written INTO the
+        # signed body. Without it a verifier recomputes with whatever this
+        # module currently says, so tightening the threshold would
+        # retroactively brand honest older records as overstatements.
+        "min_readings_per_hour": int(min_readings_per_hour),
         "reading_count": int(reading_count),
         "block_height_at_write": int(block_height_at_write),
         "data_hash": season_root_hex,

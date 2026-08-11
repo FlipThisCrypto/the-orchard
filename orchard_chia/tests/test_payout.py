@@ -15,20 +15,28 @@ from orchard_chia.payout.reader import _decode_key
 
 # ----------------- calculator -----------------
 
+def _proven(hours):
+    """A record that can actually be checked: a real Merkle seal, signatures
+    verified, and the hours to match. Bare hours_online is a claim, not
+    evidence, and no longer buys anything."""
+    return {"hours_online": hours, "verified_hours": hours,
+            "seal_source": "readings", "sigs_verified": True}
+
+
 def test_full_season_full_rate():
-    attest = {"hours_online": 24}
+    attest = _proven(24)
     # 24/24 * 1.0 = 1.0 $JUICE = 1000 mojos
     assert calculator.juice_mojos_for_attestation(attest, daily_rate=1.0) == 1000
 
 
 def test_half_season_full_rate():
-    attest = {"hours_online": 12}
+    attest = _proven(12)
     # 12/24 * 1.0 = 0.5 $JUICE = 500 mojos
     assert calculator.juice_mojos_for_attestation(attest, daily_rate=1.0) == 500
 
 
 def test_one_hour_full_rate():
-    attest = {"hours_online": 1}
+    attest = _proven(1)
     # 1/24 * 1.0 = 0.04166... ≈ 0.042 $JUICE = 42 mojos
     assert calculator.juice_mojos_for_attestation(attest, daily_rate=1.0) == 42
 
@@ -39,23 +47,23 @@ def test_zero_hours_zero_payout():
 
 
 def test_scaled_daily_rate():
-    attest = {"hours_online": 24}
+    attest = _proven(24)
     assert calculator.juice_mojos_for_attestation(attest, daily_rate=2.5) == 2500
 
 
 def test_invalid_hours_raises():
     with pytest.raises(ValueError):
         calculator.juice_mojos_for_attestation(
-            {"hours_online": -1}, daily_rate=1.0)
+            _proven(-1), daily_rate=1.0)
     with pytest.raises(ValueError):
         calculator.juice_mojos_for_attestation(
-            {"hours_online": 25}, daily_rate=1.0)
+            _proven(25), daily_rate=1.0)
 
 
 def test_invalid_rate_raises():
     with pytest.raises(ValueError):
         calculator.juice_mojos_for_attestation(
-            {"hours_online": 12}, daily_rate=-1.0)
+            _proven(12), daily_rate=-1.0)
 
 
 def test_prefers_verified_hours_when_present():
@@ -72,9 +80,27 @@ def test_overclaim_not_rewarded():
     assert calculator.juice_mojos_for_attestation(overclaim, daily_rate=1.0) == 500
 
 
-def test_falls_back_to_hours_online_when_no_verified():
-    attest = {"hours_online": 24}  # older record, no verified_hours
-    assert calculator.juice_mojos_for_attestation(attest, daily_rate=1.0) == 1000
+def test_a_bare_hours_online_claim_is_not_paid():
+    """Reversed policy, and the reason is measurable.
+
+    This used to pay the full amount: a record with no verified_hours fell back
+    to the oracle's own hours_online. Measured against the live store on
+    2026-08-10, that rule would have paid all 188 attestations — 170.033 $JUICE
+    — with not one published reading behind any of them.
+
+    hours_online is the oracle's account of itself. It is reported, never paid.
+    """
+    attest = {"hours_online": 24}
+    assert calculator.juice_mojos_for_attestation(attest, daily_rate=1.0) == 0
+    hours, basis = calculator.paid_hours(attest)
+    assert hours == 0 and basis == "unproven (no verified_hours field)"
+
+
+def test_the_old_amounts_are_still_reachable_for_reconciliation():
+    """Anyone reconciling historical figures can ask for them by name."""
+    attest = {"hours_online": 24}
+    assert calculator.juice_mojos_for_attestation(
+        attest, daily_rate=1.0, pay_unproven=True) == 1000
 
 
 def test_prefer_verified_can_be_disabled():
@@ -96,7 +122,9 @@ def test_paid_hours_prefers_verified():
     hours, basis = calculator.paid_hours({"hours_online": 24, "verified_hours": 12})
     assert hours == 12
     assert basis == "verified_hours (basis undeclared)"
-    assert calculator.paid_hours({"hours_online": 24}) == (24, "hours_online")
+    # A bare claim with no verified number is no longer a basis for payment.
+    assert calculator.paid_hours({"hours_online": 24}) == (
+        0, "unproven (no verified_hours field)")
 
 
 def test_hours_cell_annotates_overclaim():

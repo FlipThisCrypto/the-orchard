@@ -25,10 +25,16 @@ def test_get_keys_follows_total_pages():
             2: {"success": True, "keys": ["cc"], "total_pages": 3},
             3: {"success": True, "keys": ["dd"], "total_pages": 3},
         }
+        if page not in pages:
+            # A 1-indexed node REJECTS page 0; it does not KeyError. Modelling
+            # that faithfully is the difference between this test proving the
+            # client copes with either convention and it merely proving the
+            # client asks the number this fake happens to expect.
+            raise ChiaRpcError(f"invalid page {page}")
         return pages[page]
 
     assert _rpc(fake_post).get_keys("S") == ["aa", "bb", "cc", "dd"]
-    assert seen == [1, 2, 3]
+    assert seen == [0, 1, 2, 3], "page 0 is probed first, then the 1-indexed run"
 
 
 def test_get_keys_single_response_no_total_pages():

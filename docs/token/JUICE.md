@@ -40,15 +40,15 @@ See [reward economics in the README](../../README.md#reward-model-v1-tunable) an
 Total supply is **100,000,000 JUICE** (single issuance). The allocation below is
 the published breakdown of where that supply is committed.
 
-> **`TODO(owner)`** — fill in the real split before any public launch. The
-> categories are the proposed structure; the percentages are placeholders.
+Ratified 2026-08-10. Canonical figures live in
+[`orchard_chia/economics/constants.py`](../../orchard_chia/economics/constants.py);
+the full model is [EMISSION.md](EMISSION.md).
 
 | Allocation        | Share | Amount (JUICE) | Purpose                                        |
 |-------------------|-------|----------------|------------------------------------------------|
-| Rewards pool      | `TODO%` | `TODO`       | Operator Season payouts (the core sink)        |
-| Team              | `TODO%` | `TODO`       | Founders / contributors (consider vesting)     |
-| Liquidity         | `TODO%` | `TODO`       | DEX / market liquidity                         |
-| Reserve / treasury| `TODO%` | `TODO`       | Runway, partnerships, contingencies            |
+| Tree Rewards Pool | 85%   | 85,000,000     | Operator rewards (the core sink)               |
+| Liquidity         | 15%   | 15,000,000     | DEX / market liquidity                         |
+| Team / founder    | 0%    | 0              | No allocation is carved from the fixed supply  |
 | **Total**         | 100%  | 100,000,000    |                                                |
 
 ### Payout wallet
@@ -64,13 +64,36 @@ the community can audit reward outflows on-chain:
 
 ## Emission expectations
 
-v1 reward rate (from the [reward model](../../README.md#reward-model-v1-tunable),
-all tunable config):
+**See [EMISSION.md](EMISSION.md) for the canonical model.** In short: the whole
+network has a fixed maximum daily emission, and Trees divide it. Adding Trees
+never raises total emission — it divides the same pool further, which is the
+entire early-adopter incentive.
+
+Year 1 ceiling is **55,964.65 JUICE/day** for the network, falling ~20% a year
+across an eight-year base schedule. Rewards not earned through downtime stay in
+the pool and extend the programme beyond eight years.
+
+<details>
+<summary><b>Superseded:</b> the v1 per-Tree rate (historical record)</summary>
+
+Until 2026-08-10 the model was:
 
 - **1 JUICE per Tree per day**, accrued **1/24 JUICE per verified uptime hour**.
-- A Season is ~24h (4608 Chia blocks), so a fully-online Tree earns ~1 JUICE/Season.
 
-Total emission per Season therefore scales with fleet size:
+It had no emission ceiling of any kind — total supply scaled with fleet size,
+so 10,000 Trees would have minted 10,000 JUICE/day and exhausted the entire
+100,000,000 supply in under 28 years of growth it was supposed to encourage.
+Every attestation currently on the DataLayer store was scored under it. Nothing
+was ever paid out under it.
+
+Retained because on-chain records reference it and a reader needs to be able to
+reconstruct what was computed at the time.
+
+</details>
+
+<details>
+<summary>Fleet-size table under the superseded model</summary>
+
 
 | Fleet size | Max JUICE / Season (all Trees 100% uptime) |
 |------------|---------------------------------------------|
@@ -78,10 +101,12 @@ Total emission per Season therefore scales with fleet size:
 | 100 Trees  | ~100                                         |
 | 1,000 Trees| ~1,000                                       |
 
-> **`TODO(owner)`** — set the target emission schedule / cap: at what fleet
-> size or date does the rate step down, and how many Seasons does the rewards
-> pool fund at the expected fleet curve? (Sanity-check the pool size against
-> 100–1,000 Trees over the first 6–12 months.)
+</details>
+
+That open question — at what fleet size or date does the rate step down, and how
+long does the pool last — is what the 2026-08-10 model answers. The rate steps
+down annually rather than by fleet size, the pool funds a minimum of eight
+years, and unearned rewards extend it. See [EMISSION.md](EMISSION.md).
 
 ## Legal note
 

@@ -13,7 +13,7 @@ SEED = "01" + "00" * 31
 PUB = schema.pubkey_for_seed(SEED)
 
 
-def _signed_reading(ts_ms: int = 1_749_480_000_123, temp_mc: int = 21400) -> dict:
+def _signed_reading(ts_ms: int = 1_780_232_400_123, temp_mc: int = 21400) -> dict:
     body = metrics.unsigned_reading_body(
         node_id=NODE,
         ts_ms=ts_ms,
@@ -269,6 +269,9 @@ def test_verify_bundle_over_planned_batch():
         block_height_at_write=1,
         season_root_hex=sr,
         signed_at="2026-06-01T00:05:00Z",
+        # One-reading fixture; it declares the rule it satisfies rather
+        # than borrowing the production quorum it does not.
+        min_readings_per_hour=1,
     )
     attest = schema.sign_attest(attest_body, SEED)
     report = verify.verify_bundle(

@@ -113,7 +113,16 @@ def load() -> Config:
             ),
         ),
         attestation=AttestationConfig(
-            max_lookback_seasons=att.get("max_lookback_seasons"),
+            # Bounded by default. Unbounded lookback re-reads every season
+            # since each Tree's registration on every run — ~150 RPCs per Tree
+            # per day at 75 seasons, growing forever, to conclude "unchanged"
+            # each time. 45 covers a six-week outage with margin; re-sealing
+            # older seasons is a deliberate act: set the key to null (explicit
+            # null still means unlimited — an operator's stated choice is
+            # honoured, only the ABSENT key gets the bound).
+            max_lookback_seasons=(
+                att["max_lookback_seasons"] if "max_lookback_seasons" in att
+                else 45),
             skip_empty_seasons=bool(att.get("skip_empty_seasons", True)),
         ),
         signing_key_hex=_load_or_make_signing_key(),
@@ -141,10 +150,31 @@ def _restrict_signing_key_perms() -> None:
               f"{SIGNING_KEY_PATH} to 0600: {e}", file=sys.stderr)
 
 
+# Written the first time a key is minted, and never deleted by code. Its
+# presence means "a season key has existed on this machine", which is the fact
+# the minting guard needs and the one a wiped key file destroys.
+KEY_SENTINEL_PATH = SIGNING_KEY_PATH.with_suffix(".existed")
+
+
+class SigningKeyError(RuntimeError):
+    """The season signing key is missing when history says it should exist."""
+
+
 def _load_or_make_signing_key() -> str:
-    """Per-oracle signing key. Generated on first run, persisted locally,
-    never transmitted. 32 bytes / 64 hex chars. Gitignored under
-    orchard_chia/data/.
+    """Per-oracle signing key. Minted on GENUINE first run only.
+
+    It used to regenerate whenever the file was missing. That is silent key
+    rotation: a wiped data dir, a moved checkout, or a bad restore produced a
+    fresh key, every new attest verified against a signer with no relationship
+    to the store's history, and the next publish would have rewritten
+    meta:schema to bless the new pubkey. From the outside, indistinguishable
+    from key theft — an adversarial review rated it fatal.
+
+    A sentinel file records that a key has ever existed here. Key present:
+    load it. Key absent but sentinel present: REFUSE, loudly — restoring the
+    key from backup is the fix, and deliberate rotation must be a visible act
+    (remove the sentinel by hand after superseding the on-chain meta), not a
+    side effect of a missing file. Both absent: genuine first run, mint.
 
     The file is forced to mode 0600 (owner-only) on every load — see
     ``_restrict_signing_key_perms`` for the Windows caveat.
@@ -154,7 +184,27 @@ def _load_or_make_signing_key() -> str:
         text = SIGNING_KEY_PATH.read_text(encoding="utf-8").strip()
         if len(text) == 64 and all(c in "0123456789abcdefABCDEF" for c in text):
             _restrict_signing_key_perms()
+            if not KEY_SENTINEL_PATH.exists():
+                KEY_SENTINEL_PATH.write_text(
+                    "a season signing key has existed on this machine; "
+                    "its absence is now an error, not a first run\n",
+                    encoding="utf-8")
             return text.upper()
+        raise SigningKeyError(
+            f"{SIGNING_KEY_PATH} exists but does not contain a 64-hex key. "
+            f"Refusing to overwrite it with a fresh one — a corrupted key "
+            f"file is evidence of a problem, and regenerating would sign new "
+            f"records with a key unrelated to everything already on chain.")
+    if KEY_SENTINEL_PATH.exists():
+        raise SigningKeyError(
+            f"the season signing key at {SIGNING_KEY_PATH} is MISSING, but "
+            f"{KEY_SENTINEL_PATH.name} records that one has existed here. "
+            f"Refusing to mint a replacement: every record already on chain "
+            f"was signed by the old key, and silently rotating is "
+            f"indistinguishable from key theft to anyone verifying. Restore "
+            f"the key file from backup. If rotation is genuinely intended, "
+            f"remove the sentinel by hand after superseding the on-chain "
+            f"meta:schema record.")
     # Generate fresh. Write via os.open with O_CREAT|O_WRONLY and an
     # explicit 0o600 mode so the file is born owner-only on POSIX —
     # closes the small race where a previous default-umask write could
@@ -168,4 +218,7 @@ def _load_or_make_signing_key() -> str:
     finally:
         os.close(fd)
     _restrict_signing_key_perms()  # belt-and-braces on Windows
+    KEY_SENTINEL_PATH.write_text(
+        "a season signing key has existed on this machine; its absence is "
+        "now an error, not a first run\n", encoding="utf-8")
     return new_hex

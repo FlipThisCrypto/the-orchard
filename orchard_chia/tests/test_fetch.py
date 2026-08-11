@@ -27,7 +27,7 @@ def _bundle_store() -> dict[str, str]:
     reading = schema.sign_reading(
         {
             "node_id": NODE,
-            "ts_ms": 1_749_480_000_123,
+            "ts_ms": 1_780_232_400_123,
             "block_anchor": "a1b2c3d4e5f60718",
             "metrics": {"temperature_mc": 21400, "gps_fix": True, "gps_sats": 7},
         },
@@ -49,6 +49,10 @@ def _bundle_store() -> dict[str, str]:
             block_height_at_write=1,
             season_root_hex=sr,
             signed_at="2026-06-01T00:05:00Z",
+        # Fixture declares the rule it satisfies, exactly as a real
+        # record does. What this test pins is bundle plumbing, not how
+        # many readings an hour is worth.
+        min_readings_per_hour=1,
         ),
         SEED,
     )
