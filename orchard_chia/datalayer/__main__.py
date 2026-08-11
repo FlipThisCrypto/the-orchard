@@ -40,6 +40,10 @@ def _dispatch(argv: list[str]) -> int:
         from .main import main
         return int(main() or 0)
 
+    if argv and argv[0] == "verify-latest":
+        from .verify_latest import main as vl_main
+        return vl_main()
+
     cmd = argv[0]
     if cmd in ("publish", "hot", "readings"):
         from .publish import main as publish_main

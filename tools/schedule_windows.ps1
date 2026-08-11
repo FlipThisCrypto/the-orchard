@@ -52,6 +52,9 @@ $Tasks = @(
     @{ Name = "Orchard Status"
        Args = "-m orchard_chia.economics status"
        Trigger = { New-ScheduledTaskTrigger -Daily -At "08:00" } }
+    @{ Name = "Orchard Verify"
+       Args = "-m orchard_chia.datalayer verify-latest"
+       Trigger = { New-ScheduledTaskTrigger -Daily -At "01:00" } }
 )
 
 if ($Unregister) {
@@ -83,6 +86,6 @@ foreach ($t in $Tasks) {
 }
 
 Write-Host ""
-Write-Host "Scheduled. Publish hourly at :10; attest 00:25; settle 00:40; status 08:00."
+Write-Host "Scheduled. Publish :10 hourly; attest 00:25; settle 00:40; verify 01:00; status 08:00."
 Write-Host "Paying stays manual by design:  python -m orchard_chia.economics pay"
 Write-Host "Remove everything with:  tools\schedule_windows.ps1 -Unregister"
