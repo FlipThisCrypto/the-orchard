@@ -460,3 +460,33 @@ def test_full_uptime_lands_close_to_eight_years():
         pool = apply_distribution(pool, ceiling, r.distributed_mojos).closing_mojos
         day += 1
     assert 365 * 8 - 5 <= day <= 365 * 8 + 5, f"{day} days"
+
+
+def test_a_tree_with_no_qualifying_sensor_is_reported_not_vanished():
+    """It used to disappear from the result entirely — not in rewards, not in
+    ineligible — so a settlement reading "distributed 0.000" gave the operator
+    no way to see which Tree earned nothing, or why. Exactly what the live
+    season-76 report did."""
+    r = calculate_daily_rewards(
+        [tree("REAL", W_A, sensors=1), tree("BARE", W_B, sensors=0)], YEAR1)
+    assert [x.tree_id for x in r.rewards] == ["REAL"]
+    assert [t.tree_id for t in r.ineligible] == ["BARE"]
+    assert "no qualifying sensor" in r.ineligible[0].ineligible_reason
+
+
+def test_an_all_sensorless_network_reports_every_tree():
+    r = calculate_daily_rewards(
+        [tree("A", W_A, sensors=0), tree("B", W_B, sensors=0)], YEAR1)
+    assert r.no_eligible_trees and r.distributed_mojos == 0
+    assert {t.tree_id for t in r.ineligible} == {"A", "B"}
+
+
+def test_an_already_ineligible_tree_keeps_its_original_reason():
+    r = calculate_daily_rewards([
+        tree("REAL", W_A, sensors=1),
+        TreeDay(tree_id="DUP", wallet_address=W_B, qualifying_sensors=0,
+                verified_heartbeats=24, eligible=False,
+                ineligible_reason="device key shared with another Tree"),
+    ], YEAR1)
+    reasons = {t.tree_id: t.ineligible_reason for t in r.ineligible}
+    assert reasons["DUP"] == "device key shared with another Tree"

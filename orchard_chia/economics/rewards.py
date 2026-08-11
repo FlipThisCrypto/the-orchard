@@ -192,8 +192,20 @@ def calculate_daily_rewards(trees: list[TreeDay], ceiling_mojos: int) -> DailyRe
     # contributes nothing to total_weight. Counting it in the denominator would
     # let a heartbeat-only board dilute every real Tree's share while earning
     # zero itself, which is a cheaper attack than participating honestly.
-    weighted = [(t, sensor_weight(t.qualifying_sensors)) for t in eligible]
-    weighted = [(t, w) for t, w in weighted if w > 0]
+    scored = [(t, sensor_weight(t.qualifying_sensors)) for t in eligible]
+    weighted = [(t, w) for t, w in scored if w > 0]
+    # A Tree dropped for having no qualifying sensor must still be REPORTED.
+    # It used to vanish from the result entirely — not in rewards, not in
+    # ineligible — so a settlement showing "distributed 0.000" gave the
+    # operator no way to see which Tree earned nothing or why. Silently
+    # dropping the thing you are accounting for is the bug class this repo
+    # keeps finding; it does not get a pass here.
+    import dataclasses as _dc
+    ineligible = ineligible + tuple(
+        _dc.replace(t, eligible=False,
+                    ineligible_reason=(t.ineligible_reason
+                                       or "no qualifying sensor this season"))
+        for t, w in scored if w <= 0)
 
     if not weighted:
         return DailyRewards(

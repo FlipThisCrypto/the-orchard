@@ -63,7 +63,30 @@ def classes_for(sensor_name: str) -> set[str]:
     return set(cls.split("+")) if cls else set()
 
 
-SENSOR_QUALIFY_MIN_HOURS = 12   # half a day: a sensor, not a declaration
+# A sensor qualifies by reporting through HALF THE HOURS THE TREE WAS ONLINE,
+# capped at 12 (which is half of a full 24-hour day — the old flat bar, now
+# expressed as what it always meant).
+#
+# The flat 12 was wrong in a way only live data showed: the live Tree earned 9
+# genuinely chain-verified hours in season 76 and could not possibly reach 12
+# hours of sensor presence, so it qualified zero sensors, earned zero, and
+# vanished from the settlement report. Partial uptime became UNEARNABLE rather
+# than proportionally paid — a hard cliff on top of a metric (heartbeats/24)
+# that already prices downtime exactly once.
+#
+# Relative keeps the anti-gaming intent whole: a key that appears in one
+# reading still cannot qualify, because one hour is never half of the hours a
+# Tree was up unless the Tree was up for one hour — in which case its uptime
+# factor is already 1/24 and it has been priced.
+SENSOR_QUALIFY_MIN_HOURS = 12   # cap: half of a full day
+
+
+def required_sensor_hours(credited_hours: int) -> int:
+    """Distinct hours a sensor must report in to qualify, for a Tree credited
+    ``credited_hours`` online. Zero credited hours qualifies nothing."""
+    if credited_hours <= 0:
+        return 0
+    return min(SENSOR_QUALIFY_MIN_HOURS, max(1, (int(credited_hours) + 1) // 2))
 
 # Physical plausibility per reported field. A value outside its range means
 # the reading, whatever produced it, is not a measurement of the quantity the
@@ -100,7 +123,8 @@ def _values_plausible(value: object) -> bool:
 
 
 def qualifying_sensor_classes(db: Session, node_id: str, season: int,
-                              *, min_hours: int = SENSOR_QUALIFY_MIN_HOURS
+                              *, min_hours: int | None = None,
+                              credited_hours: int | None = None,
                               ) -> tuple[int, list[str]]:
     """(count, sorted classes) of measurement classes that qualified.
 
@@ -109,6 +133,11 @@ def qualifying_sensor_classes(db: Session, node_id: str, season: int,
     sensor of that class met the persistence bar — so two thermometers give
     the class two chances to qualify but never two credits.
     """
+    if min_hours is None:
+        min_hours = (required_sensor_hours(credited_hours)
+                     if credited_hours is not None else SENSOR_QUALIFY_MIN_HOURS)
+    if min_hours <= 0:
+        return 0, []            # the Tree was never online; nothing to qualify
     buckets = set(seasons.hour_buckets_in_season(season))
     rows = db.execute(
         select(models.Reading.payload_json, models.Reading.received_at)
@@ -135,6 +164,6 @@ def qualifying_sensor_classes(db: Session, node_id: str, season: int,
 
     qualified: set[str] = set()
     for name, hours in hours_by_sensor.items():
-        if len(hours) >= max(1, min_hours):
+        if len(hours) >= max(1, int(min_hours)):
             qualified |= classes_for(name)
     return len(qualified), sorted(qualified)
