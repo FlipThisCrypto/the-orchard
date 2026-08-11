@@ -67,17 +67,31 @@ def _duplicate_pubkeys(nodes: list[dict]) -> set[str]:
     return {pk for pk, count in seen.items() if count > 1}
 
 
+class ChainConsultError(RuntimeError):
+    """The chain could not be consulted, so its verdict is unknown."""
+
+
 def _chain_hours_for_season(season: int) -> dict[str, tuple[int, str]]:
     """node_id -> (hours, basis) from sealed on-chain attestations.
 
-    Opt-in via ORCHARD_SETTLE_CHAIN=1 (the runner does not always sit where a
-    DataLayer daemon does). When a seal exists it DOMINATES the oracle's
-    accounting: paid_hours() prices it exactly as the payout rules do — a
-    proof-backed seal yields its verified_hours, a placeholder yields 0, and
-    that zero is the honest answer for a sealed season with no evidence.
-    Failures return {} and the run falls back to oracle hours, labelled so.
+    ON BY DEFAULT. "Don't trust the oracle, verify it" is the product thesis;
+    paying on the oracle's self-report while a signed, independently
+    verifiable seal for that exact season sits on chain contradicts it. Where
+    a seal exists it DOMINATES: paid_hours() prices it exactly as the payout
+    rules do — a proof-backed seal yields its verified_hours, a placeholder
+    yields 0, and that zero is the honest answer for a sealed season with no
+    evidence. Where no seal exists, the oracle's hours stand, labelled so.
+
+    A FAILED consult RAISES rather than falling back. The fallback is not
+    neutral: the chain's number is never higher than the oracle's (a
+    placeholder is 0, a real seal counts only signature-verified hours), so
+    quietly reverting to the oracle on a transient DataLayer hiccup would
+    overpay — and a day settles ONCE, so the overpayment would be permanent.
+    Set ORCHARD_SETTLE_CHAIN=0 to settle on oracle hours deliberately, e.g. on
+    a host with no DataLayer daemon.
     """
-    if os.environ.get("ORCHARD_SETTLE_CHAIN", "").strip() not in ("1", "true", "on"):
+    if os.environ.get("ORCHARD_SETTLE_CHAIN", "1").strip().lower() in (
+            "0", "false", "no", "off"):
         return {}
     try:
         from ..datalayer import config as dl_config
@@ -95,10 +109,14 @@ def _chain_hours_for_season(season: int) -> dict[str, tuple[int, str]]:
             hours, basis = paid_hours(att.signed)
             out[att.node_id.upper()] = (int(hours), f"chain:{basis}")
         return out
-    except Exception as e:               # noqa: BLE001 — fall back, visibly
-        print(f"[economics] chain consult failed ({e}); using oracle hours",
-              file=sys.stderr)
-        return {}
+    except Exception as e:               # noqa: BLE001
+        raise ChainConsultError(
+            f"could not consult the chain for season {season}: {e}. Refusing "
+            f"to fall back to the oracle's own hours — the chain's figure is "
+            f"never higher, so falling back can only overpay, and a day "
+            f"settles once. Fix the DataLayer connection, or set "
+            f"ORCHARD_SETTLE_CHAIN=0 to settle on oracle hours deliberately."
+        ) from e
 
 
 def observe_season(oracle: OracleClient, season: int) -> list:
@@ -286,6 +304,9 @@ def main(argv: list[str] | None = None) -> int:
         except OracleError as e:
             print(f"oracle unreachable: {e}", file=sys.stderr)
             return 3
+        except ChainConsultError as e:
+            print(f"{e}", file=sys.stderr)
+            return 3
 
         settlement = settle_day(trees, day_index=day,
                                 pool_remaining_mojos=snap.remaining_mojos)
@@ -343,6 +364,9 @@ def _cmd_settle_all(ledger_path: Path, oracle, current: int, *, yes: bool) -> in
             except OracleError as e:
                 print(f"season {season}: oracle unreachable ({e}); stopping "
                       f"here so no gap is skipped.", file=sys.stderr)
+                return 3
+            except ChainConsultError as e:
+                print(f"season {season}: {e}", file=sys.stderr)
                 return 3
             snap = led.snapshot()
             settlement = settle_day(trees, day_index=day_index_for_season(season),

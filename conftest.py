@@ -152,6 +152,13 @@ def _sandbox_chia_config(tmp_path_factory, monkeypatch):
     """
     sandbox = tmp_path_factory.mktemp("chia-config-sandbox") / "config.yaml"
     monkeypatch.setenv("ORCHARD_CHIA_CONFIG", str(sandbox))
+    # Settlement consults the chain by DEFAULT (it should — the oracle's word
+    # must not outrank a signed on-chain seal). Tests cannot reach a DataLayer
+    # daemon: the socket guard above blocks port 8562 precisely so they never
+    # do. Declaring the opt-out here states that fact once, instead of every
+    # settlement test discovering it as a ChainConsultError. Tests that
+    # exercise chain behaviour monkeypatch _chain_hours_for_season directly.
+    monkeypatch.setenv("ORCHARD_SETTLE_CHAIN", "0")
     # config.CONFIG_PATH is a module constant computed at import time with no
     # environment override, so setting the variable above is NOT sufficient —
     # the first version of this fixture set only the env var and isolated

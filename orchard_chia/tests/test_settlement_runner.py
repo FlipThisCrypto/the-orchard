@@ -167,12 +167,6 @@ def test_a_sealed_placeholder_pays_zero_not_the_oracle_claim(monkeypatch):
     assert "placeholder" in trees[0].heartbeat_basis
 
 
-def test_without_the_opt_in_the_chain_is_not_consulted(monkeypatch):
-    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
-    from orchard_chia.economics.runner import _chain_hours_for_season
-    assert _chain_hours_for_season(74) == {}
-
-
 def test_an_unsealed_season_falls_back_to_oracle_hours(monkeypatch):
     monkeypatch.setenv("ORCHARD_SETTLE_CHAIN", "1")
     monkeypatch.setattr(
@@ -191,7 +185,7 @@ def test_a_recently_retired_tree_still_earns_its_past_season(monkeypatch):
     """Retirement ends the future, not the history. The retire flow promises
     'nothing it produced is deleted'; settlement must not confiscate a season
     the Tree demonstrably ran."""
-    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+    monkeypatch.setenv("ORCHARD_SETTLE_CHAIN", "0")   # testing retirement
 
     class RetiringOracle(FakeOracle):
         def list_nodes(self, include_retired=False):
@@ -212,7 +206,7 @@ def test_a_recently_retired_tree_still_earns_its_past_season(monkeypatch):
 def test_a_long_dead_ghost_still_earns_nothing(monkeypatch):
     """Including retired Trees is not a payout to ghosts: a Tree with no hours
     that season earns zero through the ordinary uptime rule."""
-    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+    monkeypatch.setenv("ORCHARD_SETTLE_CHAIN", "0")   # testing retirement
 
     class RetiringOracle(FakeOracle):
         def list_nodes(self, include_retired=False):
@@ -236,3 +230,84 @@ def test_the_report_shows_each_trees_basis(monkeypatch, capsys):
     s = settle_day([t], day_index=0, pool_remaining_mojos=10**9)
     text = render(s, season=1, dry=True)
     assert "[chain:verified_hours]" in text
+
+
+# --- the chain is consulted by default, and a failed consult refuses --------
+
+def test_the_chain_is_consulted_by_default(monkeypatch):
+    """'Don't trust the oracle, verify it' — paying on the oracle's word while
+    a signed seal for that season sits on chain contradicts the thesis."""
+    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+    called = {}
+    import orchard_chia.economics.runner as R
+
+    def _spy(season):
+        called["yes"] = True
+        return {}
+
+    monkeypatch.setattr(R, "_chain_hours_for_season", _spy)
+    src = FakeOracle([{"node_id": "T1", "wallet_address": W, "sensors": ["s"]}],
+                     {"T1": {"hours_online": 12}})
+    R.observe_season(src, 74)
+    assert called.get("yes"), "the chain must be consulted without opting in"
+
+
+def test_it_can_be_turned_off_deliberately(monkeypatch):
+    """For a host with no DataLayer daemon."""
+    monkeypatch.setenv("ORCHARD_SETTLE_CHAIN", "0")
+    from orchard_chia.economics.runner import _chain_hours_for_season
+    assert _chain_hours_for_season(74) == {}
+
+
+def test_a_failed_consult_refuses_instead_of_falling_back(monkeypatch):
+    """The fallback is not neutral: the chain's figure is never HIGHER than
+    the oracle's, so reverting on a transient hiccup can only overpay — and a
+    day settles once, so the overpayment is permanent."""
+    import orchard_chia.economics.runner as R
+    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+    monkeypatch.setattr(R, "_chain_hours_for_season",
+                        lambda s: (_ for _ in ()).throw(
+                            R.ChainConsultError("datalayer refused")))
+    src = FakeOracle([{"node_id": "T1", "wallet_address": W, "sensors": ["s"]}],
+                     {"T1": {"hours_online": 24}})
+    with pytest.raises(R.ChainConsultError):
+        R.observe_season(src, 74)
+
+
+def test_the_refusal_reaches_the_cli_as_an_exit_code(monkeypatch, tmp_path, capsys):
+    import orchard_chia.economics.runner as R
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "c.db"))
+    monkeypatch.setenv("ORCHARD_ASSET_ID", "ab" * 32)
+    monkeypatch.setattr(R, "OracleClient", lambda url, tok: FakeOracle(
+        [{"node_id": "T1", "wallet_address": W, "sensors": ["s"]}],
+        {"T1": {"hours_online": 24}}))
+    monkeypatch.setattr(R, "schedule", type("S", (), {
+        "season_number_for": staticmethod(lambda now: 77),
+        "season_genesis_from_env": staticmethod(
+            lambda: __import__("datetime").date(2026, 5, 27))})())
+    monkeypatch.setattr(R, "_chain_hours_for_season",
+                        lambda s: (_ for _ in ()).throw(
+                            R.ChainConsultError("datalayer refused")))
+    assert R.main(["settle", "--season", "76", "--yes"]) == 3
+    # The stub's own message must reach stderr — asserting the PRODUCTION
+    # wording here would only be asserting the text this test substituted.
+    assert "datalayer refused" in capsys.readouterr().err
+
+
+def test_the_real_refusal_explains_why_falling_back_would_overpay(monkeypatch):
+    """Separate from the CLI test, which replaces the message it would check.
+
+    Triggered, not source-inspected: source text contains the implicit
+    string-concatenation syntax between fragments, so a phrase spanning two
+    lines never matches however the whitespace is normalised. The message a
+    person actually reads is the thing worth asserting.
+    """
+    from orchard_chia.economics import runner
+    monkeypatch.delenv("ORCHARD_SETTLE_CHAIN", raising=False)
+    # The sandboxed config makes the consult fail for real.
+    with pytest.raises(runner.ChainConsultError) as got:
+        runner._chain_hours_for_season(74)
+    msg = str(got.value)
+    assert "Refusing to fall back" in msg
+    assert "can only overpay" in msg
+    assert "ORCHARD_SETTLE_CHAIN=0" in msg

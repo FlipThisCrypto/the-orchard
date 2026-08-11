@@ -84,7 +84,9 @@ Worth knowing:
 
 - Settlement includes **recently retired Trees** for the season being settled —
   retirement ends a Tree's future, not its history — and a sealed on-chain
-  season **outranks the oracle's own count** when `ORCHARD_SETTLE_CHAIN=1`.
+  season **outranks the oracle's own count by default**. A failed chain
+  consult REFUSES (exit 3) rather than falling back to the oracle's larger
+  number; `ORCHARD_SETTLE_CHAIN=0` opts out for a host with no DataLayer.
 - `pay` **self-heals** the crash between "everything sent" and "ledger marked":
   a fully-sent cycle found unmarked is recorded, not refused forever.
 - settle and live pay write ops journals (`ops/settle.jsonl`, `ops/pay.jsonl`)
