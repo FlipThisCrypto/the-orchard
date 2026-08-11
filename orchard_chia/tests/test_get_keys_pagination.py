@@ -166,3 +166,17 @@ def test_a_node_rejecting_the_page_param_falls_back_to_unpaginated():
             return {"keys": ["a", "b", "c"]}
 
     assert rpc_for(NoPaging()).get_keys("store") == ["a", "b", "c"]
+
+
+def test_prefixed_keys_are_normalized_at_the_boundary():
+    """The live daemon returns 0x-prefixed keys. Hour discovery fed them to
+    bytes.fromhex unstripped and silently found no hours — attest then
+    refused season 76 as a placeholder while its readings sat on chain. The
+    third appearance of the 0x bug class; the boundary now ends it."""
+    node = FakeNode([["0x6b31", "6b32"]], base=0)
+    assert rpc_for(node).get_keys("store") == ["6b31", "6b32"]
+
+
+def test_strict_normalizes_too():
+    node = FakeNode([["0xaa", "0xbb"]], base=0)
+    assert rpc_for(node).get_keys_strict("store") == ["aa", "bb"]
