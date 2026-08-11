@@ -43,7 +43,13 @@ class AttestationRecord(BaseModel):
             "ADR-0003 records, or legacy HMAC-SHA256 (64 hex)"
         ),
     )
-    dl_tx_id: str = Field(..., description="Chia DataLayer batch tx id (0x... or hex)")
+    # Nullable. A record recovered FROM the chain (sync-oracle) carries no
+    # transaction id: a sealed record does not name the transaction that placed
+    # it, and there is no reliable way to recover it afterwards. Sending null is
+    # the honest option — a fabricated tx id would be worse than an absent one
+    # because it would look checkable. The proof is data_hash + oracle_sig
+    # against the record on chain, neither of which needs the tx id.
+    dl_tx_id: str | None = Field(None, description="Chia DataLayer batch tx id (0x... or hex)")
     dl_key_hex: str = Field(..., description="hex of the `attest:<node>:<season>` key")
     block_height_at_write: int | None = None
     written_to_datalayer_at: datetime | None = None

@@ -8,6 +8,8 @@
   python -m orchard_chia.datalayer preflight    # config + connectivity checks
   python -m orchard_chia.datalayer preflight --skip-chia
   python -m orchard_chia.datalayer reconcile [--season N]  # oracle vs DL honesty
+  python -m orchard_chia.datalayer verify-latest          # audit the newest seals
+  python -m orchard_chia.datalayer sync-oracle [--dry-run]  # chain -> oracle catch-up
 """
 from __future__ import annotations
 
@@ -40,6 +42,10 @@ def _dispatch(argv: list[str]) -> int:
         from .main import main
         return int(main() or 0)
 
+    if argv and argv[0] in ("sync-oracle", "sync"):
+        from .sync_oracle import main as sync_main
+        return int(sync_main(argv[1:]) or 0)
+
     if argv and argv[0] == "verify-latest":
         from .verify_latest import main as vl_main
         return vl_main()
@@ -63,7 +69,8 @@ def _dispatch(argv: list[str]) -> int:
 
     print(
         f"Unknown subcommand {cmd!r}. "
-        f"Use: attest | publish | preflight | reconcile | --help",
+        f"Use: attest | publish | preflight | reconcile | verify-latest | "
+        f"sync-oracle | --help",
         file=sys.stderr,
     )
     return 2
