@@ -55,9 +55,13 @@ def test_live_needs_external_ceilings(settled, monkeypatch, capsys):
 
 
 def test_no_asset_id_refuses_even_dry(settled, monkeypatch, capsys):
+    """Neither env nor config: still a refusal. (The config fallback added
+    later means this test must silence BOTH sources, not just the env one.)"""
     monkeypatch.delenv("ORCHARD_ASSET_ID", raising=False)
+    monkeypatch.setattr("orchard_chia.allocation.__main__._load_config",
+                        lambda: {})
     assert main(["pay"]) == 2
-    assert "refusing to guess which CAT" in capsys.readouterr().err
+    assert "Refusing to guess which CAT" in capsys.readouterr().err
 
 
 def test_nothing_unpaid_is_a_clean_zero(tmp_path, monkeypatch, capsys):
@@ -324,3 +328,24 @@ def test_a_genuinely_hour_less_tree_with_no_wallet_still_settles(
     assert main(["settle", "--season", "76", "--yes"]) == 0
     with PoolLedger(tmp_path / "i.db") as led:
         assert led.snapshot().days_settled == 1
+
+
+def test_the_asset_id_falls_back_to_config(tmp_path, monkeypatch, capsys):
+    """The operator's config already names the token; demanding the env var
+    too was duplication. "Never GUESS which CAT" is the property — reading the
+    configured value is not a guess."""
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "a.db"))
+    monkeypatch.delenv("ORCHARD_ASSET_ID", raising=False)
+    monkeypatch.setattr("orchard_chia.allocation.__main__._load_config",
+                        lambda: {"token": {"asset_id": ASSET}})
+    assert main(["pay"]) == 0
+    assert "no settled unpaid days" in capsys.readouterr().out
+
+
+def test_neither_source_still_refuses(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ORCHARD_POOL_LEDGER", str(tmp_path / "b.db"))
+    monkeypatch.delenv("ORCHARD_ASSET_ID", raising=False)
+    monkeypatch.setattr("orchard_chia.allocation.__main__._load_config",
+                        lambda: {})
+    assert main(["pay"]) == 2
+    assert "Refusing to guess which CAT" in capsys.readouterr().err

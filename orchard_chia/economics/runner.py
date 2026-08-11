@@ -502,10 +502,23 @@ def _cmd_pay(ledger_path: Path, args) -> int:
 
     genesis = datetime.combine(schedule.season_genesis_from_env(),
                                datetime.min.time(), tzinfo=timezone.utc)
+    # The operator's own config.yaml already names the token; env overrides it.
+    # Demanding the env var while the canonical id sat in config was pure
+    # duplication — the safety property is "never GUESS which CAT", and
+    # reading the value the operator configured is not a guess. Refusing when
+    # neither source has it still stands.
     asset_id = os.environ.get("ORCHARD_ASSET_ID", "").strip()
     if not asset_id:
-        print("ORCHARD_ASSET_ID is not set — refusing to guess which CAT to "
-              "send.", file=sys.stderr)
+        try:
+            from ..allocation.__main__ import _load_config
+            asset_id = str(((_load_config().get("token") or {})
+                            .get("asset_id") or "")).strip()
+        except Exception:                       # noqa: BLE001
+            asset_id = ""
+    if not asset_id:
+        print("no token asset_id: set ORCHARD_ASSET_ID, or token.asset_id in "
+              "orchard_chia/config.yaml. Refusing to guess which CAT to send.",
+              file=sys.stderr)
         return 2
 
     max_cycle = int(os.environ.get("ORCHARD_PAY_MAX_CYCLE_MOJOS", "0") or 0)
