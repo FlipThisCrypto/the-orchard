@@ -26,6 +26,8 @@ constexpr size_t kCommonBaudCount =
 // see several `*XX\r\n` checksum frames at the right baud — and bail
 // fast at the wrong baud.
 constexpr uint32_t kBaudProbeMs = 1500;
+// Trees report every 60 seconds; allow one missed update before a fix is stale.
+constexpr uint32_t kMaxFixAgeMs = 120000;
 }  // namespace
 
 GpsNeoSensor::ProbeResult GpsNeoSensor::try_baud_probe_(uint32_t baud) {
@@ -202,10 +204,15 @@ bool GpsNeoSensor::read(JsonObject out) {
     return false;
   }
 
-  // Always report sat count and fix flag, even without a fix.
+  // A previously valid TinyGPS++ location remains valid after it goes stale.
+  // Keep the last age visible, but don't publish old coordinates as a live fix.
+  const bool location_valid = gps_.location.isValid();
+  const uint32_t fix_age_ms = location_valid ? gps_.location.age() : 0;
+  const bool has_fresh_fix =
+      location_valid && fix_age_ms <= kMaxFixAgeMs;
   out["satellites"]  = gps_.satellites.isValid() ? gps_.satellites.value() : 0;
-  out["fix"]         = gps_.location.isValid();
-  out["fix_age_ms"]  = gps_.location.isValid() ? gps_.location.age() : 0;
+  out["fix"]         = has_fresh_fix;
+  out["fix_age_ms"]  = fix_age_ms;
   // Diagnostic surface — lets the dashboard tile distinguish "no fix
   // yet" (baud > 0, sentences > 0, sats > 0) from "module silent"
   // (baud == 0). Useful when an operator's first reaction to GPS not
@@ -215,7 +222,7 @@ bool GpsNeoSensor::read(JsonObject out) {
   out["sentences_passed"]      = (uint32_t)gps_.passedChecksum();
   out["sentences_failed_csum"] = (uint32_t)gps_.failedChecksum();
 
-  if (gps_.location.isValid()) {
+  if (has_fresh_fix) {
     out["lat"] = gps_.location.lat();
     out["lon"] = gps_.location.lng();
   }

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Pin allocation for the v1 Tree (Freenove ESP32-S3 + sensors).
+// Default pin allocation for the classic ESP32 Tree.
 //
-// Cross-check against the Freenove ESP32-S3 pinout PDF before flashing.
-// All pins here are configurable at build time via `-D ORCHARD_PIN_*`
-// flags in platformio.ini if you need to relocate.
+// The ESP32-S3 PlatformIO environments override pins that are unavailable
+// on that module. All pins are configurable at build time via
+// `-D ORCHARD_PIN_*` flags in platformio.ini.
 
 #pragma once
 
@@ -32,14 +32,15 @@
 #define ORCHARD_PIN_PMS_TX   17
 #endif
 
-// --- MQ-135 analog (ADC1_CH6 on ESP32-S3 — input only) --------------
+// --- MQ-135 analog (classic ESP32 ADC1_CH6, input only) -------------
+// The S3 environment overrides this to GPIO 7 (ADC1).
 #ifndef ORCHARD_PIN_MQ135_ADC
 #define ORCHARD_PIN_MQ135_ADC  34
 #endif
 
 // --- DS18B20 1-Wire temperature probe -------------------------------
 // GPIO 25 on WROOM-32U: regular bidirectional GPIO, not a strapping
-// pin, not input-only. On S3 the same number is available.
+// pin or input-only. The S3 environment overrides this to GPIO 10.
 //
 // REQUIRED EXTERNAL PARTS: 4.7 kΩ pull-up resistor between this pin
 // and 3.3V. Waterproof DS18B20 probe kits usually include one in a
@@ -49,7 +50,7 @@
 #define ORCHARD_PIN_DS18B20_DATA  25
 #endif
 
-// --- Status LED (Freenove S3 onboard) -------------------------------
+// --- Status LED (overridden per board in platformio.ini) ------------
 #ifndef ORCHARD_PIN_STATUS_LED
 #define ORCHARD_PIN_STATUS_LED  48
 #endif
