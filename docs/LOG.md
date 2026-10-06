@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-10-06 — Correct board-specific sensor wiring references
+
+- The S3 wiring references had inherited classic-ESP32 pin numbers: GPIO 22 is not exposed on the supported S3 module (I2C SCL is remapped to GPIO 9), and the MQ-135 ADC is remapped from GPIO 34 to GPIO 7. Updated the wiring template, wiring index, and operator quickstart to match the PlatformIO environments; also documented the S3 DS18B20 pin override (GPIO 10).
+- Added a BME280 wiring guide for the already-shipped driver, including supported I2C addresses, emitted reading fields, board-specific pins, and 3.3V signal safety guidance.
+- Hardened DataLayer metric conversion: non-finite and unrepresentably large sensor values are omitted instead of raising during fixed-point conversion; MQ-135 conversions are constrained to the hardware's 12-bit ADC/millivolt ranges.
+- GPS `fix` previously reflected whether TinyGPS++ had ever seen a valid position, so a disconnected receiver could leave old coordinates marked current indefinitely. Firmware now reports a fix only while its last location update is within 120 seconds and omits coordinates after that.
+- Why: wiring guides must match the board actually being flashed; stale GPS state must not be mistaken for a current fix; malformed sensor values should not crash fixed-point conversion.
+- Validation: checked documented pins against `firmware/platformio.ini` and `firmware/include/pins.h`; ran standalone metric-conversion checks for NaN, infinity, oversized values, and valid neighboring measurements. Firmware build and pytest could not run because PlatformIO, pytest, and project dependencies are not installed. No hardware test was performed.
+
+---
+
 ## 2026-06-12 — Device curve switched ed25519 → secp256r1 before any device shipped (ADR-0007)
 
 - **The catch, in time:** CLVM has no ed25519 operator — its signature ops
@@ -820,4 +831,3 @@ the official DataLayer/full-node RPC docs (vendored at
   runbook + SPEC §12 checklist, golden-vectors drift guard, e2e live tests.
   Test suite 188 → 295. Documented a known reading↔hour-bucket replay limitation
   (SPEC §3). Branch: datalayer-verifiable-dataset.
-

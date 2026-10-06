@@ -137,11 +137,11 @@ The Freenove breakout has **two labels per hole**: one column for ESP32 (classic
 
 ### Pin map (ESP32-S3)
 
-| Wire to | ESP32-S3 pin |
-|---|---|
-| MQ-135 AO | GPIO 34 |
-| GPS TX → ESP32 RX | GPIO 4 |
-| GPS RX ← ESP32 TX | GPIO 5 |
+| Wire to | ESP32-S3 pin | Notes |
+|---|---|---|
+| MQ-135 AO | GPIO 7 | ADC1; the S3 firmware environment overrides the classic ESP32 GPIO 34 default |
+| GPS TX → ESP32 RX | GPIO 4 | UART1 RX |
+| GPS RX ← ESP32 TX | GPIO 5 | UART1 TX |
 
 ### Antenna install (WROOM-32U only)
 
@@ -155,25 +155,27 @@ Without an antenna, the WROOM-32U has ~1 m of effective WiFi range. With one, yo
 
 ### Optional BME280 (temperature + humidity + pressure, I2C)
 
-| Wire to | ESP32 pin (WROOM and S3) |
-|---|---|
-| VCC | 3.3V (most BME280 breakouts) |
-| GND | GND |
-| SDA | GPIO 21 |
-| SCL | GPIO 22 |
+For module-specific voltage checks and bring-up details, see the [BME280 wiring guide](wiring/bme280.md).
 
-The firmware auto-detects whether it's at I2C address 0x76 or 0x77.
+| Wire to | Classic ESP32 WROOM | ESP32-S3 |
+|---|---|---|
+| VCC | 3.3V (check the exact breakout) | 3.3V (check the exact breakout) |
+| GND | GND | GND |
+| SDA | GPIO 21 | GPIO 21 |
+| SCL | GPIO 22 | GPIO 9 |
+
+The firmware auto-detects whether it's at I2C address 0x76 or 0x77. ESP32 GPIOs are not 5 V tolerant; verify the breakout's I/O voltage and ensure I2C pull-ups go to 3.3 V.
 
 ### Optional DS18B20 (1-Wire temperature probe)
 
 The classic 3-wire waterproof temperature probe with the long cable. Often comes with a 4.7 kΩ resistor pre-wired in a heat-shrink tube near the connector — if yours does, you're good. If yours is a bare TO-92 chip, you'll need to add the resistor yourself.
 
-| Wire to | ESP32 pin (WROOM and S3) | Probe wire color (typical) |
-|---|---|---|
-| VCC | 3.3V (NOT 5V — DS18B20 is 3.3V) | Red |
-| GND | GND | Black |
-| DATA | GPIO 25 | Yellow |
-| **4.7 kΩ resistor** | between DATA and 3.3V | — |
+| Wire to | Classic ESP32 WROOM | ESP32-S3 | Probe wire color (typical) |
+|---|---|---|---|
+| VCC | 3.3V | 3.3V | Red |
+| GND | GND | GND | Black |
+| DATA | GPIO 25 | GPIO 10 | Yellow |
+| **4.7 kΩ resistor** | between DATA and 3.3V | between DATA and 3.3V | — |
 
 The pull-up resistor is **not optional**. Without it the 1-Wire bus floats and the chip never responds — the boot log will show `bme280 active=no` *and* `ds18b20 active=no` regardless of how many sensors you've actually connected. If you flash a Tree with a DS18B20 wired but no pull-up, the firmware prints a hint to serial:
 

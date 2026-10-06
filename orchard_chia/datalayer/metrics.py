@@ -10,6 +10,7 @@ produce ``sig`` over the canonical reading body.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -17,13 +18,18 @@ def _as_float(v: Any) -> float | None:
     if v is None or isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
-        return float(v)
-    if isinstance(v, str):
         try:
-            return float(v)
+            value = float(v)
+        except OverflowError:
+            return None
+    elif isinstance(v, str):
+        try:
+            value = float(v)
         except ValueError:
             return None
-    return None
+    else:
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _as_int(v: Any) -> int | None:
@@ -32,13 +38,22 @@ def _as_int(v: Any) -> int | None:
     if isinstance(v, int) and not isinstance(v, bool):
         return int(v)
     if isinstance(v, float):
-        return int(v)
+        return int(v) if math.isfinite(v) else None
     if isinstance(v, str):
         try:
             return int(v, 10)
         except ValueError:
             return None
     return None
+
+
+def _scaled_int(value: float | None, scale: int) -> int | None:
+    if value is None:
+        return None
+    scaled = value * scale
+    if not math.isfinite(scaled):
+        return None
+    return int(round(scaled))
 
 
 def metrics_from_sensors(sensors: dict | None) -> dict[str, int | bool]:
@@ -56,22 +71,27 @@ def metrics_from_sensors(sensors: dict | None) -> dict[str, int | bool]:
     bme = sensors.get("bme280") if isinstance(sensors.get("bme280"), dict) else None
     if bme:
         t = _as_float(bme.get("temperature_c") if "temperature_c" in bme else bme.get("temp_c"))
-        if t is not None:
-            out["temperature_mc"] = int(round(t * 1000))
+        temperature_mc = _scaled_int(t, 1000)
+        if temperature_mc is not None:
+            out["temperature_mc"] = temperature_mc
         h = _as_float(bme.get("humidity_pct") if "humidity_pct" in bme else bme.get("humidity"))
-        if h is not None:
-            out["humidity_milli_pct"] = int(round(h * 1000))
+        humidity_milli_pct = _scaled_int(h, 1000)
+        if humidity_milli_pct is not None:
+            out["humidity_milli_pct"] = humidity_milli_pct
         p = _as_float(bme.get("pressure_hpa") if "pressure_hpa" in bme else bme.get("pressure"))
         if p is not None:
             # Prefer hPa → Pa; if value looks like Pa already (>2000), keep as Pa.
-            out["pressure_pa"] = int(round(p * 100)) if p < 2000 else int(round(p))
+            pressure_pa = _scaled_int(p, 100 if p < 2000 else 1)
+            if pressure_pa is not None:
+                out["pressure_pa"] = pressure_pa
 
     # DS18B20 temperature (only if BME didn't already set it).
     ds = sensors.get("ds18b20") if isinstance(sensors.get("ds18b20"), dict) else None
     if ds and "temperature_mc" not in out:
         t = _as_float(ds.get("temperature_c") if "temperature_c" in ds else ds.get("temp_c"))
-        if t is not None:
-            out["temperature_mc"] = int(round(t * 1000))
+        temperature_mc = _scaled_int(t, 1000)
+        if temperature_mc is not None:
+            out["temperature_mc"] = temperature_mc
 
     # MQ-135 gas — firmware uses adc_raw (float average); accept aliases.
     mq = sensors.get("mq135") if isinstance(sensors.get("mq135"), dict) else None
@@ -81,28 +101,30 @@ def metrics_from_sensors(sensors: dict | None) -> dict[str, int | bool]:
             if key in mq:
                 raw = _as_float(mq.get(key))
                 if raw is not None:
-                    adc = int(round(raw))
+                    adc = _scaled_int(raw, 1)
                     break
                 adc = _as_int(mq.get(key))
                 if adc is not None:
                     break
-        if adc is not None:
+        if adc is not None and 0 <= adc <= 4095:
             out["gas_adc_raw"] = adc
             # SPEC: gas_mv = round(gas_adc_raw * 3300 / 4095)
             out["gas_mv"] = int(round(adc * 3300 / 4095))
         mv = _as_int(mq.get("mv") if "mv" in mq else mq.get("gas_mv"))
-        if mv is not None and "gas_mv" not in out:
+        if mv is not None and 0 <= mv <= 3300 and "gas_mv" not in out:
             out["gas_mv"] = mv
 
     # Particulate (optional future sensors)
     pm = sensors.get("pm") if isinstance(sensors.get("pm"), dict) else None
     if pm:
         pm25 = _as_float(pm.get("pm25_ugm3") if "pm25_ugm3" in pm else pm.get("pm25"))
-        if pm25 is not None:
-            out["pm25_ugm3_x100"] = int(round(pm25 * 100))
+        pm25_x100 = _scaled_int(pm25, 100)
+        if pm25_x100 is not None:
+            out["pm25_ugm3_x100"] = pm25_x100
         pm10 = _as_float(pm.get("pm10_ugm3") if "pm10_ugm3" in pm else pm.get("pm10"))
-        if pm10 is not None:
-            out["pm10_ugm3_x100"] = int(round(pm10 * 100))
+        pm10_x100 = _scaled_int(pm10, 100)
+        if pm10_x100 is not None:
+            out["pm10_ugm3_x100"] = pm10_x100
 
     # GPS — fix + sats only (precise lat/lon stay off-chain by default).
     gps = sensors.get("gps") if isinstance(sensors.get("gps"), dict) else None
